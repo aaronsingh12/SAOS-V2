@@ -187,8 +187,9 @@ export function recordToolEvent(sessionId, event) {
   const seq = (row?.m ?? -1) + 1;
   const { instance, actor } = currentActor();
   db.prepare(
-    `INSERT INTO tool_events (session, seq, kind, name, payload, result, result_status, mutating, approval, instance, actor, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tool_events (session, seq, kind, name, payload, result, result_status, mutating, approval,
+                              approved_source, approved_at, instance, actor, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     sessionId,
     seq,
@@ -199,6 +200,10 @@ export function recordToolEvent(sessionId, event) {
     event.resultStatus ?? null,
     event.mutating ? 1 : 0,
     event.approval ?? null,
+    // WI-4. Written as given — an approval this code cannot attribute is stored
+    // as 'unknown' rather than guessed at, and 'unknown' does not execute.
+    event.approval ? (event.approvedSource ?? 'unknown') : null,
+    event.approvedAt ?? null,
     instance,
     actor,
     now()

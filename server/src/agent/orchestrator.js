@@ -61,11 +61,39 @@ export function getSession(id) {
   return { history: loadHistory(id), pending: liveState(id).pending };
 }
 
-export function resolveApproval(sessionId, approvalId, approved) {
+/**
+ * WI-4 — where an approval came from.
+ *
+ * `unknown` is not a failure mode to be avoided; it is the honest value for
+ * every row written before this existed, and for any resolver that cannot say
+ * who it is. It is rendered as "unknown", never quietly upgraded.
+ */
+export const APPROVAL_SOURCES = Object.freeze({
+  USER_CLICK: 'user_click',
+  AUTO_APPROVE: 'auto_approve',
+  UNKNOWN: 'unknown',
+});
+const KNOWN_SOURCES = new Set(Object.values(APPROVAL_SOURCES));
+
+/**
+ * Resolve a pending approval. `source` says who did it.
+ *
+ * There is exactly one caller — POST /api/agent/approve, the endpoint the
+ * approval card's buttons post to. It reports `user_click` because that is what
+ * that endpoint is for; the app is unauthenticated local dev, so any process
+ * that knows an approvalId can reach it and would be recorded the same way.
+ * That limit is real and is written down in docs/incidents/2026-08-24-ask-act.md
+ * rather than papered over with a value this code cannot actually verify.
+ */
+export function resolveApproval(sessionId, approvalId, approved, source = APPROVAL_SOURCES.UNKNOWN) {
   const resolver = live.get(sessionId)?.pending.get(approvalId);
   if (!resolver) return false;
   live.get(sessionId).pending.delete(approvalId);
-  resolver(Boolean(approved));
+  resolver({
+    approved: Boolean(approved),
+    source: KNOWN_SOURCES.has(source) ? source : APPROVAL_SOURCES.UNKNOWN,
+    at: new Date().toISOString(),
+  });
   return true;
 }
 
@@ -148,6 +176,7 @@ function emitMutationReport({ sessionId, turnSeq, emit }) {
     mutations: entries.map((e) => ({
       tool: e.tool, table: e.table, sys_id: e.sys_id, displayId: e.displayId,
       status: e.status, approval: e.approval,
+      approvedSource: e.approvedSource, approvedAt: e.approvedAt,
       dropped: e.verification?.dropped || [],
       capture: e.capture?.message || null,
     })),
@@ -171,8 +200,25 @@ function emitMutationReport({ sessionId, turnSeq, emit }) {
  */
 export const APPROVAL_RESOLVED = new Set(['approved', 'auto']);
 
-export async function executeTool(tool, input, approval) {
-  if (tool.mutating && !APPROVAL_RESOLVED.has(approval)) {
+/**
+ * WI-4 tightens this. "approved" alone is no longer enough.
+ *
+ * The 2026-08-24 investigation could not answer "who approved this", because
+ * `approval = 'approved'` was the entire record. A terminal string that any
+ * code path can produce is not provenance — so the executor now demands that
+ * the approval say where it came from, and the two legal answers are disjoint:
+ *
+ *   approved  requires  source = user_click     (a human resolved the gate)
+ *   auto      requires  source = auto_approve   AND auto-approve actually on
+ *
+ * `unknown` is therefore never executable. That is the point: a mutation whose
+ * authorisation cannot be attributed does not run, rather than running and
+ * leaving a row nobody can interpret a month later.
+ */
+export async function executeTool(tool, input, approval, provenance = null) {
+  if (!tool.mutating) return tool.execute(input || {});
+
+  if (!APPROVAL_RESOLVED.has(approval)) {
     throw Object.assign(
       new Error(
         `Refusing to execute the mutating tool "${tool.name}" with approval="${approval ?? 'none'}". `
@@ -181,18 +227,51 @@ export async function executeTool(tool, input, approval) {
       { status: 500, detail: { tool: tool.name, approval: approval ?? null, reason: 'unapproved-mutation' } },
     );
   }
+
+  const source = provenance?.source ?? null;
+  const autoApprove = Boolean(provenance?.autoApprove);
+  const refuse = (reason, message) => {
+    throw Object.assign(new Error(message), {
+      status: 500,
+      detail: { tool: tool.name, approval, approvedSource: source, autoApprove, reason },
+    });
+  };
+
+  if (approval === 'approved' && source !== APPROVAL_SOURCES.USER_CLICK) {
+    refuse('unattributed-approval',
+      `Refusing to execute the mutating tool "${tool.name}": its approval is recorded as "${source ?? 'none'}" `
+      + 'rather than user_click. An approval nobody can be attributed is not an approval.');
+  }
+  if (approval === 'auto' && !autoApprove) {
+    refuse('auto-without-auto-approve',
+      `Refusing to execute the mutating tool "${tool.name}" under auto-approve: auto-approve is OFF. `
+      + 'No server-side path may approve a mutation the user did not.');
+  }
+  if (approval === 'auto' && source !== APPROVAL_SOURCES.AUTO_APPROVE) {
+    refuse('unattributed-approval',
+      `Refusing to execute the mutating tool "${tool.name}": approval="auto" but its source is `
+      + `"${source ?? 'none'}" rather than auto_approve.`);
+  }
+
   return tool.execute(input || {});
 }
 
+/**
+ * Resolves to a DECISION, not a boolean (WI-4): who decided, and when.
+ *
+ * The timeout is its own source. It is a rejection nobody made, and recording
+ * it as one would put a refusal in the audit trail that no person is
+ * responsible for.
+ */
 function awaitApproval(state, approvalId) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       state.pending.delete(approvalId);
-      resolve(false);
+      resolve({ approved: false, source: 'timeout', at: new Date().toISOString() });
     }, APPROVAL_TIMEOUT_MS);
-    state.pending.set(approvalId, (approved) => {
+    state.pending.set(approvalId, (decision) => {
       clearTimeout(timer);
-      resolve(approved);
+      resolve(decision);
     });
   });
 }
@@ -987,16 +1066,26 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
 
         // Permission gate — the heart of the platform's safety model.
         let approval = null;
+        // WI-4 — the two facts the audit trail could not previously state.
+        let approvedSource = null;
+        let approvedAt = null;
         if (tool.mutating && !agent.autoApprove) {
           const approvalId = crypto.randomUUID();
           emit({ type: 'approval_required', approvalId, name: call.name, input: call.input });
           log.warn('gate', `approval required: ${call.name} — waiting for the user`);
-          const approved = await awaitApproval(state, approvalId);
-          approval = approved ? 'approved' : 'rejected';
-          log.info('gate', `${call.name} ${approved ? 'APPROVED' : 'REJECTED'} by the user`);
-          emit({ type: 'approval_resolved', approvalId, approved });
-          if (!approved) {
-            const output = 'The user rejected this operation. Do not retry it; ask what they would like to change.';
+          const decision = await awaitApproval(state, approvalId);
+          approval = decision.approved ? 'approved' : 'rejected';
+          approvedSource = decision.source;
+          approvedAt = decision.at;
+          log.info('gate', `${call.name} ${decision.approved ? 'APPROVED' : 'REJECTED'} — source ${decision.source}`);
+          emit({
+            type: 'approval_resolved', approvalId, approved: decision.approved,
+            source: decision.source, at: decision.at,
+          });
+          if (!decision.approved) {
+            const output = decision.source === 'timeout'
+              ? 'This operation was never answered and the approval expired. Do not retry it; ask the user what they want.'
+              : 'The user rejected this operation. Do not retry it; ask what they would like to change.';
             // Remembered for THIS turn, so a resubmission is blocked rather
             // than merely discouraged. Turn-scoped on purpose: a user who asks
             // again next turn means it.
@@ -1010,12 +1099,15 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             recordToolEvent(sessionId, {
               kind: 'tool_call', name: call.name, payload: call.input, result: output,
               resultStatus: 'rejected', mutating: true, approval,
+              approvedSource, approvedAt,
             });
             emit({ type: 'tool_result', id: call.id, name: call.name, output, isError: true });
             continue;
           }
         } else if (tool.mutating) {
           approval = 'auto';
+          approvedSource = APPROVAL_SOURCES.AUTO_APPROVE;
+          approvedAt = new Date().toISOString();
           log.warn('gate', `${call.name} ran UNGATED — auto-approve is on, nobody saw it`);
         }
         // Now, and only now: approved (or explicitly ungated) and about to run.
@@ -1038,7 +1130,9 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         const beforeRecord = await snapshotBefore(guardDescriptor);
 
         try {
-          const raw = await executeTool(tool, call.input || {}, approval);
+          const raw = await executeTool(tool, call.input || {}, approval, {
+            source: approvedSource, autoApprove: Boolean(agent.autoApprove),
+          });
 
           // The write landed on the instance. Whether it landed as REQUESTED is
           // a different question, and until this the answer was never asked.
@@ -1073,7 +1167,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             resultStatus: verification && verification.status !== 'applied' && verification.status !== 'self-verified'
               ? verification.status
               : 'ok',
-            mutating: tool.mutating, approval,
+            mutating: tool.mutating, approval, approvedSource, approvedAt,
           });
           // WI-2 — the ledger. Written here, on the executed path only, so it
           // records what HAPPENED rather than what was attempted. Compaction
@@ -1091,7 +1185,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             appendMutation({
               sessionId, turnSeq, tool: call.name,
               descriptor: typeof tool.describeWrite === 'function' ? tool.describeWrite(call.input || {}, raw) : null,
-              result: raw, verification, approval,
+              result: raw, verification, approval, approvedSource, approvedAt,
             });
           }
 
@@ -1159,7 +1253,7 @@ ${JSON.stringify({ businessRuleAbort: playbook }, null, 1)}` : '');
           results.push({ id: call.id, name: call.name, output, isError: true });
           recordToolEvent(sessionId, {
             kind: 'tool_call', name: call.name, payload: call.input, result: output,
-            resultStatus: 'error', mutating: tool.mutating, approval,
+            resultStatus: 'error', mutating: tool.mutating, approval, approvedSource, approvedAt,
           });
           emit({ type: 'tool_result', id: call.id, name: call.name, output, isError: true });
         }

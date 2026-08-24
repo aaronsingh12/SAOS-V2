@@ -7,7 +7,7 @@ import { confirmDestructive, promptFor, CONSEQUENCE } from '../components/confir
 import { toast } from '../components/toast.js';
 import { SkeletonLines, LoadingRegion, EmptyState, DisconnectedBanner } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
-import { writeOutcome, captureReason } from '../components/writeOutcome.js';
+import { writeOutcome, captureReason, approvalProvenance } from '../components/writeOutcome.js';
 
 const SAMPLES = [
   'Create a "Laptop Request" catalog item with 6 sensible variables including a reference to sys_user and a model select box',
@@ -195,7 +195,12 @@ export default function AgentChat() {
             push({ kind: 'approval', approvalId: evt.approvalId, name: evt.name, input: evt.input, decided: null });
             break;
           case 'approval_resolved':
-            patchMsg((m) => m.kind === 'approval' && m.approvalId === evt.approvalId, { decided: evt.approved });
+            // WI-4 — provenance rides along, so the card can say who decided
+            // and when instead of leaving it to be inferred.
+            patchMsg((m) => m.kind === 'approval' && m.approvalId === evt.approvalId, {
+              decided: evt.approved, source: evt.source || null, at: evt.at || null,
+              sending: null, failed: null,
+            });
             break;
           case 'tool_result':
             // `verification` rides along so the card's glyph and words come
@@ -242,10 +247,30 @@ export default function AgentChat() {
     }
   };
 
+  /*
+   * WI-4 — the card's verdict comes from the SERVER, never from the click.
+   *
+   * This used to patch `decided` optimistically and swallow the error, so a
+   * post that failed — or one that arrived after the gate had already timed out
+   * — still painted a green "approved" badge over a mutation the server had
+   * rejected. That is the renderer-dishonesty class (WI-7) in the one place it
+   * matters most: the badge that says a human authorised a write.
+   *
+   * The click now only says "sending". `approval_resolved` decides.
+   */
   const decide = async (m, approved) => {
-    patchMsg((x) => x.id === m.id, { decided: approved });
-    try { await api.post('/agent/approve', { sessionId, approvalId: m.approvalId, approved }); }
-    catch { /* server timeout path handles it */ }
+    patchMsg((x) => x.id === m.id, { sending: approved, failed: null });
+    try {
+      const r = await api.post('/agent/approve', { sessionId, approvalId: m.approvalId, approved });
+      if (!r?.ok) {
+        patchMsg((x) => x.id === m.id, {
+          sending: null,
+          failed: 'The gate was no longer waiting for this — it was already answered, or it timed out.',
+        });
+      }
+    } catch (e) {
+      patchMsg((x) => x.id === m.id, { sending: null, failed: e.message });
+    }
   };
 
   const newChat = async () => {
@@ -617,13 +642,24 @@ export default function AgentChat() {
                 <div key={m.id} className="approval-card">
                   <div className="title">Approval required — {m.name}</div>
                   <pre>{JSON.stringify(m.input, null, 1)}</pre>
-                  {m.decided === null ? (
-                    <div className="row">
-                      <button className="btn amber sm" onClick={() => decide(m, true)}>Approve &amp; run</button>
-                      <button className="btn danger sm" onClick={() => decide(m, false)}>Reject</button>
-                    </div>
+                  {m.decided === null || m.decided === undefined ? (
+                    m.sending === true || m.sending === false ? (
+                      <span className="badge">sending your {m.sending ? 'approval' : 'rejection'}…</span>
+                    ) : (
+                      <div className="row">
+                        <button className="btn amber sm" onClick={() => decide(m, true)}>Approve &amp; run</button>
+                        <button className="btn danger sm" onClick={() => decide(m, false)}>Reject</button>
+                      </div>
+                    )
                   ) : (
-                    <span className={`badge ${m.decided ? 'green' : 'red'}`}>{m.decided ? 'approved' : 'rejected'}</span>
+                    <>
+                      <span className={`badge ${m.decided ? 'green' : 'red'}`}>{m.decided ? 'approved' : 'rejected'}</span>
+                      {/* WI-4 — who decided, and when. Never inferred from the fact that it ran. */}
+                      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>{approvalProvenance(m)}</div>
+                    </>
+                  )}
+                  {m.failed && (
+                    <div style={{ color: 'var(--red)', fontSize: 11, marginTop: 6 }}>{m.failed}</div>
                   )}
                 </div>
               );

@@ -52,15 +52,17 @@ function deriveDisplayId(result) {
 
 /** Record one executed mutation. Never throws — a ledger failure must not fail a turn. */
 export function appendMutation({
-  sessionId, turnSeq, tool, descriptor, result, verification, approval, capture = null,
+  sessionId, turnSeq, tool, descriptor, result, verification, approval,
+  approvedSource = null, approvedAt = null, capture = null,
 }) {
   try {
     const { instance, actor } = currentActor();
     const status = verification?.status || 'unverified';
     getDb().prepare(
       `INSERT INTO mutation_ledger
-         (session, turn_seq, ts, tool, table_name, sys_id, display_id, requested, verification, status, approval, capture, instance, actor)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (session, turn_seq, ts, tool, table_name, sys_id, display_id, requested, verification, status, approval,
+          approved_source, approved_at, capture, instance, actor)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       sessionId,
       Number(turnSeq ?? 0),
@@ -73,6 +75,10 @@ export function appendMutation({
       JSON.stringify(verification ?? null),
       status,
       approval ?? null,
+      // WI-4 — an approval with no attributable source is stored as 'unknown',
+      // never inferred from the fact that the write succeeded.
+      approval ? (approvedSource ?? 'unknown') : null,
+      approvedAt ?? null,
       capture ? JSON.stringify(capture) : null,
       instance,
       actor,
@@ -116,7 +122,9 @@ function hydrate(r) {
     id: r.id, turnSeq: r.turn_seq, ts: r.ts, tool: r.tool,
     table: r.table_name, sys_id: r.sys_id, displayId: r.display_id,
     requested: parse(r.requested) || {}, verification: parse(r.verification),
-    status: r.status, approval: r.approval, capture: parse(r.capture),
+    status: r.status, approval: r.approval,
+    approvedSource: r.approved_source ?? null, approvedAt: r.approved_at ?? null,
+    capture: parse(r.capture),
     instance: r.instance, actor: r.actor,
   };
 }
@@ -165,10 +173,42 @@ export function renderMutationReport(entries) {
     } else if (v?.status === 'unverified') {
       lines.push(`    - Could not be verified by read-back: ${v.summary}.`);
     }
-    if (e.approval === 'auto') lines.push('    - ran under auto-approve — no human saw the gate');
+    const provenance = approvalLine(e);
+    if (provenance) lines.push(`    - ${provenance}`);
     if (e.capture?.message) lines.push(`    - ${e.capture.message}`);
   }
   return lines.join('\n');
+}
+
+/**
+ * WI-4 — who authorised this write, said out loud.
+ *
+ * Every executed mutation gets a line, including the ordinary one. The report
+ * used to speak up only for auto-approve, which made "a human approved this" an
+ * inference drawn from silence — and the 2026-08-24 investigation is what that
+ * inference costs when it has to be checked and cannot be.
+ *
+ * `unknown` is reported as unknown. Every row written before the provenance
+ * columns existed carries it, and it is also what a resolver that could not
+ * identify itself gets: an approval that cannot be attributed is a real finding,
+ * not a rendering gap to smooth over.
+ *
+ * The clock is stamped UTC explicitly. The session renders local time and the
+ * platform stores UTC, and an unlabelled HH:MM between them is a whole class of
+ * trap this project has already paid for once.
+ */
+export function approvalLine(entry) {
+  if (!entry?.approval) return '';
+  const at = entry.approvedAt ? ` · ${String(entry.approvedAt).slice(11, 16)} UTC` : '';
+  if (entry.approval === 'auto') {
+    return `ran under auto-approve — no human saw the gate${at}`;
+  }
+  if (entry.approval === 'approved') {
+    return entry.approvedSource === 'user_click'
+      ? `approved by you at the gate${at}`
+      : `approved, but the source was never recorded (${entry.approvedSource || 'unknown'})${at}`;
+  }
+  return `approval recorded as "${entry.approval}"${at}`;
 }
 
 const fieldList = (arr) => (arr?.length ? arr.map((d) => `\`${d.field}\``).join(', ') : 'no fields');

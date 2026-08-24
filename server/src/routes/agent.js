@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { log } from '../logging.js';
-import { runTurn, resolveApproval } from '../agent/orchestrator.js';
+import { runTurn, resolveApproval, APPROVAL_SOURCES } from '../agent/orchestrator.js';
 import { providerInfo } from '../agent/providers/index.js';
 import {
   listSessions,
@@ -181,9 +181,22 @@ agentRouter.post('/chat', async (req, res) => {
   }
 });
 
-/** POST /api/agent/approve  { sessionId, approvalId, approved } */
+/**
+ * POST /api/agent/approve  { sessionId, approvalId, approved }
+ *
+ * The approval card's two buttons post here and nowhere else, so a decision
+ * arriving here is recorded as `user_click` (WI-4). This app is unauthenticated
+ * local dev: anything that knows an approvalId can reach this endpoint and would
+ * be recorded the same way. That limit is documented in
+ * docs/incidents/2026-08-24-ask-act.md rather than hidden behind a value this
+ * route cannot verify.
+ *
+ * `ok:false` means the gate was not waiting for this approval — it had already
+ * been answered, or it timed out. The client SHOWS that rather than assuming its
+ * click landed.
+ */
 agentRouter.post('/approve', (req, res) => {
   const { sessionId, approvalId, approved } = req.body || {};
-  const ok = resolveApproval(sessionId, approvalId, approved);
+  const ok = resolveApproval(sessionId, approvalId, approved, APPROVAL_SOURCES.USER_CLICK);
   res.json({ ok });
 });

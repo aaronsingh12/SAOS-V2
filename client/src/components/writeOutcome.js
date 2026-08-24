@@ -84,3 +84,49 @@ export function captureReason(m) {
     .replace(/^\s*(not captured|captured)\s+/i, '')
     .trim() || msg;
 }
+
+/**
+ * WI-4 — who authorised a mutation, and when.
+ *
+ * THE DEFECT this closes is one the card could not previously have shown.
+ * Investigating 2026-08-24 came down to "the checkbox was off, so how did this
+ * reach approved?" and the answer was unobtainable: approval state was a single
+ * terminal string with no source and no timestamp. The card said "approved" and
+ * could not say by whom.
+ *
+ * The card's badge now comes from the server's `approval_resolved` event rather
+ * than from the click that preceded it, and this renders the rest of that same
+ * event. Nothing here is inferred from the write having succeeded — that is the
+ * inversion `writeOutcome` exists to prevent, applied to the other half of the
+ * card.
+ *
+ * `unknown` renders as unknown. It is what every row written before the
+ * provenance columns existed carries, and an approval nobody can be attributed
+ * is a finding worth showing, not a gap worth smoothing.
+ *
+ * `m` is the approval transcript entry: `{ decided, source, at }`.
+ */
+export function approvalProvenance(m) {
+  const at = m?.at ? ` · ${clockOf(m.at)}` : '';
+  if (m?.decided) {
+    if (m.source === 'user_click') return `You approved${at}`;
+    if (m.source === 'auto_approve') return `Auto-approved — no human saw the gate${at}`;
+    return `Approved, but the source was never recorded (${m?.source || 'unknown'})${at}`;
+  }
+  if (m?.source === 'timeout') return `Expired — nobody answered${at}`;
+  if (m?.source === 'user_click') return `You rejected${at}`;
+  return `Rejected (${m?.source || 'unknown'})${at}`;
+}
+
+/**
+ * The browser's own clock, because the browser is where the reader is.
+ *
+ * The instant is stamped UTC by the server; the session renders local time.
+ * That seven-hour gap has produced a whole class of trap in this project, so the
+ * conversion happens exactly once, here, from the ISO instant.
+ */
+function clockOf(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}

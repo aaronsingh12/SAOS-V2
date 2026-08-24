@@ -288,6 +288,34 @@ const MIGRATIONS = [
 
   CREATE INDEX IF NOT EXISTS idx_mutation_ledger_session ON mutation_ledger(session, turn_seq);
   `,
+
+  // 8 — approval PROVENANCE (WI-4)
+  //
+  // Investigating 2026-08-24 stopped at a question the database could not
+  // answer: an update executed with `approval = 'approved'` while the
+  // auto-approve checkbox was off, and nothing anywhere recorded WHO resolved
+  // it or WHEN. Approval state lived as an unresolved Promise in a process-local
+  // Map and collapsed into a single terminal string at execution time — no
+  // history, no transition timestamp, no actor. "A user clicked it" was the
+  // likeliest explanation and remained unprovable.
+  //
+  // `approved_source` is the missing half: user_click | auto_approve | unknown.
+  // `approved_at` is when the decision was made, which is NOT `ts` — that is
+  // written after the tool has run, and on a slow write the two differ by
+  // seconds.
+  //
+  // Existing rows are backfilled to 'unknown' and rendered as such. Every one of
+  // them predates this column, so any other value would be a guess presented as
+  // a record — which is the exact failure mode this project keeps closing.
+  `
+  ALTER TABLE mutation_ledger ADD COLUMN approved_source TEXT;
+  ALTER TABLE mutation_ledger ADD COLUMN approved_at TEXT;
+  ALTER TABLE tool_events ADD COLUMN approved_source TEXT;
+  ALTER TABLE tool_events ADD COLUMN approved_at TEXT;
+
+  UPDATE mutation_ledger SET approved_source = 'unknown' WHERE approval IS NOT NULL AND approved_source IS NULL;
+  UPDATE tool_events     SET approved_source = 'unknown' WHERE approval IS NOT NULL AND approved_source IS NULL;
+  `,
 ];
 
 /**
