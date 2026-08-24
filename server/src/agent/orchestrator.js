@@ -120,6 +120,17 @@ export function resolveApproval(sessionId, approvalId, approved, source = APPROV
 export const MAX_ITERATIONS = 30;
 
 /**
+ * M3 — how many times one turn may be told to explain itself.
+ *
+ * Three, measured rather than chosen: live round 2 recovered after one bounce,
+ * round 3 needed a second (the model read a schema in between and submitted
+ * another bare write), so two is the observed requirement and three is that
+ * with one spare. Past it the turn is abandoned loudly — an agent that will not
+ * say what it is doing does not get to do it.
+ */
+export const MAX_UNEXPLAINED_BOUNCES = 3;
+
+/**
  * The completion budget per call. Named because the history budget subtracts
  * headroom for it — the two numbers have to agree, and a literal in two places
  * is how they stop agreeing.
@@ -470,10 +481,61 @@ export function isAskingTheUser(text) {
  * because a turn that asks a question and gathers context while waiting is
  * doing the right thing.
  */
+/**
+ * The one question the approval gate ALREADY ANSWERS.
+ *
+ * MEASURED live, 2026-08-24, and it is why this guard cannot simply hold every
+ * write that arrives beside a question mark. The model wrote:
+ *
+ *   "I will update INC0010055 and set its priority to Low. Please confirm
+ *    you'd like me to apply this change."
+ *
+ * — and called the tool. Withholding that produces a livelock: the user is shown
+ * "withheld pending your answer" and a question whose only possible answer is
+ * "yes, go ahead", which is precisely what the approval card in front of them
+ * would have collected. Answering it just reproduces the shape. This model
+ * phrases writes that way constantly; it is the same politeness reflex A6 exists
+ * for.
+ *
+ * So a question that ONLY asks permission passes through to the gate, because
+ * the gate is its answer. Everything else is held. The list is closed and each
+ * entry ends in "do the thing" — "shall I proceed", never "shall I use the
+ * Network group or Service Desk", which is a choice no card can collect.
+ *
+ * Default is HOLD. A phrasing this list does not recognise is withheld, which
+ * costs a round trip; the other error costs a record.
+ */
+const ASKS_ONLY_FOR_PERMISSION = new RegExp([
+  String.raw`\bshall i (?:proceed|go ahead|continue|apply|create|update|delete|add|set|build|deploy|make|do)\b`,
+  String.raw`\bshould i (?:proceed|go ahead|continue|apply)\b`,
+  String.raw`\b(?:please )?confirm (?:that )?you(?:'|’)?(?:d| would)? ?(?:like|want)\b`,
+  String.raw`\bwould you like me to (?:proceed|go ahead|continue|apply)\b`,
+  String.raw`\bdo you want me to (?:proceed|go ahead|continue|apply)\b`,
+  String.raw`\bconfirm (?:and )?(?:to )?proceed\b`,
+  String.raw`\bok(?:ay)? to (?:proceed|go ahead|apply)\b`,
+  String.raw`\blet me know if you(?:'|’)?(?:d| would)? ?(?:like|want) me to (?:proceed|go ahead|apply)\b`,
+].join('|'), 'i');
+
+/**
+ * A question the gate can answer, on prose that asks nothing else.
+ *
+ * All three conditions, because each on its own is reachable by a question that
+ * genuinely needs a person: the permission phrasing must be present, no request
+ * for a fact may be, and the prose must not put two records in front of the user.
+ */
+export function isPermissionOnly(text) {
+  const prose = proseOnly(text);
+  if (!ASKS_ONLY_FOR_PERMISSION.test(prose)) return false;
+  if (NEEDS_A_FACT_FROM_THE_USER.test(prose)) return false;
+  return candidateTargets(prose).length < 2;
+}
+
 export function detectQuestionWithMutation({ assistantText, toolCalls = [], isMutating = () => false, enabled = true }) {
   if (!enabled) return null;
   const asking = isAskingTheUser(assistantText);
   if (!asking) return null;
+  // The gate is the answer to "may I?", so that question does not hold a write.
+  if (isPermissionOnly(assistantText)) return null;
   const held = (toolCalls || []).filter((c) => isMutating(c.name));
   if (!held.length) return null;
   return {
@@ -523,11 +585,95 @@ const NEEDS_A_FACT_FROM_THE_USER = new RegExp([
 const RECORD_NUMBER = /\b[A-Z]{2,6}\d{6,}\b/g;
 const SYS_ID = /\b[0-9a-f]{32}\b/g;
 
+/**
+ * How many RECORDS the prose puts in front of the user — not how many strings.
+ *
+ * MEASURED live, 2026-08-24, and it was a false positive in this guard. The
+ * model wrote:
+ *
+ *   "I will update **INC0010055** (sys_id 3324289783b6cf50b939cc65eeaad335)
+ *    and set its priority to Low."
+ *
+ * One record, named twice, the second time precisely. Counting identifiers gave
+ * two "candidates" and fenced A6 off a turn that was being exemplary — the exact
+ * behaviour the system prompt asks for, punished.
+ *
+ * So the two id spaces are counted separately and the larger wins. Two
+ * candidates means two NUMBERS or two SYS_IDS; a number beside its own sys_id is
+ * one record described well.
+ */
 export function candidateTargets(prose) {
-  const found = new Set();
-  for (const m of String(prose).match(RECORD_NUMBER) || []) found.add(m);
-  for (const m of String(prose).match(SYS_ID) || []) found.add(m);
-  return [...found];
+  const text = String(prose);
+  const numbers = [...new Set(text.match(RECORD_NUMBER) || [])];
+  const sysIds = [...new Set(text.match(SYS_ID) || [])];
+  return numbers.length >= sysIds.length ? numbers : sysIds;
+}
+
+/**
+ * M3 — THE UNEXPLAINED MUTATION.
+ *
+ * MEASURED live on 2026-08-24, on the PDI, while verifying WI-2 and WI-3.
+ * Given two candidate incidents in context and the ambiguous instruction
+ * "priority ko change karke LOW kardo", the model read the schema and then
+ * emitted this (session 79f36d98, message seq 7):
+ *
+ *     assistant  text=0ch  calls=1  [update_record]  → INC0010055, priority 4
+ *
+ * No prose. Not M1 (a question beside the calls) and not M2 (the nudge
+ * re-invoking the provider) — a bare write on a target it had no basis to
+ * choose, and an approval card showing the user a payload and nothing about
+ * why THAT record. Every guard built for this incident classifies prose, and
+ * there was none to classify.
+ *
+ * So the harness enforces the rule the system prompt already states: say in one
+ * line what you are about to do, THEN call the tool. A write submitted with no
+ * explanation anywhere in the turn is bounced once, with feedback — never
+ * silently dropped, because the user would then see a withheld notice and no
+ * question to answer.
+ *
+ * Narrow twice over: only when the turn has produced NO assistant prose at all,
+ * and only once per turn. When it is wrong the cost is one LLM call and a
+ * better-explained approval card; when it is absent the cost is a card nobody
+ * can evaluate.
+ */
+/**
+ * Is the TARGET of a write ambiguous, given what the user actually said?
+ *
+ * Two rules, in order, and the order is the whole thing:
+ *
+ *  1. If the user's own message names a record, the user has chosen. Nothing is
+ *     ambiguous, whatever else is on screen.
+ *  2. Otherwise, if the recent conversation put two or more records in front of
+ *     them and the model is about to write, it is choosing for them.
+ *
+ * MEASURED, and the first rule is the one that cost a live round. An earlier
+ * version demanded narration before ANY write. On "the child one — INC0010055"
+ * the model simply would not narrate — three bounces, turn abandoned, user got
+ * nothing. It was right not to: the user had just named the record, and a card
+ * showing that record's payload needs no essay. The defect was never silence;
+ * it was silence while CHOOSING.
+ */
+export function ambiguousTarget({ userText, history = [] }) {
+  if (candidateTargets(userText || '').length >= 1) return null;
+  // The last few entries only: a record named twenty turns ago is not a
+  // candidate the user is currently weighing.
+  const recent = history.slice(-8)
+    .map((m) => (m?.role === 'assistant' || m?.role === 'user' ? String(m.text || '') : ''))
+    .join('\n');
+  const candidates = candidateTargets(recent);
+  return candidates.length >= 2 ? { candidates } : null;
+}
+
+export function detectUnexplainedMutation({
+  assistantText, toolCalls = [], turnHasProse = false, isMutating = () => false, ambiguity = null,
+}) {
+  // Nothing to choose between, or the user already chose: a bare write is fine.
+  if (!ambiguity) return null;
+  if (turnHasProse) return null;
+  if (!isBlankText(assistantText)) return null;
+  const writes = (toolCalls || []).filter((c) => isMutating(c.name)).map((c) => c.name);
+  if (!writes.length) return null;
+  return { writes, candidates: ambiguity.candidates };
 }
 
 export function detectClarifyingQuestion({ assistantText }) {
@@ -590,6 +736,8 @@ export function detectStalledTurn({ assistantText, userText, mutatingCallCount =
 export const CONTINUATION_REASONS = Object.freeze({
   TOOL_RESULTS: 'tool_results',
   A6_STALL_NUDGE: 'a6_stall_nudge',
+  // M3 — a write with no explanation, handed back once for one.
+  UNEXPLAINED_MUTATION: 'unexplained_mutation_bounce',
 });
 const LEGAL_CONTINUATIONS = new Set(Object.values(CONTINUATION_REASONS));
 
@@ -636,6 +784,16 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
   if (!loadSessionRow(sessionId)) createSession({ id: sessionId });
 
   let stallNudged = false;
+  // M3 — how many unexplained writes this turn has handed back, and whether it
+  // has ever said anything to the user. `turnHasProse` is what makes the guard
+  // narrow: a turn that narrated and then wrote is not the failure it exists
+  // for, and one line of prose disarms it for the rest of the turn.
+  let unexplainedBounces = 0;
+  let turnHasProse = false;
+  // Computed ONCE, from what the user said and what was on screen when they
+  // said it. Recomputing it per iteration would let the model's own listing of
+  // candidates create the ambiguity the guard then punishes it for.
+  let turnAmbiguity = null;
   let compactedThisTurn = false;
   let mutatingCallCount = 0;
   // WI-2 — one entry per SANCTIONED re-invocation of the provider. The loop
@@ -653,6 +811,11 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
     turnSeq = userSeq;
   } else {
     turnSeq = latestUserSeq(sessionId);
+  }
+  turnAmbiguity = ambiguousTarget({ userText, history: loadHistory(sessionId).slice(0, -1) });
+  if (turnAmbiguity) {
+    log.info('gate', `this turn has ${turnAmbiguity.candidates.length} candidate targets on screen `
+      + `(${turnAmbiguity.candidates.join(', ')}) and the user named none`);
   }
   const info = providerInfo();
   emit({ type: 'meta', ...info });
@@ -884,6 +1047,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         toolCalls: res.toolCalls,
       });
       if (assistantText) {
+        turnHasProse = true;
         indexMessage(sessionId, assistantSeq, 'assistant', assistantText);
         emit({ type: 'assistant_text', text: assistantText });
       }
@@ -1000,6 +1164,77 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           text: 'Proposed action withheld pending your answer.',
           ranAnyway: callsToRun.map((c) => c.name),
         });
+      }
+
+      /*
+       * M3 — a write nobody explained goes back, not to the gate.
+       *
+       * Checked after the ask-XOR-act guard, which cannot reach the same
+       * completion: that one needs prose, this one fires on its absence.
+       *
+       * NOT once per turn, and that distinction is measured. It was once, on
+       * A6's pattern — and live round 3 showed why A6's reason does not carry
+       * over. A6 nudges with a FACT the model was missing, so repeating it adds
+       * nothing. This asks the model to SAY something, and "the turn has still
+       * said nothing" is exactly the state that warrants asking again. Round 3:
+       * bounced at seq 7, the model read a schema (seq 9), then submitted a
+       * second bare write (seq 11) which the once-flag sent straight to the
+       * gate — the card the criterion says must not exist.
+       *
+       * Bounded all the same. Three refusals to explain end the turn loudly
+       * rather than spending a whole iteration budget arguing.
+       *
+       * The calls are discarded from the stored assistant row for the same
+       * reason the withheld ones are — a tool_call with no matching result is
+       * the shape the wire format rejects. What is left is a blank assistant
+       * turn, which the sanitizer drops on the next read: nothing happened, and
+       * history says nothing happened.
+       */
+      const unexplained = !asking && detectUnexplainedMutation({
+        assistantText,
+        toolCalls: res.toolCalls,
+        turnHasProse,
+        ambiguity: turnAmbiguity,
+        isMutating: (n) => Boolean(toolMap.get(n)?.mutating),
+      });
+      if (unexplained) {
+        unexplainedBounces += 1;
+        rewriteMessage(sessionId, assistantSeq, { role: 'assistant', text: '', toolCalls: [] });
+        const exhausted = unexplainedBounces >= MAX_UNEXPLAINED_BOUNCES;
+        recordToolEvent(sessionId, {
+          kind: 'guard', name: 'unexplained_mutation',
+          payload: { writes: unexplained.writes, attempt: unexplainedBounces },
+          resultStatus: exhausted ? 'abandoned' : 'bounced', mutating: false, approval: null,
+        });
+        if (exhausted) {
+          // Loud, and over. Nothing was written and the transcript says so in
+          // the harness's own words rather than leaving an absence to interpret.
+          const text = `The agent submitted ${unexplained.writes.join(', ')} ${MAX_UNEXPLAINED_BOUNCES} times without ever `
+            + 'saying what it was changing or why. Nothing was sent to the instance and nothing reached the approval '
+            + 'gate. Ask again, naming the record you want changed.';
+          log.error('gate', `abandoned the turn — ${MAX_UNEXPLAINED_BOUNCES} unexplained writes in a row`);
+          appendMessage(sessionId, { role: 'assistant', text });
+          emit({ type: 'assistant_text', text });
+          emit({ type: 'mutation_bounced', writes: unexplained.writes, attempt: unexplainedBounces, abandoned: true });
+          emitMutationReport({ sessionId, turnSeq, emit });
+          emit({ type: 'done' });
+          return;
+        }
+        log.warn('gate', `bounced ${unexplained.writes.length} unexplained write(s) `
+          + `(${unexplainedBounces}/${MAX_UNEXPLAINED_BOUNCES}) — the turn has said nothing to the user`);
+        const note =
+          'SYSTEM: that write was NOT submitted, and the user saw nothing. You called '
+          + `${unexplained.writes.join(', ')} without a single line of explanation, so the approval card would have `
+          + `shown a payload and no reason for it. The user has NOT told you which record they mean — this `
+          + `conversation has ${unexplained.candidates.length} candidates in front of them `
+          + `(${unexplained.candidates.join(', ')}) and you picked one silently. Do not choose for them: name the `
+          + 'candidates, ask which one, and call NO tool this turn. If you genuinely believe the target is settled, '
+          + 'say in one line WHICH record you are changing and why that one, and call the tool again in that same '
+          + 'response — the approval card IS the confirmation, so do not ask permission in prose.';
+        appendMessage(sessionId, { role: 'user', text: note });
+        emit({ type: 'mutation_bounced', writes: unexplained.writes, attempt: unexplainedBounces });
+        continuations.push(CONTINUATION_REASONS.UNEXPLAINED_MUTATION);
+        continue;
       }
 
       const results = [];

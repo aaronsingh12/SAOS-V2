@@ -46,6 +46,7 @@ _setSettingsForTests({
 const { _setChatTurnForTests } = await import('../src/agent/providers/index.js');
 const {
   runTurn, resolveApproval, assertContinuationsAccountFor, CONTINUATION_REASONS,
+  detectUnexplainedMutation, ambiguousTarget, MAX_UNEXPLAINED_BOUNCES,
 } = await import('../src/agent/orchestrator.js');
 const { loadHistory, loadToolEvents } = await import('../src/memory/sessions.js');
 
@@ -337,6 +338,219 @@ test('the hold can be turned off, and then the write takes the normal path', asy
       agent: { autoApprove: false, holdMutationsOnQuestion: true },
     });
   }
+});
+
+/* ------------------------------------------------------------------ *
+ * M3 — an unexplained mutation on an AMBIGUOUS target
+ *      (measured live on the PDI, 2026-08-24, rounds 1-4)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Put two candidate records on screen the way turn 1 of the live run did, so
+ * the ambiguity the guard keys on is real rather than asserted.
+ */
+async function withTwoCandidatesOnScreen(sid) {
+  scriptProvider({
+    text: 'Two incidents match: INC0010054 (5b242c5783b6cf50b939cc65eeaad31e) '
+      + 'and INC0010055 (3324289783b6cf50b939cc65eeaad335), both 1 - Critical.',
+  });
+  await runTurn(sid, 'show me the NOWFORGE-WI2 incidents', () => {});
+}
+
+test('M3 — a silent write while TWO candidates are on screen is bounced, not gated', async () => {
+  /*
+   * The live shape, verbatim: session 79f36d98 message seq 7 was
+   * `assistant text=0ch calls=1 [update_record]` on one of two candidate
+   * incidents. Neither the ask-XOR-act guard nor the A6 fence could see it —
+   * both classify prose, and there was none.
+   */
+  const sid = newSession();
+  await withTwoCandidatesOnScreen(sid);
+
+  const seen = scriptProvider(
+    { toolCalls: [call('update_record', { table: 'incident', sys_id: '3324289783b6cf50b939cc65eeaad335', data: { priority: '4' } })] },
+    { text: 'I found INC0010054 and INC0010055. Which one did you mean?' },
+  );
+  const events = [];
+  await runTurn(sid, 'acha ek kaam karo priority ko change karke LOW kardo.', (e) => events.push(e));
+  const of = (t) => events.filter((e) => e.type === t);
+
+  assert.equal(of('approval_required').length, 0, 'an unexplained write on an ambiguous target reached the gate');
+  assert.equal(seen.length, 2, 'the bounce is one call, and only one');
+  assert.equal(of('mutation_bounced').length, 1);
+  assert.deepEqual(of('mutation_bounced')[0].writes, ['update_record']);
+
+  const guards = loadToolEvents(sid).filter((g) => g.kind === 'guard');
+  const bounce = guards.find((g) => g.name === 'unexplained_mutation');
+  assert.ok(bounce, 'the bounce left no record');
+  assert.equal(bounce.result_status, 'bounced');
+
+  // The bounce names the candidates — the fact the model did not act on.
+  const note = loadHistory(sid).findLast((m) => m.role === 'user' && String(m.text).startsWith('SYSTEM:'));
+  assert.match(note.text, /was NOT submitted/);
+  assert.match(note.text, /INC0010054/);
+  assert.match(note.text, /INC0010055/);
+  assert.match(note.text, /name the candidates, ask which one, and call NO tool/);
+
+  // And the second completion's question ends the turn, as it should.
+  assert.equal(of('awaiting_user').length, 1);
+});
+
+test('THE ONE THAT COST A LIVE ROUND — the user named the record, so no bounce', async () => {
+  /*
+   * Live round 4, turn 3. The user answered "the child one — INC0010055" and the
+   * model went straight to the write with no prose. An earlier version of this
+   * guard demanded narration anyway: three bounces, turn abandoned, user got
+   * nothing — and the model was right not to explain. The user had just chosen.
+   *
+   * The defect was never silence. It was silence while CHOOSING.
+   */
+  const sid = newSession();
+  await withTwoCandidatesOnScreen(sid);
+
+  const seen = scriptProvider(
+    { toolCalls: [call('update_record', { table: 'incident', sys_id: '3324289783b6cf50b939cc65eeaad335', data: { priority: '4' } })] },
+    { text: 'Rejected — nothing changed.' },
+  );
+  const events = [];
+  await runTurn(sid, 'the child one — INC0010055', autoDecide(sid, events, false));
+
+  assert.equal(events.filter((e) => e.type === 'mutation_bounced').length, 0,
+    'the user chose the record and was still made to wait for an essay');
+  assert.equal(events.filter((e) => e.type === 'approval_required').length, 1,
+    'the answered turn produced no approval card');
+  assert.equal(seen.length, 2);
+});
+
+test('nothing on screen to confuse: a bare write goes straight to the gate', async () => {
+  // The ordinary case, and by far the common one. No candidates, no bounce.
+  const seen = scriptProvider(
+    { toolCalls: [call('update_record', { table: 'incident', sys_id: 'abc', data: { priority: '4' } })] },
+    { text: 'Rejected.' },
+  );
+  const events = [];
+  const sid = newSession();
+  await runTurn(sid, 'set it to low', autoDecide(sid, events, false));
+  assert.equal(events.filter((e) => e.type === 'mutation_bounced').length, 0);
+  assert.equal(events.filter((e) => e.type === 'approval_required').length, 1);
+  assert.equal(seen.length, 2);
+});
+
+test('M3 bounces AGAIN while the turn is still silent — measured, round 3', async () => {
+  /*
+   * Live round 3 is why this is not once-per-turn. The model was bounced at
+   * message seq 7, read a schema at seq 9 (still no prose), then submitted a
+   * second bare write at seq 11 — which a once-flag sent straight to the gate.
+   * The guard's condition is "this turn is choosing silently", and that
+   * condition was still true.
+   */
+  const sid = newSession();
+  await withTwoCandidatesOnScreen(sid);
+
+  const write = { toolCalls: [call('update_record', { table: 'incident', sys_id: '3324289783b6cf50b939cc65eeaad335', data: { priority: '4' } })] };
+  scriptProvider(write, { toolCalls: [call('list_instance_facts', {})] }, write, { text: 'Which of the two did you mean?' });
+  const events = [];
+  await runTurn(sid, 'change the priority to low', (e) => events.push(e));
+
+  assert.equal(events.filter((e) => e.type === 'mutation_bounced').length, 2, 'the second bare write was not bounced');
+  assert.equal(events.filter((e) => e.type === 'approval_required').length, 0, 'a silent choosing turn still reached the gate');
+  assert.deepEqual(events.filter((e) => e.type === 'mutation_bounced').map((e) => e.attempt), [1, 2]);
+});
+
+test('M3 is BOUNDED — three refusals end the turn loudly, and say so', async () => {
+  // Bounded, or a stubborn model spends the whole iteration budget arguing.
+  const sid = newSession();
+  await withTwoCandidatesOnScreen(sid);
+
+  const write = { toolCalls: [call('update_record', { table: 'incident', sys_id: '3324289783b6cf50b939cc65eeaad335', data: { priority: '4' } })] };
+  const seen = scriptProvider(write, write, write, { text: 'never asked for' });
+  const events = [];
+  await runTurn(sid, 'change the priority to low', (e) => events.push(e));
+
+  assert.equal(seen.length, MAX_UNEXPLAINED_BOUNCES, 'the turn kept going past the cap');
+  assert.equal(events.filter((e) => e.type === 'approval_required').length, 0);
+  const last = events.filter((e) => e.type === 'mutation_bounced').at(-1);
+  assert.equal(last.abandoned, true);
+  assert.equal(last.attempt, MAX_UNEXPLAINED_BOUNCES);
+  // The transcript says what happened, in the harness's words. An absence is
+  // not a report.
+  assert.ok(events.some((e) => e.type === 'assistant_text' && /without ever saying what it was changing/.test(e.text)));
+  assert.equal(loadToolEvents(sid).filter((g) => g.result_status === 'abandoned').length, 1);
+  assert.equal(events.filter((e) => e.type === 'done').length, 1);
+});
+
+test('a write the turn DID explain is untouched', async () => {
+  const sid = newSession();
+  await withTwoCandidatesOnScreen(sid);
+  const seen = scriptProvider(
+    { text: 'Setting INC0010055 to priority 4 — it is the child of the pair.', toolCalls: [call('update_record', { table: 'incident', sys_id: 'abc', data: { priority: '4' } })] },
+    { text: 'Rejected.' },
+  );
+  const events = [];
+  await runTurn(sid, 'set the child to low', autoDecide(sid, events, false));
+  assert.equal(events.filter((e) => e.type === 'mutation_bounced').length, 0, 'an explained write was bounced');
+  assert.equal(events.filter((e) => e.type === 'approval_required').length, 1);
+  assert.equal(seen.length, 2);
+});
+
+test('prose EARLIER in the turn counts — the guard is about the turn, not the completion', async () => {
+  // The model narrates, reads, then writes without repeating itself. That is
+  // normal and must not cost a round trip.
+  const sid = newSession();
+  await withTwoCandidatesOnScreen(sid);
+  const seen = scriptProvider(
+    { text: 'Let me check the facts first, then set the child to Low.', toolCalls: [call('list_instance_facts', {})] },
+    { toolCalls: [call('update_record', { table: 'incident', sys_id: 'abc', data: { priority: '4' } })] },
+    { text: 'Rejected.' },
+  );
+  const events = [];
+  await runTurn(sid, 'set the child to low', autoDecide(sid, events, false));
+  assert.equal(events.filter((e) => e.type === 'mutation_bounced').length, 0);
+  assert.equal(events.filter((e) => e.type === 'approval_required').length, 1);
+  assert.equal(seen.length, 3);
+});
+
+test('a bare READ is not a bounce — only writes choose records', async () => {
+  const sid = newSession();
+  await withTwoCandidatesOnScreen(sid);
+  scriptProvider({ toolCalls: [call('list_instance_facts', {})] }, { text: 'None recorded.' });
+  const events = [];
+  await runTurn(sid, 'what facts do we have?', (e) => events.push(e));
+  assert.equal(events.filter((e) => e.type === 'mutation_bounced').length, 0);
+  assert.equal(events.filter((e) => e.type === 'tool_result').length, 1);
+});
+
+test('ambiguousTarget: the user naming a record settles it, whatever is on screen', () => {
+  const onScreen = [{ role: 'assistant', text: 'INC0010054 and INC0010055 both match.' }];
+  assert.equal(ambiguousTarget({ userText: 'set INC0010055 to low', history: onScreen }), null);
+  assert.equal(ambiguousTarget({ userText: 'set 3324289783b6cf50b939cc65eeaad335 to low', history: onScreen }), null);
+  assert.deepEqual(ambiguousTarget({ userText: 'set it to low', history: onScreen }).candidates,
+    ['INC0010054', 'INC0010055']);
+  // One candidate is not a choice.
+  assert.equal(ambiguousTarget({ userText: 'set it to low', history: [{ role: 'assistant', text: 'INC0010055 matches.' }] }), null);
+  assert.equal(ambiguousTarget({ userText: 'set it to low', history: [] }), null);
+});
+
+test('ambiguousTarget forgets: a record named long ago is not a live candidate', () => {
+  const old = [{ role: 'assistant', text: 'INC0010054 and INC0010055.' }];
+  const filler = Array.from({ length: 9 }, (_, i) => ({ role: 'assistant', text: `step ${i}` }));
+  assert.ok(ambiguousTarget({ userText: 'set it to low', history: old }));
+  assert.equal(ambiguousTarget({ userText: 'set it to low', history: [...old, ...filler] }), null);
+});
+
+test('the classifier itself: ambiguity, prose, and writes', () => {
+  const isMutating = (n) => n === 'update_record';
+  const ambiguity = { candidates: ['INC0010054', 'INC0010055'] };
+  const bare = { assistantText: '', toolCalls: [{ id: 'a', name: 'update_record' }], turnHasProse: false, isMutating, ambiguity };
+  assert.deepEqual(detectUnexplainedMutation(bare).writes, ['update_record']);
+  assert.deepEqual(detectUnexplainedMutation(bare).candidates, ambiguity.candidates);
+  // Whitespace is not an explanation — the same rule the rest of the loop uses.
+  assert.ok(detectUnexplainedMutation({ ...bare, assistantText: '  \n ' }));
+  assert.equal(detectUnexplainedMutation({ ...bare, assistantText: 'Setting it now.' }), null);
+  assert.equal(detectUnexplainedMutation({ ...bare, turnHasProse: true }), null);
+  assert.equal(detectUnexplainedMutation({ ...bare, toolCalls: [{ id: 'a', name: 'query_records' }] }), null);
+  // No ambiguity is the common case, and it never fires.
+  assert.equal(detectUnexplainedMutation({ ...bare, ambiguity: null }), null);
 });
 
 test.after(() => {

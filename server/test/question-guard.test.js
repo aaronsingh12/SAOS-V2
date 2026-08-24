@@ -14,6 +14,8 @@ import {
   detectClarifyingQuestion,
   detectStalledTurn,
   isAskingTheUser,
+  isPermissionOnly,
+  candidateTargets,
   CLARIFICATION_MARKERS,
 } from '../src/agent/orchestrator.js';
 
@@ -31,16 +33,48 @@ test('a question plus a mutation holds the mutation', () => {
   assert.match(r.asked, /Would you like me to/i);
 });
 
-test('every phrasing that means "I am asking you" is caught', () => {
+test('every phrasing that asks the user to CHOOSE holds the write', () => {
   for (const text of [
-    'Shall I create it now?',
-    'Do you want me to proceed with the Network group?',
     'Should I use the existing category?',
     'Which one of these did you mean?',
     'Please confirm the assignment group before I continue.',
     'Let me know which group to use.',
+    // A choice dressed as an offer. No card can collect this answer.
+    'Do you want me to use the Network group or Service Desk?',
   ]) {
     assert.ok(detectQuestionWithMutation({ assistantText: text, toolCalls: calls('create_record'), isMutating }), `missed: ${text}`);
+  }
+});
+
+test('a question the GATE answers does not hold the write', () => {
+  /*
+   * MEASURED live 2026-08-24. The model wrote "I will update INC0010055 and set
+   * its priority to Low. Please confirm you'd like me to apply this change." and
+   * called the tool. Withholding that is a livelock: the user gets "withheld
+   * pending your answer" plus a question whose only answer is "yes, go ahead" —
+   * which is exactly what the approval card in front of them collects.
+   */
+  for (const text of [
+    "I will set INC0010055 to Low. Please confirm you'd like me to apply this change.",
+    'Shall I create it now?',
+    'Do you want me to proceed with the Network group?',
+    'Setting it to Low — okay to proceed?',
+  ]) {
+    assert.equal(detectQuestionWithMutation({ assistantText: text, toolCalls: calls('create_record'), isMutating }), null,
+      `held a question the gate answers: ${text}`);
+    assert.ok(isPermissionOnly(text), `not recognised as permission-only: ${text}`);
+  }
+});
+
+test('permission phrasing does not launder a question that needs a fact', () => {
+  // All three conditions have to hold. Each of these carries a permission
+  // phrase AND something no card can answer.
+  for (const text of [
+    'Shall I proceed with INC0010054 or INC0010055?',
+    'Shall I proceed — and which urgency should I use?',
+  ]) {
+    assert.equal(isPermissionOnly(text), false, `laundered: ${text}`);
+    assert.ok(detectQuestionWithMutation({ assistantText: text, toolCalls: calls('update_record'), isMutating }));
   }
 });
 
@@ -60,7 +94,7 @@ test('a mutation with no question proceeds', () => {
 
 test('only the mutating calls are held, and they are named', () => {
   const r = detectQuestionWithMutation({
-    assistantText: 'Shall I proceed?',
+    assistantText: 'Which of these did you mean?',
     toolCalls: calls('query_records', 'create_record', 'update_record'), isMutating,
   });
   assert.deepEqual(r.held, ['create_record', 'update_record']);
@@ -192,6 +226,27 @@ test('sys_ids count as candidate targets too', () => {
     assistantText: 'Two matches: 49b1d0538336cf50b939cc65eeaad3b7 and 8f1c40538336cf50b939cc65eeaad3c2. Let me know.',
   });
   assert.equal(r?.reason, 'multiple-candidate-targets');
+});
+
+test('one record named twice is ONE candidate, not two', () => {
+  /*
+   * MEASURED live 2026-08-24, as a false positive in this guard. The model
+   * wrote "I will update **INC0010055** (sys_id 3324289783b6cf50b939cc65eeaad335)
+   * and set its priority to Low" — one record, named precisely — and counting
+   * identifiers instead of records fenced A6 off a turn doing exactly what the
+   * system prompt asks for.
+   */
+  const one = 'I will update INC0010055 (sys_id 3324289783b6cf50b939cc65eeaad335) and set its priority to Low.';
+  assert.deepEqual(candidateTargets(one), ['INC0010055']);
+  assert.equal(detectClarifyingQuestion({ assistantText: one + ' Please confirm.' }), null);
+
+  // Two records, each named twice, is still two.
+  const two = 'INC0010054 (5b242c5783b6cf50b939cc65eeaad31e) and INC0010055 (3324289783b6cf50b939cc65eeaad335). Let me know.';
+  assert.equal(candidateTargets(two).length, 2);
+  assert.equal(detectClarifyingQuestion({ assistantText: two })?.reason, 'multiple-candidate-targets');
+
+  // Sys_ids alone still count when no numbers are quoted.
+  assert.equal(candidateTargets('49b1d0538336cf50b939cc65eeaad3b7 and 8f1c40538336cf50b939cc65eeaad3c2').length, 2);
 });
 
 test('the fence is checked BEFORE A6, so the ambiguous turn is never nudged', () => {
