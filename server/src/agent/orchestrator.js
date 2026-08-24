@@ -5,7 +5,7 @@ import { chatTurn, providerInfo } from './providers/index.js';
 import { RETRY_ATTEMPTS } from './providers/retry.js';
 import { log, ms, shortId } from '../logging.js';
 import { TOOLS, toolMap } from './tools.js';
-import { buildSystemPrompt } from './prompts.js';
+import { buildSystemPrompt, iterationBudgetNotice } from './prompts.js';
 import { getSettings } from '../config/store.js';
 import {
   createSession,
@@ -398,10 +398,20 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
        * ones the model can no longer see in its own history.
        */
       const ledgerSoFar = mutatingCallCount > 0 ? mutationsForTurn(sessionId, turnSeq) : [];
+      /*
+       * F12 — the one number the model could never see.
+       *
+       * Recomputed here every iteration and empty until the last three calls,
+       * so it costs nothing on a normal turn. It is measured into the budget
+       * below as well as sent, because a block that is in the request but not
+       * in the estimate is how a budget quietly stops describing the request.
+       */
+      const iterationNotice = iterationBudgetNotice(MAX_ITERATIONS - i);
       const provisionalSystem = buildSystemPrompt({
         sessionId,
         digestNote: buildDigestNote(sessionId),
         mutationDigest: ledgerDigestForModel(ledgerSoFar),
+        iterationNotice,
       });
       const budgets = await computeBudget({ system: provisionalSystem, tools: TOOLS, maxTokens: MAX_OUTPUT_TOKENS });
       if (i === 0) {
@@ -446,6 +456,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         sessionId,
         digestNote: buildDigestNote(sessionId),
         mutationDigest: ledgerDigestForModel(ledgerSoFar),
+        iterationNotice,
       });
       const requestTokens = budgets.fixed + estimateTokens(history);
       log.debug('llm', `request ~${requestTokens} tokens (fixed ${budgets.fixed}, history budget ${budgets.budget})`);
