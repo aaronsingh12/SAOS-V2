@@ -500,20 +500,27 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
          *
          * ONE row per failed call, and never load-bearing: a diagnostic that
          * can sink the turn it is diagnosing is worse than no diagnostic.
+         *
+         * F13 widened it. The adapter now attaches the same shape to an HTTP
+         * failure that never produced a completion at all, under its own name,
+         * so a 500 and an empty 200 land here identically but stay countable
+         * apart. The adapter names the row; the default is F4's, because that
+         * is the path that does not name one.
          */
         if (err.guardDump) {
+          const guard = err.guard || { name: 'f4_empty_completion', status: 'empty-completion' };
           try {
             recordToolEvent(sessionId, {
               kind: 'guard',
-              name: 'f4_empty_completion',
+              name: guard.name,
               payload: { iteration: i + 1, ...err.guardDump },
               result: err.message,
-              resultStatus: 'empty-completion',
+              resultStatus: guard.status,
               mutating: false,
               approval: null,
             });
           } catch (logErr) {
-            log.warn('agent', `could not persist the empty-completion dump: ${logErr.message}`);
+            log.warn('agent', `could not persist the ${guard.name} dump: ${logErr.message}`);
           }
         }
         throw err;
