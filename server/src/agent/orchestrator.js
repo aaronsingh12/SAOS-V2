@@ -442,6 +442,49 @@ export function proseOnly(text) {
     .replace(/`[^`\n]*`/g, ' ');
 }
 
+/**
+ * The opening of what the user was actually shown, for a log line and an event.
+ *
+ * Collapsed and bounded on purpose: this rides in `tool_events.payload` on
+ * every quiet turn end, and a payload that can grow to a whole completion turns
+ * telemetry into a second copy of the transcript.
+ */
+export const PROSE_HEAD_CHARS = 120;
+
+export function proseHead(text, limit = PROSE_HEAD_CHARS) {
+  const flat = proseOnly(text).replace(/\s+/g, ' ').trim();
+  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+}
+
+/**
+ * Did the turn announce work, or report a fact?
+ *
+ * A LABEL ON TELEMETRY, AND NOTHING ELSE. It gates no behaviour, holds no
+ * write and changes no turn — which is the whole reason it is allowed to exist
+ * this sprint. A6's nudge was built on a guess about the model and asserted
+ * something false to it; the rule here is that a guess may describe a row and
+ * may not decide one.
+ *
+ * The distinction matters because `stalled_turn_ended` fires on EVERY quiet
+ * turn end, which is what makes it a usable denominator — "Beth Anglin." is a
+ * complete answer and belongs in the population as an answer, not as a stall.
+ * Without the label a future reader counting these rows would count both as
+ * the same thing and badly overstate the rate.
+ */
+const DECLARES_INTENT = new RegExp([
+  String.raw`\bi(?:'|’)?ll\b`,
+  String.raw`\bi will\b`,
+  String.raw`\bi(?:'|’)?m (?:going to|about to)\b`,
+  String.raw`\bi am (?:going to|about to)\b`,
+  String.raw`\blet me (?:create|update|add|set|build|configure|deploy|make|go)\b`,
+  String.raw`\bgoing to (?:create|update|add|set|build|configure|deploy)\b`,
+  String.raw`\bproceeding to\b`,
+].join('|'), 'i');
+
+export function stallIntent(text) {
+  return DECLARES_INTENT.test(proseOnly(text)) ? 'declarative' : 'informational';
+}
+
 /** The last line a reader actually sees — where a question to them lands. */
 export function lastProseLine(text) {
   const lines = proseOnly(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -1102,6 +1145,41 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           // completion that called nothing (WI-2).
           continuations.push(CONTINUATION_REASONS.A6_STALL_NUDGE);
           continue;
+        }
+        /*
+         * FOLLOW-UP WI-2 — TELEMETRY, NOT A GUARD.
+         *
+         * The turn is about to end on prose that asks the user nothing and
+         * changed nothing. Some of those are fine — "there is no such field on
+         * this table" is a complete answer. Some are the A6 failure in a
+         * phrasing A6's patterns do not match: declarative intent with no tool
+         * call, where the model announces work it then does not do, and the
+         * stream closes looking exactly like success.
+         *
+         * A6 is still here and still nudges what it recognises (this fires only
+         * when it did not), and rebuilding a wider nudge on a guess is how the
+         * 2026-08-24 defect happened: A6's nudge asserted "You already have
+         * what you need", which was false. So this sprint measures instead.
+         * `stalled_turn_ended` is the population a successor would have to
+         * serve; whether one is ever written is a decision for the rate this
+         * event shows, and the rule for making it is written down in
+         * docs/incidents/2026-08-24-ask-act.md.
+         *
+         * `mutatingCallCount === 0` is what keeps it meaningful. A turn that
+         * created a record and signed off with "Created INC0010060." is not a
+         * stall, and counting it would drown the signal in every successful
+         * turn in the session.
+         */
+        if (assistantText && mutatingCallCount === 0 && !isAskingTheUser(assistantText)) {
+          const head = proseHead(assistantText);
+          const intent = stallIntent(assistantText);
+          log.info('agent', `turn ended having asked nothing and changed nothing (${intent}) — "${head}"`);
+          recordToolEvent(sessionId, {
+            kind: 'guard', name: 'stalled_turn_ended',
+            payload: { head, intent, nudgedEarlier: stallNudged },
+            resultStatus: intent, mutating: false, approval: null,
+          });
+          emit({ type: 'stalled_turn_ended', head, intent, nudgedEarlier: stallNudged });
         }
         // Reconcile before 'done': the per-call sweeps were keyed on ids the
         // tools reported, and a composite builder or an SDK install produces

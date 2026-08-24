@@ -47,8 +47,10 @@ const { _setChatTurnForTests } = await import('../src/agent/providers/index.js')
 const {
   runTurn, resolveApproval, assertContinuationsAccountFor, CONTINUATION_REASONS,
   detectUnexplainedMutation, ambiguousTarget, MAX_UNEXPLAINED_BOUNCES,
+  proseHead, PROSE_HEAD_CHARS, stallIntent,
 } = await import('../src/agent/orchestrator.js');
 const { loadHistory, loadToolEvents } = await import('../src/memory/sessions.js');
+const { toolMap } = await import('../src/agent/tools.js');
 
 /* ------------------------------------------------------------------ *
  * Harness
@@ -551,6 +553,155 @@ test('the classifier itself: ambiguity, prose, and writes', () => {
   assert.equal(detectUnexplainedMutation({ ...bare, toolCalls: [{ id: 'a', name: 'query_records' }] }), null);
   // No ambiguity is the common case, and it never fires.
   assert.equal(detectUnexplainedMutation({ ...bare, ambiguity: null }), null);
+});
+
+/* ------------------------------------------------------------------ *
+ * FOLLOW-UP WI-2 — stall telemetry, deferred to data
+ *
+ * A6 still nudges what its patterns recognise. This records what it does NOT,
+ * so a decision about a successor can be made from a rate rather than from a
+ * guess — the guess is what produced A6's nudge, which asserted "You already
+ * have what you need" at a model that did not.
+ * ------------------------------------------------------------------ */
+
+test('DECLARATIVE INTENT — the turn ends, and the harness records that it did', async () => {
+  /*
+   * The class this event exists for: the model announces work, calls nothing,
+   * and the stream closes looking exactly like success. A6's ASKS_TO_PROCEED
+   * does not match it — "I will now create" has an adverb where the pattern
+   * wants a verb — so nothing else in the loop sees this turn at all.
+   *
+   * The BEHAVIOUR is the recorded decision: the turn ends. No nudge is
+   * rebuilt this sprint.
+   */
+  const r = await run(
+    'create an incident for the badge reader outage',
+    { text: 'I will now create the incident for the badge reader outage and assign it to Service Desk.' },
+  );
+
+  assert.equal(r.providerCalls, 1, 'the turn was continued rather than ended');
+  assert.equal(r.of('nudged').length, 0, 'a nudge was rebuilt — this sprint measures instead');
+  assert.equal(r.of('approval_required').length, 0);
+  assert.equal(r.of('done').length, 1);
+
+  const ev = r.of('stalled_turn_ended');
+  assert.equal(ev.length, 1, 'the quiet turn end was not recorded');
+  assert.match(ev[0].head, /^I will now create the incident/);
+  assert.equal(ev[0].intent, 'declarative', 'the class this event exists for was not labelled as such');
+  assert.equal(ev[0].nudgedEarlier, false);
+
+  const guard = r.guards().find((g) => g.name === 'stalled_turn_ended');
+  assert.ok(guard, 'nothing durable was written — a rate cannot be read off the SSE stream');
+  // The status IS the label, so `SELECT result_status, COUNT(*) … GROUP BY 1`
+  // answers the question this sprint deferred, without parsing any payloads.
+  assert.equal(guard.result_status, 'declarative');
+  assert.equal(guard.payload.head, ev[0].head);
+  assert.equal(guard.payload.intent, 'declarative');
+});
+
+test('a turn that ASKED is not a stall — it is waiting, and says so already', async () => {
+  const r = await run(
+    'set the priority to low',
+    { text: 'Which of the two incidents did you mean?' },
+  );
+  assert.equal(r.of('stalled_turn_ended').length, 0, 'a question was counted as a stall');
+  assert.equal(r.of('awaiting_user').length, 1, 'the existing signal stopped firing');
+});
+
+test('a turn that CHANGED something is not a stall, however it signs off', async () => {
+  /*
+   * Without this the event fires on every successful turn in the session and
+   * the rate it exists to measure is unreadable.
+   *
+   * A local mutating tool, registered through the registry's own export, so the
+   * approved path runs end to end without reaching an instance. The real tools
+   * all call ServiceNow; the property under test is the loop's, not theirs.
+   */
+  toolMap.set('test_local_write', {
+    name: 'test_local_write', mutating: true, execute: async () => ({ ok: true }),
+  });
+  try {
+    const seen = scriptProvider(
+      { text: 'Setting it now.', toolCalls: [call('test_local_write', {})] },
+      { text: 'Done — the record is updated.' },
+    );
+    const events = [];
+    const sid = newSession();
+    await runTurn(sid, 'update the record', autoDecide(sid, events, true));
+    assert.equal(events.filter((e) => e.type === 'stalled_turn_ended').length, 0,
+      'a turn that mutated was counted as a stall');
+    assert.equal(seen.length, 2);
+  } finally {
+    toolMap.delete('test_local_write');
+  }
+});
+
+test('a REJECTED write leaves the turn changed-nothing, and the sign-off is recorded', async () => {
+  /*
+   * Deliberately the opposite assertion to the one above, and both are right:
+   * the gate refused, so the turn changed nothing, and prose claiming otherwise
+   * is exactly the population this event exists to size.
+   */
+  const seen = scriptProvider(
+    { text: 'Setting INC0010055 to Low.', toolCalls: [call('update_record', { table: 'incident', sys_id: 'abc', data: { priority: '4' } })] },
+    { text: 'Done — INC0010055 is updated.' },
+  );
+  const events = [];
+  const sid = newSession();
+  await runTurn(sid, 'set INC0010055 to low', autoDecide(sid, events, false));
+  const ev = events.filter((e) => e.type === 'stalled_turn_ended');
+  assert.equal(ev.length, 1);
+  assert.equal(seen.length, 2);
+});
+
+test('a plain ANSWER is in the population, labelled as an answer', async () => {
+  /*
+   * The event fires on every quiet turn end, because a rate needs a
+   * denominator — but "Beth Anglin." is a complete answer, and a reader
+   * counting stalls must not count it as one. The label carries that; nothing
+   * is gated on it.
+   */
+  const r = await run('who is INC0010052 assigned to?', { text: 'Beth Anglin.' });
+  const ev = r.of('stalled_turn_ended');
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].intent, 'informational');
+  assert.equal(r.guards().find((g) => g.name === 'stalled_turn_ended').result_status, 'informational');
+});
+
+test('the intent label is a description, never a decision', () => {
+  assert.equal(stallIntent('I will now create the incident.'), 'declarative');
+  assert.equal(stallIntent("I'll go ahead and add the variable."), 'declarative');
+  assert.equal(stallIntent('Let me create the UI policy.'), 'declarative');
+  assert.equal(stallIntent("I'm going to update the record."), 'declarative');
+  assert.equal(stallIntent('Beth Anglin.'), 'informational');
+  assert.equal(stallIntent('The priority was recomputed to 1 - Critical.'), 'informational');
+  assert.equal(stallIntent('There is no such field on this table.'), 'informational');
+  // Code is not prose here either.
+  assert.equal(stallIntent('```js\n// I will create it\n```\nNo such field.'), 'informational');
+});
+
+test('a stall that SURVIVED the nudge is recorded, and says it was nudged', async () => {
+  // A6 fires, the model still does nothing. That is the most interesting row
+  // in the whole population: the nudge was spent and bought nothing.
+  const r = await run(
+    'create the UI policy',
+    { text: 'I have the sys_ids and the choice value. Shall I create this UI Policy now?' },
+    { text: 'I will create the UI Policy on the instance shortly.' },
+  );
+  assert.equal(r.of('nudged').length, 1);
+  const ev = r.of('stalled_turn_ended');
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].nudgedEarlier, true, 'the row cannot say whether the nudge was already spent');
+});
+
+test('the head is bounded and collapsed — telemetry is not a second transcript', () => {
+  assert.equal(proseHead('a\n\n   b   c'), 'a b c');
+  const long = 'x'.repeat(400);
+  assert.equal(proseHead(long).length, PROSE_HEAD_CHARS + 1, 'the ellipsis is the only thing past the bound');
+  assert.ok(proseHead(long).endsWith('…'));
+  // Fenced code is not prose here either, by the same rule as the classifier.
+  assert.equal(proseHead('```js\nconst x = 1;\n```\nDone.'), 'Done.');
+  assert.equal(proseHead(''), '');
 });
 
 test.after(() => {
