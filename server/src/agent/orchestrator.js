@@ -86,16 +86,63 @@ const KNOWN_SOURCES = new Set(Object.values(APPROVAL_SOURCES));
  * That limit is real and is written down in docs/incidents/2026-08-24-ask-act.md
  * rather than papered over with a value this code cannot actually verify.
  */
-export function resolveApproval(sessionId, approvalId, approved, source = APPROVAL_SOURCES.UNKNOWN) {
-  const resolver = live.get(sessionId)?.pending.get(approvalId);
-  if (!resolver) return false;
-  live.get(sessionId).pending.delete(approvalId);
-  resolver({
+export function resolveApproval(sessionId, approvalId, approved, source = APPROVAL_SOURCES.UNKNOWN, nonce = null) {
+  const state = live.get(sessionId);
+  const pending = state?.pending.get(approvalId);
+  if (!pending) return { ok: false, reason: 'no-such-approval' };
+
+  /*
+   * FOLLOW-UP WI-3 — the approval must come from the card that asked for it.
+   *
+   * Before this, `POST /api/agent/approve` accepted any local POST that knew an
+   * approvalId, and the id travels in the SSE stream. `user_click` therefore
+   * meant no more than "what that endpoint is for". The nonce is minted here,
+   * goes out once with the card, and comes back or the decision is refused.
+   *
+   * A mismatch LEAVES THE APPROVAL PENDING. Consuming it would let one wrong
+   * POST cancel a mutation the user was about to authorise, which converts a
+   * spoofing guard into a denial-of-service on the gate — the pending record
+   * survives to be approved correctly afterwards, and the test says so.
+   *
+   * `timingSafeEqual` because a comparison that returns early on the first
+   * wrong byte is a comparison that can be probed one byte at a time. The
+   * length check precedes it: the primitive throws on unequal lengths, which
+   * would be a leak of its own.
+   */
+  if (!nonceMatches(pending.nonce, nonce)) {
+    log.error('gate',
+      `REFUSED an approval for ${approvalId}: the request carried ${nonce ? 'a different token' : 'no token'}. `
+      + 'The approval is still pending.');
+    try {
+      recordToolEvent(sessionId, {
+        kind: 'guard', name: 'approve_token_mismatch',
+        payload: { approvalId, presented: nonce ? 'mismatched' : 'absent', approved: Boolean(approved) },
+        resultStatus: 'refused', mutating: false, approval: null,
+      });
+    } catch (err) { log.warn('gate', `could not record the token mismatch: ${err.message}`); }
+    // Straight into the transcript when a turn is live: a refused approval the
+    // user cannot see is the shape this whole class of defect keeps taking.
+    try { state.emit?.({ type: 'approve_token_mismatch', approvalId, presented: nonce ? 'mismatched' : 'absent' }); }
+    catch { /* the stream is gone; the durable row is the record */ }
+    return { ok: false, reason: 'token-mismatch' };
+  }
+
+  state.pending.delete(approvalId);
+  pending.resolve({
     approved: Boolean(approved),
     source: KNOWN_SOURCES.has(source) ? source : APPROVAL_SOURCES.UNKNOWN,
     at: new Date().toISOString(),
   });
-  return true;
+  return { ok: true };
+}
+
+/** Constant-time, and length-checked first because the primitive throws otherwise. */
+function nonceMatches(expected, presented) {
+  if (typeof expected !== 'string' || typeof presented !== 'string') return false;
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(presented, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 /**
@@ -275,15 +322,18 @@ export async function executeTool(tool, input, approval, provenance = null) {
  * it as one would put a refusal in the audit trail that no person is
  * responsible for.
  */
-function awaitApproval(state, approvalId) {
+function awaitApproval(state, approvalId, nonce) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       state.pending.delete(approvalId);
       resolve({ approved: false, source: 'timeout', at: new Date().toISOString() });
     }, APPROVAL_TIMEOUT_MS);
-    state.pending.set(approvalId, (decision) => {
-      clearTimeout(timer);
-      resolve(decision);
+    state.pending.set(approvalId, {
+      nonce,
+      resolve: (decision) => {
+        clearTimeout(timer);
+        resolve(decision);
+      },
     });
   });
 }
@@ -823,6 +873,11 @@ export function assertContinuationsAccountFor(iteration, reasons) {
  */
 export async function runTurn(sessionId, userText, emit, { retry = false } = {}) {
   const state = liveState(sessionId);
+  // WI-3 — so `resolveApproval`, which runs on the approve REQUEST rather than
+  // in this turn, can put a refused approval into the transcript the user is
+  // actually looking at. Cleared in the `finally` below: a stale emit would
+  // write into a closed response for the rest of the process's life.
+  state.emit = emit;
   const { agent } = getSettings();
 
   if (!loadSessionRow(sessionId)) createSession({ id: sessionId });
@@ -1401,12 +1456,16 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         let approvedAt = null;
         if (tool.mutating && !agent.autoApprove) {
           const approvalId = crypto.randomUUID();
+          // WI-3 — minted here, sent once with the card, required back. 32 bytes
+          // from the CSPRNG: an approval token that can be guessed is the same
+          // hole as no token, worn differently.
+          const nonce = crypto.randomBytes(32).toString('base64url');
           emit({
-            type: 'approval_required', approvalId, name: call.name, input: call.input,
+            type: 'approval_required', approvalId, nonce, name: call.name, input: call.input,
             warning: planWarning?.message || null,
           });
           log.warn('gate', `approval required: ${call.name} — waiting for the user`);
-          const decision = await awaitApproval(state, approvalId);
+          const decision = await awaitApproval(state, approvalId, nonce);
           approval = decision.approved ? 'approved' : 'rejected';
           approvedSource = decision.source;
           approvedAt = decision.at;
@@ -1644,5 +1703,6 @@ ${JSON.stringify({ businessRuleAbort: playbook }, null, 1)}` : '');
     // session's rows look contested, and the guard would stop capturing
     // anything at all.
     closeCaptureWindow(sessionId);
+    if (state.emit === emit) state.emit = null;
   }
 }

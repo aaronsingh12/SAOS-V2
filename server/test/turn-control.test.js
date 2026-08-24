@@ -110,8 +110,10 @@ function autoDecide(sessionId, events, approved) {
     events.push(e);
     if (e.type === 'approval_required') {
       setImmediate(() => {
-        const ok = resolveApproval(sessionId, e.approvalId, approved);
-        if (!ok) throw new Error(`the gate never registered approval ${e.approvalId}`);
+        // WI-3 — the card presents the token it was given. A helper that
+        // skipped it would make every test here a token-mismatch test.
+        const r = resolveApproval(sessionId, e.approvalId, approved, undefined, e.nonce);
+        if (!r?.ok) throw new Error(`the gate refused approval ${e.approvalId}: ${r?.reason}`);
       });
     }
   };

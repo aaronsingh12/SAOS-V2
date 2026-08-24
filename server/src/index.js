@@ -54,6 +54,31 @@ process.on('uncaughtException', (err) => { log.error('process', 'uncaught except
 
 const PORT = Number(process.env.PORT) || 4000;
 
+/*
+ * WI-3 — THE LISTENER BINDS LOOPBACK, AND SAYS SO IF IT CANNOT.
+ *
+ * This process holds a ServiceNow admin password, and `POST /api/agent/approve`
+ * authorises writes to a live instance. It has no authentication of any kind —
+ * that is a deliberate, documented property of a local dev tool, and it is only
+ * defensible while the socket is unreachable from anywhere else. `app.listen(PORT)`
+ * binds 0.0.0.0, which on a laptop on a conference network is the whole app,
+ * admin credentials included, offered to the LAN.
+ *
+ * `HOST` exists so that someone who genuinely means to expose it has to say so
+ * out loud. Anything but a loopback address fails at boot rather than starting
+ * and hoping — the alternative is a server that is only as safe as the network
+ * it happens to be on, with nothing anywhere saying which one that was.
+ */
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
+const HOST = process.env.HOST || '127.0.0.1';
+if (!LOOPBACK.has(HOST)) {
+  log.error('http',
+    `refusing to bind ${HOST}: NowHelpAssist is unauthenticated and holds instance admin credentials, ` +
+    `and its approval endpoint authorises writes to ${getSettings().connection.instanceUrl || 'the bound instance'}. ` +
+    `It may only listen on loopback (${[...LOOPBACK].join(', ')}). Unset HOST, or put a real proxy in front of it.`);
+  process.exit(1);
+}
+
 // Storage comes up before the listener: migrations are idempotent, and a
 // database that cannot open should stop the server rather than fail the first
 // chat turn with something unrecognisable.
@@ -94,10 +119,10 @@ const LISTEN_RETRIES = 10;
 let server = null;
 
 function start(attempt = 1) {
-  server = app.listen(PORT, () => {
+  server = app.listen(PORT, HOST, () => {
     const s = getSettings();
     banner([
-      `NowHelpAssist  ·  http://localhost:${PORT}`,
+      `NowHelpAssist  ·  http://localhost:${PORT}   (bound ${HOST} — loopback only)`,
       `instance   ${s.connection.instanceUrl || '(none bound)'}`,
       `model      ${s.llm.provider} · ${s.llm.model || '(default)'}`,
       `storage    ${DB_PATH}`,

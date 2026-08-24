@@ -202,7 +202,7 @@ test('a decision made at the gate reaches the audit trail with its source', asyn
   await runTurn(session, 'set the priority', (e) => {
     events.push(e);
     if (e.type === 'approval_required') {
-      setImmediate(() => resolveApproval(session, e.approvalId, false, APPROVAL_SOURCES.USER_CLICK));
+      setImmediate(() => resolveApproval(session, e.approvalId, false, APPROVAL_SOURCES.USER_CLICK, e.nonce));
     }
   });
 
@@ -235,7 +235,7 @@ test('a resolver that cannot identify itself is recorded as unknown, and cannot 
   await runTurn(session, 'set the priority', (e) => {
     events.push(e);
     // No source at all, and then a source outside the vocabulary.
-    if (e.type === 'approval_required') setImmediate(() => resolveApproval(session, e.approvalId, false, 'a_cron_job'));
+    if (e.type === 'approval_required') setImmediate(() => resolveApproval(session, e.approvalId, false, 'a_cron_job', e.nonce));
   });
 
   assert.equal(events.find((x) => x.type === 'approval_resolved').source, 'unknown');
@@ -245,6 +245,122 @@ test('a resolver that cannot identify itself is recorded as unknown, and cannot 
   // made, and must never be filed as one somebody did.
   assert.ok(!Object.values(APPROVAL_SOURCES).includes('timeout'));
   _setChatTurnForTests(null);
+});
+
+/* ------------------------------------------------------------------ *
+ * FOLLOW-UP WI-3 — approval origin binding
+ *
+ * Before this, POST /api/agent/approve accepted any local POST that knew an
+ * approvalId — and the id travels in the SSE stream, so `user_click` meant no
+ * more than "what that endpoint is for". The nonce is minted per card, sent
+ * once with it, and required back.
+ * ------------------------------------------------------------------ */
+
+/** Drive one turn that reaches the gate, and decide it however the test wants. */
+async function gateTurn(sessionId, decide) {
+  scriptOnce({
+    text: 'Setting the priority.',
+    toolCalls: [{ id: 'c1', name: 'update_record', input: { table: 'incident', sys_id: 'abc', data: { priority: '4' } } }],
+    stopReason: 'stop',
+  });
+  const events = [];
+  await runTurn(sessionId, 'set the priority', (e) => {
+    events.push(e);
+    if (e.type === 'approval_required') setImmediate(() => decide(e, events));
+  });
+  return events;
+}
+
+test('the card carries a token, and it is not guessable', async () => {
+  const seen = [];
+  await gateTurn('nonce-shape', (e) => {
+    seen.push(e.nonce);
+    resolveApproval('nonce-shape', e.approvalId, false, APPROVAL_SOURCES.USER_CLICK, e.nonce);
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(typeof seen[0], 'string');
+  // 32 bytes, base64url — a token short enough to guess is the same hole as
+  // no token, worn differently.
+  assert.ok(seen[0].length >= 40, `token is only ${seen[0].length} chars`);
+  assert.match(seen[0], /^[A-Za-z0-9_-]+$/);
+});
+
+test('the CORRECT token approves', async () => {
+  const events = await gateTurn('nonce-ok', (e) => {
+    const r = resolveApproval('nonce-ok', e.approvalId, false, APPROVAL_SOURCES.USER_CLICK, e.nonce);
+    assert.deepEqual(r, { ok: true });
+  });
+  const resolved = events.find((x) => x.type === 'approval_resolved');
+  assert.equal(resolved.source, 'user_click');
+  assert.equal(events.filter((x) => x.type === 'approve_token_mismatch').length, 0);
+});
+
+test('an ABSENT token is refused, and the approval SURVIVES to be answered correctly', async () => {
+  /*
+   * The survival half is the point. Consuming the pending record on a bad token
+   * would turn a spoofing guard into a denial of service on the gate: one wrong
+   * POST could cancel a mutation the user was about to authorise.
+   */
+  const events = await gateTurn('nonce-absent', (e) => {
+    const bad = resolveApproval('nonce-absent', e.approvalId, true, APPROVAL_SOURCES.USER_CLICK, undefined);
+    assert.deepEqual(bad, { ok: false, reason: 'token-mismatch' });
+    // Still pending — and answerable.
+    const good = resolveApproval('nonce-absent', e.approvalId, false, APPROVAL_SOURCES.USER_CLICK, e.nonce);
+    assert.deepEqual(good, { ok: true }, 'the refused POST consumed the approval');
+  });
+
+  const resolved = events.filter((x) => x.type === 'approval_resolved');
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].approved, false, 'the tokenless POST decided the outcome anyway');
+
+  const mismatch = events.filter((x) => x.type === 'approve_token_mismatch');
+  assert.equal(mismatch.length, 1, 'the refusal never reached the transcript');
+  assert.equal(mismatch[0].presented, 'absent');
+
+  const guard = loadToolEvents('nonce-absent').find((g) => g.name === 'approve_token_mismatch');
+  assert.ok(guard, 'nothing durable recorded a refused approval');
+  assert.equal(guard.result_status, 'refused');
+  assert.equal(guard.payload.presented, 'absent');
+  assert.equal(guard.payload.approved, true, 'the row does not say what was being attempted');
+});
+
+test('a FOREIGN token is refused — knowing the approvalId is not enough', async () => {
+  // The shape the nonce exists for: the approvalId travels in the SSE stream,
+  // so anything reading it already has the id.
+  const events = await gateTurn('nonce-foreign', (e) => {
+    const bad = resolveApproval('nonce-foreign', e.approvalId, true, APPROVAL_SOURCES.USER_CLICK, 'not-the-token');
+    assert.deepEqual(bad, { ok: false, reason: 'token-mismatch' });
+    resolveApproval('nonce-foreign', e.approvalId, false, APPROVAL_SOURCES.USER_CLICK, e.nonce);
+  });
+  assert.equal(events.filter((x) => x.type === 'approve_token_mismatch')[0].presented, 'mismatched');
+  assert.equal(events.filter((x) => x.type === 'approval_resolved').length, 1);
+});
+
+test("a STALE token — another card's — is refused", async () => {
+  // Two cards in one session must not be interchangeable.
+  const first = [];
+  await gateTurn('nonce-stale-a', (e) => { first.push(e.nonce); resolveApproval('nonce-stale-a', e.approvalId, false, APPROVAL_SOURCES.USER_CLICK, e.nonce); });
+
+  const events = await gateTurn('nonce-stale-b', (e) => {
+    assert.notEqual(e.nonce, first[0], 'two cards were minted the same token');
+    const bad = resolveApproval('nonce-stale-b', e.approvalId, true, APPROVAL_SOURCES.USER_CLICK, first[0]);
+    assert.deepEqual(bad, { ok: false, reason: 'token-mismatch' });
+    resolveApproval('nonce-stale-b', e.approvalId, false, APPROVAL_SOURCES.USER_CLICK, e.nonce);
+  });
+  assert.equal(events.filter((x) => x.type === 'approve_token_mismatch').length, 1);
+});
+
+test('an unknown approvalId is a different refusal from a bad token', async () => {
+  // The client shows different words for these: one means "already answered",
+  // the other means "still pending, try again".
+  const r = resolveApproval('nonce-ok', 'no-such-approval-id', true, APPROVAL_SOURCES.USER_CLICK, 'anything');
+  assert.deepEqual(r, { ok: false, reason: 'no-such-approval' });
+});
+
+test('a token of the wrong LENGTH is refused rather than throwing', () => {
+  // timingSafeEqual throws on unequal lengths; the length check has to come
+  // first, and a throw here would 500 the approve route.
+  assert.doesNotThrow(() => resolveApproval('nonce-ok', 'x', true, APPROVAL_SOURCES.USER_CLICK, 'short'));
 });
 
 test.after(() => {

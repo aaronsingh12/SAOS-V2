@@ -182,21 +182,27 @@ agentRouter.post('/chat', async (req, res) => {
 });
 
 /**
- * POST /api/agent/approve  { sessionId, approvalId, approved }
+ * POST /api/agent/approve  { sessionId, approvalId, approved, nonce }
  *
- * The approval card's two buttons post here and nowhere else, so a decision
- * arriving here is recorded as `user_click` (WI-4). This app is unauthenticated
- * local dev: anything that knows an approvalId can reach this endpoint and would
- * be recorded the same way. That limit is documented in
+ * The approval card's two buttons post here and nowhere else. `nonce` is the
+ * token the server minted for THIS card and sent once, in the
+ * `approval_required` frame; without it the decision is refused and the
+ * approval stays pending (WI-3).
+ *
+ * So `user_click` now means "originated from the rendered card of this
+ * session", which is narrower than it was and still not proof a human clicked:
+ * anything with access to this session's SSE stream sees the token. The
+ * caveat stands with smaller scope, and is written down in
  * docs/incidents/2026-08-24-ask-act.md rather than hidden behind a value this
  * route cannot verify.
  *
- * `ok:false` means the gate was not waiting for this approval — it had already
- * been answered, or it timed out. The client SHOWS that rather than assuming its
- * click landed.
+ * `ok:false` carries a `reason`:
+ *   no-such-approval — already answered, or timed out
+ *   token-mismatch   — wrong or missing nonce; the approval is STILL PENDING
+ * The client shows both rather than assuming its click landed.
  */
 agentRouter.post('/approve', (req, res) => {
-  const { sessionId, approvalId, approved } = req.body || {};
-  const ok = resolveApproval(sessionId, approvalId, approved, APPROVAL_SOURCES.USER_CLICK);
-  res.json({ ok });
+  const { sessionId, approvalId, approved, nonce } = req.body || {};
+  const result = resolveApproval(sessionId, approvalId, approved, APPROVAL_SOURCES.USER_CLICK, nonce);
+  res.json(result);
 });

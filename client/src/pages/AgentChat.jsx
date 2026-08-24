@@ -197,6 +197,9 @@ export default function AgentChat() {
             push({
               kind: 'approval', approvalId: evt.approvalId, name: evt.name, input: evt.input,
               decided: null, warning: evt.warning || null,
+              // WI-3 — the token this card must present to approve. It arrives
+              // once, with the card, and is never re-requested.
+              nonce: evt.nonce || null,
             });
             break;
           case 'approval_resolved':
@@ -266,11 +269,19 @@ export default function AgentChat() {
   const decide = async (m, approved) => {
     patchMsg((x) => x.id === m.id, { sending: approved, failed: null });
     try {
-      const r = await api.post('/agent/approve', { sessionId, approvalId: m.approvalId, approved });
+      const r = await api.post('/agent/approve', {
+        sessionId, approvalId: m.approvalId, approved, nonce: m.nonce,
+      });
       if (!r?.ok) {
+        // WI-3 — the two refusals mean different things and the buttons come
+        // back for only one of them: a token mismatch leaves the approval
+        // PENDING, so this card is still live and can still be answered.
         patchMsg((x) => x.id === m.id, {
           sending: null,
-          failed: 'The gate was no longer waiting for this — it was already answered, or it timed out.',
+          failed: r?.reason === 'token-mismatch'
+            ? 'This card could not prove it came from this session, so the decision was refused. '
+              + 'The approval is still pending — try again.'
+            : 'The gate was no longer waiting for this — it was already answered, or it timed out.',
         });
       }
     } catch (e) {
