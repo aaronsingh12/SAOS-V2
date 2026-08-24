@@ -68,7 +68,27 @@ export function resolveApproval(sessionId, approvalId, approved) {
   return true;
 }
 
-const MAX_ITERATIONS = 15;
+/**
+ * F14 — how many LLM calls one user turn may spend.
+ *
+ * 15 was sized for a conversational turn: read a couple of records, write one,
+ * report. It is not what this agent is asked to do any more. A phase pack —
+ * build the item, its variables, the UI policies, verify each write, save the
+ * sys_ids — is dozens of tool calls by construction, and every `remember_fact`
+ * spends one too, so the turn that is diligent about persisting what it
+ * learned exhausts the budget FASTER than the one that is careless.
+ *
+ * Live 2026-08-24: a phase turn failed on iteration 15 of 15 — the last call
+ * in the budget, with fact-saves having consumed several of the ones before
+ * it. The cap was not a safety margin that turn ran into; it was the turn's
+ * cause of death.
+ *
+ * 30 is the phase-pack size with room to wind down. It is still a bound, and
+ * it is now a bound the model can SEE coming: F12 warns at three calls left,
+ * so a turn that would previously have been cut off mid-work gets told to save
+ * its sys_ids and report instead.
+ */
+export const MAX_ITERATIONS = 30;
 
 /**
  * The completion budget per call. Named because the history budget subtracts

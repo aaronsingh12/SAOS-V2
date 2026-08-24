@@ -39,6 +39,7 @@ const { buildSystemPrompt, iterationBudgetNotice, ITERATION_NOTICE_AT } =
 const { toOpenAiMessages } = await import('../src/agent/providers/openaiCompat.js');
 const { createSession, appendMessage, loadHistory } = await import('../src/memory/sessions.js');
 const { compactIfNeeded, buildDigestNote } = await import('../src/memory/compaction.js');
+const { MAX_ITERATIONS } = await import('../src/agent/orchestrator.js');
 
 const MARKER = 'ITERATION BUDGET';
 
@@ -73,15 +74,16 @@ test('the notice quotes the number that is left, and what to do with it', () => 
 });
 
 test('a 30-call turn is warned at 27, not before and not too late', () => {
-  // The two numbers from F14, tied together: with a cap of 30 the first warned
-  // iteration is i=27, and there are three calls left to act on it.
-  const cap = 30;
+  // The two numbers of this sprint, tied together and read off the loop's own
+  // constant rather than restated: with F14's cap of 30, the first warned
+  // iteration is i=27 and there are three calls left to act on the warning.
+  assert.equal(MAX_ITERATIONS, 30, 'F14 sized the wind-down window against this number');
   const warned = [];
-  for (let i = 0; i < cap; i++) {
-    if (iterationBudgetNotice(remainingAt(cap, i))) warned.push(i);
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    if (iterationBudgetNotice(remainingAt(MAX_ITERATIONS, i))) warned.push(i);
   }
   assert.deepEqual(warned, [27, 28, 29]);
-  assert.match(iterationBudgetNotice(remainingAt(cap, 27)), /only 3 LLM call\(s\)/);
+  assert.match(iterationBudgetNotice(remainingAt(MAX_ITERATIONS, 27)), /only 3 LLM call\(s\)/);
 });
 
 /* ------------------------------------------------------------------ *
