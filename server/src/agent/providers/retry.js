@@ -54,6 +54,28 @@ const BASE_DELAY_MS = 600;
 export const COLD_START_DELAYS_MS = [1_000, 3_000, 6_000];
 export const isColdStart = (err) => /finish reason: load/i.test(err?.message || '');
 
+/**
+ * F11 — a 5xx is an OUTAGE, and the generic curve was sized for a blip.
+ *
+ * Measured live 2026-08-24: three consecutive HTTP 500s from Ollama's cloud
+ * shim, each carrying its own upstream `ref:` id — so three genuinely distinct
+ * failures, not one cached answer replayed — exhausted the whole retry budget
+ * in ~6.6s and killed the turn. 6.6s is not a serious attempt to outlast an
+ * upstream having a bad minute; it is three pokes inside the same blip.
+ *
+ * So a 5xx gets its own budget and its own spacing: five attempts across
+ * [2s, 5s, 12s, 30s], ~49s of waiting, which spans an upstream wobble rather
+ * than sampling one instant of it four times over.
+ *
+ * Deliberately NOT extended to 408 or 429. A 408 already cost the caller the
+ * full request timeout before it failed, and a 429 means the upstream has
+ * asked for less traffic — answering either with a longer, more patient siege
+ * is the wrong reply. Those keep the existing budget and curve.
+ */
+export const SERVER_ERROR_ATTEMPTS = 5;
+export const SERVER_ERROR_DELAYS_MS = [2_000, 5_000, 12_000, 30_000];
+const isServerError = (err) => err?.status >= 500 && err?.status < 600;
+
 /** 408 timeout, 429 rate limit, and anything 5xx. Nothing else. */
 export function isRetryableStatus(status) {
   return status === 408 || status === 429 || (status >= 500 && status < 600);
@@ -68,6 +90,9 @@ export function retryable(err, status) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** ±20%, so a fleet of turns retrying at once does not land in lockstep. */
+const jitter = (ms) => Math.round(ms * (0.8 + Math.random() * 0.4));
+
 /**
  * `beforeRetry(err, attempt)` runs after a retryable failure and before the
  * backoff sleep. It may throw nothing useful — a warm-up that fails is not a
@@ -75,14 +100,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 export async function withRetry(label, fn, { attempts = RETRY_ATTEMPTS, beforeRetry = null } = {}) {
   let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
+  // The budget is not known up front any more: it depends on WHAT failed, and
+  // that is only visible after the first failure (F11).
+  let budget = attempts;
+  let made = 0;
+  for (let attempt = 1; attempt <= budget; attempt++) {
+    made = attempt;
     try {
       const value = await fn(attempt);
-      if (attempt > 1) log.warn('llm', `${label} succeeded on attempt ${attempt}/${attempts}`);
+      if (attempt > 1) log.warn('llm', `${label} succeeded on attempt ${attempt}/${budget}`);
       return value;
     } catch (err) {
       lastError = err;
-      if (!err.retryable || attempt === attempts) break;
+      if (err.retryable && isServerError(err)) budget = Math.max(budget, SERVER_ERROR_ATTEMPTS);
+      if (!err.retryable || attempt === budget) break;
       if (beforeRetry) {
         try {
           await beforeRetry(err, attempt);
@@ -93,19 +124,22 @@ export async function withRetry(label, fn, { attempts = RETRY_ATTEMPTS, beforeRe
           log.warn('llm', `${label} warm-up before attempt ${attempt + 1} failed — retrying anyway`, warmErr.message);
         }
       }
-      // Cold starts get their own schedule; everything else stays exponential
-      // with jitter, so repeated turns do not land in lockstep.
-      const delay = isColdStart(err)
-        ? COLD_START_DELAYS_MS[Math.min(attempt - 1, COLD_START_DELAYS_MS.length - 1)]
+      // Cold starts and 5xx outages each get their own schedule; everything
+      // else stays exponential with jitter, so repeated turns do not land in
+      // lockstep.
+      const pick = (curve) => jitter(curve[Math.min(attempt - 1, curve.length - 1)]);
+      const delay = isColdStart(err) ? COLD_START_DELAYS_MS[Math.min(attempt - 1, COLD_START_DELAYS_MS.length - 1)]
+        : isServerError(err) ? pick(SERVER_ERROR_DELAYS_MS)
         : Math.round(BASE_DELAY_MS * 2 ** (attempt - 1) * (0.75 + Math.random() * 0.5));
-      log.warn('llm', `${label} attempt ${attempt}/${attempts} failed (${err.status || 'network'}) — retrying in ${delay}ms`, err.message);
+      log.warn('llm', `${label} attempt ${attempt}/${budget} failed (${err.status || 'network'}) — retrying in ${delay}ms`, err.message);
       await sleep(delay);
     }
   }
   if (lastError?.retryable) {
     // Say how hard it tried, so "the model is down" is distinguishable from
-    // "the request was wrong" without reading the log.
-    lastError.message = `${lastError.message} (after ${attempts} attempts)`;
+    // "the request was wrong" without reading the log. The count is the one
+    // actually made — a 5xx and a 429 no longer stop in the same place.
+    lastError.message = `${lastError.message} (after ${made} attempts)`;
   }
   throw lastError;
 }
