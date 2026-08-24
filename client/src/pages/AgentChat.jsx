@@ -192,7 +192,12 @@ export default function AgentChat() {
             push({ kind: 'tool', toolId: evt.id, name: evt.name, input: evt.input, mutating: evt.mutating, status: 'running' });
             break;
           case 'approval_required':
-            push({ kind: 'approval', approvalId: evt.approvalId, name: evt.name, input: evt.input, decided: null });
+            // WI-5 — `warning` is the plan-time trap check: what the ledger
+            // already knows about the fields this payload is about to set.
+            push({
+              kind: 'approval', approvalId: evt.approvalId, name: evt.name, input: evt.input,
+              decided: null, warning: evt.warning || null,
+            });
             break;
           case 'approval_resolved':
             // WI-4 — provenance rides along, so the card can say who decided
@@ -641,6 +646,12 @@ export default function AgentChat() {
               return (
                 <div key={m.id} className="approval-card">
                   <div className="title">Approval required — {m.name}</div>
+                  {/* WI-5 — above the payload, because it is about the decision. */}
+                  {m.warning && (
+                    <div style={{ color: 'var(--amber)', fontSize: 12, marginTop: 6 }}>
+                      Heads up — {m.warning}
+                    </div>
+                  )}
                   <pre>{JSON.stringify(m.input, null, 1)}</pre>
                   {m.decided === null || m.decided === undefined ? (
                     m.sending === true || m.sending === false ? (

@@ -27,6 +27,7 @@ import { snapshotBefore, verifyMutation, attachVerification, isFailedWrite } fro
 import { appendMutation, annotateLatestCapture, mutationsForTurn, renderMutationReport, ledgerDigestForModel } from '../memory/ledger.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
 import { businessRuleAbortPlaybook, dataVsConfigNote } from './playbooks.js';
+import { planTimeTrapCheck } from './plan-check.js';
 
 /**
  * The backbone, modeled on Claude Code / opencode:
@@ -1299,6 +1300,22 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           }
         }
 
+        /*
+         * WI-5 — the trap check at PLAN time.
+         *
+         * Runs before the gate, blocks nothing, and exists so a person is not
+         * asked to authorise a write the ledger already knows the platform will
+         * discard. Twice on 2026-08-24 a user approved {"priority":"4"} on an
+         * incident and it stored 1 — the read-back caught it afterwards, but the
+         * approval had already been spent.
+         */
+        let planWarning = null;
+        if (tool.mutating && guardDescriptor) {
+          try { planWarning = planTimeTrapCheck(guardDescriptor); }
+          catch (err) { log.debug?.('gate', `plan-time check failed: ${err.message}`); }
+          if (planWarning) log.warn('gate', `plan-time trap: ${planWarning.message}`);
+        }
+
         // Permission gate — the heart of the platform's safety model.
         let approval = null;
         // WI-4 — the two facts the audit trail could not previously state.
@@ -1306,7 +1323,10 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         let approvedAt = null;
         if (tool.mutating && !agent.autoApprove) {
           const approvalId = crypto.randomUUID();
-          emit({ type: 'approval_required', approvalId, name: call.name, input: call.input });
+          emit({
+            type: 'approval_required', approvalId, name: call.name, input: call.input,
+            warning: planWarning?.message || null,
+          });
           log.warn('gate', `approval required: ${call.name} — waiting for the user`);
           const decision = await awaitApproval(state, approvalId);
           approval = decision.approved ? 'approved' : 'rejected';
@@ -1393,7 +1413,11 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           // — but it must not read as plain success, or the model narrates a
           // write that did not happen. That is the defect, exactly.
           const failedWrite = isFailedWrite(verification);
-          const output = attachVerification(truncate(JSON.stringify(raw ?? null, null, 1)), verification);
+          let output = attachVerification(truncate(JSON.stringify(raw ?? null, null, 1)), verification);
+          // WI-5 — the fact reaches the model's NEXT context, so a re-plan is
+          // informed rather than another guess at the same field.
+          if (planWarning) output += `
+${JSON.stringify(planWarning.note, null, 1)}`;
           results.push({ id: call.id, name: call.name, output, isError: failedWrite });
           // The result is the audit trail's payload, not a nicety: the sys_id
           // of whatever was just created exists here and nowhere else.
