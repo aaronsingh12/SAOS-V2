@@ -15,6 +15,8 @@ import {
   detectStalledTurn,
   isAskingTheUser,
   isPermissionOnly,
+  offersAChoice,
+  needsAFactFromTheUser,
   candidateTargets,
   CLARIFICATION_MARKERS,
 } from '../src/agent/orchestrator.js';
@@ -264,4 +266,94 @@ test('the fence is checked BEFORE A6, so the ambiguous turn is never nudged', ()
     userText: 'make the justification field mandatory when duration is Permanent',
     mutatingCallCount: 0,
   }));
+});
+
+/* ------------------------------------------------------------------ *
+ * FOLLOW-UP WI-4 — the disjunctive-permission boundary
+ *
+ * A permission phrasing wrapped around a CHOICE. The gate can collect a yes;
+ * it cannot collect "which group". Fact-seeking therefore takes precedence
+ * inside the permission branch.
+ * ------------------------------------------------------------------ */
+
+test('THE PIN — "Should I update INC0010052 or INC0010053?" is withheld', () => {
+  // The named fixture. Green before the disjunction rule too, via the
+  // two-candidate condition — pinned here so it stays green whichever of the
+  // two conditions is doing the work.
+  const r = detectQuestionWithMutation({
+    assistantText: 'Should I update INC0010052 or INC0010053?',
+    toolCalls: calls('update_record'), isMutating,
+  });
+  assert.ok(r, 'a disjunction between two records reached the gate');
+  assert.deepEqual(r.held, ['update_record']);
+  assert.equal(isPermissionOnly('Should I update INC0010052 or INC0010053?'), false);
+});
+
+test('a disjunction with NO record numbers is withheld too — this was the red one', () => {
+  /*
+   * The gap the pin above does not cover, because the two-candidate condition
+   * cannot see it: a choice between values rather than between records.
+   * "Shall I proceed" is in the permission list, so before the disjunction rule
+   * every one of these went to the gate carrying a decision the model had made
+   * for the user.
+   */
+  for (const text of [
+    'Shall I proceed with the Network group or Service Desk?',
+    'Should I apply this to the parent or the child?',
+    'Okay to proceed, or would you rather I used Service Desk?',
+  ]) {
+    assert.equal(isPermissionOnly(text), false, `laundered a choice: ${text}`);
+    assert.ok(detectQuestionWithMutation({ assistantText: text, toolCalls: calls('update_record'), isMutating }),
+      `reached the gate: ${text}`);
+  }
+});
+
+test('permission with no choice in it still goes to the gate', () => {
+  // The other half of the boundary. Over-holding here is the livelock the
+  // permission branch exists to prevent.
+  for (const text of [
+    'Shall I proceed with the Network group?',
+    'Shall I create it now?',
+    "I will set INC0010055 to Low. Please confirm you'd like me to apply this change.",
+    'Setting it to Low — okay to proceed?',
+  ]) {
+    assert.ok(isPermissionOnly(text), `over-held: ${text}`);
+    assert.equal(detectQuestionWithMutation({ assistantText: text, toolCalls: calls('update_record'), isMutating }), null);
+  }
+});
+
+test('the disjunction is read off the LAST prose line, not the paragraph', () => {
+  // A model describing the world is not offering a choice, and holding writes
+  // on that would be noise on exactly the turns doing the most work.
+  assert.equal(offersAChoice('Impact will be 1 or 2 depending on category.\nApplying it now.'), null);
+  assert.ok(offersAChoice('Applying it now.\nShall I use Network or Service Desk?'));
+  // Fenced code is not prose here either.
+  assert.equal(offersAChoice('```js\nconst x = a || b;\n```\nDone.'), null);
+});
+
+test('the A6 fence uses the SAME definition — a choice is never nudged', () => {
+  /*
+   * One definition, two guards. Before this they were separately derived: the
+   * permission branch and the fence could have disagreed about what a choice
+   * is, and the fence disagreeing is how 2026-08-24 happened.
+   */
+  const text = 'Shall I proceed with the Network group or Service Desk?';
+  const c = detectClarifyingQuestion({ assistantText: text });
+  assert.ok(c, 'A6 would have nudged a turn that asked the user to choose');
+  assert.equal(c.reason, 'asks-for-a-fact');
+  assert.equal(c.via, 'disjunction');
+  assert.equal(detectStalledTurn({ assistantText: text, userText: 'update the group', mutatingCallCount: 0 }), null);
+
+  // And a genuine stall still reaches A6 — the fence must not swallow it.
+  assert.ok(detectStalledTurn({
+    assistantText: 'Shall I create this UI Policy now?',
+    userText: 'make the justification field mandatory',
+    mutatingCallCount: 0,
+  }));
+});
+
+test('needsAFactFromTheUser says which signal fired', () => {
+  assert.equal(needsAFactFromTheUser('Which incident did you mean?').via, 'marker');
+  assert.equal(needsAFactFromTheUser('Shall I use Network or Service Desk?').via, 'disjunction');
+  assert.equal(needsAFactFromTheUser('Shall I proceed?'), null);
 });

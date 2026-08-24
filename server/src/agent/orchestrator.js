@@ -620,7 +620,9 @@ const ASKS_ONLY_FOR_PERMISSION = new RegExp([
 export function isPermissionOnly(text) {
   const prose = proseOnly(text);
   if (!ASKS_ONLY_FOR_PERMISSION.test(prose)) return false;
-  if (NEEDS_A_FACT_FROM_THE_USER.test(prose)) return false;
+  // WI-4 — fact-seeking takes precedence INSIDE the permission branch, so a
+  // permission phrasing cannot launder a question that needs an answer.
+  if (needsAFactFromTheUser(text)) return false;
   return candidateTargets(prose).length < 2;
 }
 
@@ -696,6 +698,49 @@ const SYS_ID = /\b[0-9a-f]{32}\b/g;
  * candidates means two NUMBERS or two SYS_IDS; a number beside its own sys_id is
  * one record described well.
  */
+/**
+ * FOLLOW-UP WI-4 — a choice offered to the user, whatever the phrasing around it.
+ *
+ * The boundary the permission list could not hold. "Shall I proceed with the
+ * Network group or Service Desk?" matches `shall i proceed` and asks for
+ * nothing the fact-markers name — no "which", no "what value", no two record
+ * numbers — so it read as permission-only and went to the gate carrying a
+ * choice the model had made for the user. The card can collect a yes; it
+ * cannot collect *which group*.
+ *
+ * Read off the LAST PROSE LINE only, which is where a question aimed at the
+ * reader lands. A disjunction earlier in a paragraph is usually the model
+ * describing the world ("impact will be 1 or 2 depending on the category") and
+ * holding a write on that would be noise.
+ *
+ * It over-holds on "Shall I proceed? Impact will be 1 or 2." — one line, one
+ * disjunction, no real choice. That is the intended direction: the default here
+ * is withhold, which costs a round trip, and the other error costs a record.
+ */
+const DISJUNCTION = /\S+\s+\bor\b\s+\S+/i;
+
+export function offersAChoice(text) {
+  const m = lastProseLine(text).match(DISJUNCTION);
+  return m ? m[0].slice(0, 80) : null;
+}
+
+/**
+ * Is the model asking for something only the user can supply?
+ *
+ * ONE definition, used by both guards — the permission branch (which must not
+ * let a choice through to the gate) and the A6 fence (which must not nudge a
+ * turn that asked for one). They were separately derived and could have drifted;
+ * they cannot now.
+ */
+export function needsAFactFromTheUser(text) {
+  const prose = proseOnly(text);
+  const direct = prose.match(NEEDS_A_FACT_FROM_THE_USER);
+  if (direct) return { quote: direct[0], via: 'marker' };
+  const choice = offersAChoice(text);
+  if (choice) return { quote: choice, via: 'disjunction' };
+  return null;
+}
+
 export function candidateTargets(prose) {
   const text = String(prose);
   const numbers = [...new Set(text.match(RECORD_NUMBER) || [])];
@@ -774,8 +819,8 @@ export function detectClarifyingQuestion({ assistantText }) {
   const asking = isAskingTheUser(assistantText);
   if (!asking) return null;
   const prose = proseOnly(assistantText);
-  const fact = prose.match(NEEDS_A_FACT_FROM_THE_USER);
-  if (fact) return { reason: 'asks-for-a-fact', quote: fact[0], asked: asking.asked };
+  const fact = needsAFactFromTheUser(assistantText);
+  if (fact) return { reason: 'asks-for-a-fact', quote: fact.quote, via: fact.via, asked: asking.asked };
   const targets = candidateTargets(prose);
   if (targets.length >= 2) {
     return { reason: 'multiple-candidate-targets', quote: targets.slice(0, 4).join(', '), asked: asking.asked };
