@@ -11,6 +11,7 @@ import {
   createSession,
   getSession as loadSessionRow,
   appendMessage,
+  rewriteMessage,
   loadHistory,
   recordToolEvent,
   latestUserSeq,
@@ -299,28 +300,168 @@ const IS_DIRECTIVE = new RegExp(`\\b(?:${DIRECTIVE_VERBS.join('|')})(?:s|d|es|ed
  * mutating calls are held. Reads proceed, because a turn that asks a question
  * and gathers context while waiting is doing the right thing.
  */
-const ASKS_THE_USER = new RegExp([
-  String.raw`\bwould you like me to\b`,
-  String.raw`\bshall I\b`,
-  String.raw`\bdo you want me to\b`,
-  String.raw`\bshould I\b`,
-  String.raw`\bwhich (?:one|of these)\b`,
-  // The VERB, aimed at the reader - so "a confirmation email" does not hold
-  // a write, while "please confirm the group" does.
-  String.raw`\bplease confirm\b`,
-  String.raw`\bcan you confirm\b`,
-  String.raw`\bconfirm (?:that|whether|if|the|which)\b`,
-  String.raw`\blet me know (?:if|which|whether|what)\b`,
-].join('|'), 'i');
+/**
+ * The clarification markers, in ONE place.
+ *
+ * The first four are the sprint's named baseline. The rest were already carried
+ * by this guard's original regex and are kept because each answers a measured
+ * miss — narrowing to the baseline would throw measured coverage away to satisfy
+ * a list written before those measurements existed.
+ *
+ * Matched with word boundaries, never as substrings: "should i" appears inside
+ * "should include", and a guard that holds a write on that is a guard people
+ * turn off.
+ */
+export const CLARIFICATION_MARKERS = Object.freeze([
+  'let me know',
+  'which one',
+  'please confirm',
+  'should i',
+  'would you like me to',
+  'shall i',
+  'do you want me to',
+  'can you confirm',
+  'did you mean',
+  'which of these',
+  // The VERB, aimed at the reader — so "a confirmation email" does not hold a
+  // write, while "please confirm the group" does.
+  'confirm (?:that|whether|if|the|which)',
+]);
 
+const MARKER_RE = new RegExp(CLARIFICATION_MARKERS.map((m) => `\\b${m}\\b`).join('|'), 'i');
+
+/**
+ * WI-3 — classify PROSE, never code.
+ *
+ * A `?` is punctuation in English and syntax in every language this agent
+ * writes: `foo?.bar`, a ternary, a shell prompt, a regex. A guard that reads a
+ * fenced Fluent snippet as a question to the user would withhold writes on the
+ * turns that are doing the most work.
+ *
+ * Inline spans are stripped for the same reason and by the same rule — a `?`
+ * inside backticks is code wherever it appears. Stripping them cannot hide a
+ * real question, because the question mark that ends a sentence aimed at a
+ * person is not inside backticks.
+ */
+export function proseOnly(text) {
+  return String(text || '')
+    // Fenced blocks, including one the completion was cut off inside.
+    .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+    .replace(/~~~[\s\S]*?(?:~~~|$)/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ');
+}
+
+/** The last line a reader actually sees — where a question to them lands. */
+export function lastProseLine(text) {
+  const lines = proseOnly(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : '';
+}
+
+/**
+ * Is this response ASKING the user something?
+ *
+ * Two signals, either sufficient: the final prose line ends in a question mark,
+ * or the prose carries one of the clarification markers. The first catches a
+ * question phrased in a way no marker list anticipates, which is the failure
+ * mode a marker list always has.
+ */
+export function isAskingTheUser(text) {
+  const prose = proseOnly(text);
+  if (!prose.trim()) return null;
+  const marker = prose.match(MARKER_RE);
+  if (marker) return { asked: marker[0], via: 'marker' };
+  const last = lastProseLine(text);
+  if (last.endsWith('?')) return { asked: last.slice(-160), via: 'question-mark' };
+  return null;
+}
+
+/**
+ * WI-8/WI-3 — a completion that both ASKS and ACTS.
+ *
+ * In the original transcript the model was believed to have emitted a question
+ * and mutation calls in one completion. WI-1 later proved that particular
+ * incident was the OTHER mechanism (the A6 nudge re-invoking the provider), but
+ * this guard stays and is widened anyway: both shapes end with the user being
+ * asked to decide something already decided for them, and holding a write costs
+ * one round trip while executing the wrong one costs a record.
+ *
+ * Deliberately narrow in what it HOLDS: only mutating calls, judged by the tool
+ * registry's own `mutating` flag — the same source of truth the approval gate
+ * uses, so the two can never disagree about what a write is. Reads proceed,
+ * because a turn that asks a question and gathers context while waiting is
+ * doing the right thing.
+ */
 export function detectQuestionWithMutation({ assistantText, toolCalls = [], isMutating = () => false, enabled = true }) {
   if (!enabled) return null;
-  const text = String(assistantText || '');
-  if (!text.trim()) return null;
-  if (!ASKS_THE_USER.test(text)) return null;
-  const held = (toolCalls || []).filter((c) => isMutating(c.name)).map((c) => c.name);
+  const asking = isAskingTheUser(assistantText);
+  if (!asking) return null;
+  const held = (toolCalls || []).filter((c) => isMutating(c.name));
   if (!held.length) return null;
-  return { asked: text.match(ASKS_THE_USER)[0], held };
+  return {
+    asked: asking.asked,
+    via: asking.via,
+    held: held.map((c) => c.name),
+    // The payloads are DISCARDED, not queued — so this is the only record of
+    // what was about to be written. It goes to the structured log verbatim.
+    discarded: held.map((c) => ({ id: c.id, name: c.name, input: c.input ?? {} })),
+    allowed: (toolCalls || []).filter((c) => !isMutating(c.name)),
+  };
+}
+
+/**
+ * The A6 FENCE (WI-2).
+ *
+ * A6 nudges a turn that asked for PERMISSION and did nothing. It must never
+ * nudge a turn that asked for a FACT, because the harness cannot supply one —
+ * and the nudge asserts "You already have what you need", which is false
+ * exactly then. That is the 2026-08-24 defect: the model asked which of two
+ * incidents to change, A6 matched "let me know", told it to proceed, and it
+ * picked one. See docs/incidents/2026-08-24-ask-act.md.
+ *
+ * Two signals, both grounded in that incident:
+ *
+ *  - the prose asks for a value, a name or a choice — something only the user
+ *    can answer;
+ *  - the prose names two or more candidate TARGETS. When the model puts
+ *    INC0010052 and INC0010053 in front of the user and asks anything at all,
+ *    the target is ambiguous by construction, whatever the phrasing. This
+ *    catches the question no marker list would have.
+ *
+ * Precedence is deliberate: a text that both clarifies and asks permission is
+ * treated as clarifying. Ending the turn costs one round trip with the user;
+ * continuing is what wrote to the wrong record.
+ */
+const NEEDS_A_FACT_FROM_THE_USER = new RegExp([
+  String.raw`\bwhich\b`,
+  String.raw`\bdid you mean\b`,
+  String.raw`\bwho (?:is|are|should|do you|would you)\b`,
+  String.raw`\bwhat (?:is|are|should|value|name|number|group|table|field|category|priority|do you|would you)\b`,
+  String.raw`\bcan you (?:tell me|give me|provide|share)\b`,
+  String.raw`\b(?:tell|give) me the\b`,
+].join('|'), 'i');
+
+/** INC0010052, CHG0031234, RITM0001234 — the id a human reads off a card. */
+const RECORD_NUMBER = /\b[A-Z]{2,6}\d{6,}\b/g;
+const SYS_ID = /\b[0-9a-f]{32}\b/g;
+
+export function candidateTargets(prose) {
+  const found = new Set();
+  for (const m of String(prose).match(RECORD_NUMBER) || []) found.add(m);
+  for (const m of String(prose).match(SYS_ID) || []) found.add(m);
+  return [...found];
+}
+
+export function detectClarifyingQuestion({ assistantText }) {
+  const asking = isAskingTheUser(assistantText);
+  if (!asking) return null;
+  const prose = proseOnly(assistantText);
+  const fact = prose.match(NEEDS_A_FACT_FROM_THE_USER);
+  if (fact) return { reason: 'asks-for-a-fact', quote: fact[0], asked: asking.asked };
+  const targets = candidateTargets(prose);
+  if (targets.length >= 2) {
+    return { reason: 'multiple-candidate-targets', quote: targets.slice(0, 4).join(', '), asked: asking.asked };
+  }
+  return null;
 }
 
 export function detectStalledTurn({ assistantText, userText, mutatingCallCount = 0 }) {
@@ -336,8 +477,61 @@ export function detectStalledTurn({ assistantText, userText, mutatingCallCount =
   if (!text.trim()) return null;
   if (!ASKS_TO_PROCEED.test(text)) return null;
   if (!IS_DIRECTIVE.test(String(userText || ''))) return null;
+  // THE FENCE. A6's own comment claimed a genuine clarifying question could not
+  // reach it "because it does not ask for permission to proceed". That was
+  // wrong, and 2026-08-24 is the bill: "let me know" is in ASKS_TO_PROCEED
+  // because a stalled flow design ended with it, and it is also how a person
+  // asks which of two records you meant. The two are separated here rather than
+  // by trying to make one pattern list carry both meanings.
+  const clarifying = detectClarifyingQuestion({ assistantText: text });
+  if (clarifying) return null;
   const asked = text.match(ASKS_TO_PROCEED)[0];
   return { asked };
+}
+
+/* ------------------------------------------------------------------ *
+ * WI-2 — THE TURN-END INVARIANT
+ *
+ * An assistant response containing zero tool calls ENDS THE TURN. The only
+ * legal reasons to call the provider again inside one user turn are tool
+ * results to feed back, and the single measured exception below.
+ *
+ * A6 is that exception, and it is kept rather than removed: it answers a
+ * failure measured twice in three runs, and deleting a measured guard to
+ * satisfy an invariant written before the measurement existed would trade a
+ * loud defect for a quiet one. It is FENCED instead (above), so it can no
+ * longer fire on a question only the user can answer.
+ *
+ * What makes this mechanical rather than "correct because the statements are
+ * in this order": the loop must have RECORDED a sanctioned continuation for
+ * every iteration past the first, and it checks that before each provider
+ * call. A future edit that adds a `continue` without naming its reason does
+ * not quietly re-open 2026-08-24 — it throws on the next iteration.
+ * ------------------------------------------------------------------ */
+export const CONTINUATION_REASONS = Object.freeze({
+  TOOL_RESULTS: 'tool_results',
+  A6_STALL_NUDGE: 'a6_stall_nudge',
+});
+const LEGAL_CONTINUATIONS = new Set(Object.values(CONTINUATION_REASONS));
+
+export function assertContinuationsAccountFor(iteration, reasons) {
+  if (iteration === 0) return;
+  const unknown = reasons.filter((r) => !LEGAL_CONTINUATIONS.has(r));
+  if (unknown.length) {
+    throw Object.assign(
+      new Error(`Refusing to call the provider again: unrecognised turn continuation "${unknown[0]}".`),
+      { status: 500, detail: { iteration, reasons, legal: [...LEGAL_CONTINUATIONS] } },
+    );
+  }
+  if (reasons.length < iteration) {
+    throw Object.assign(
+      new Error(
+        `Refusing to call the provider for iteration ${iteration + 1} of this turn: only ${reasons.length} `
+        + 'sanctioned continuation(s) were recorded. A response with no tool calls ends the turn.',
+      ),
+      { status: 500, detail: { iteration, reasons, legal: [...LEGAL_CONTINUATIONS] } },
+    );
+  }
 }
 
 /**
@@ -365,6 +559,11 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
   let stallNudged = false;
   let compactedThisTurn = false;
   let mutatingCallCount = 0;
+  // WI-2 — one entry per SANCTIONED re-invocation of the provider. The loop
+  // cannot reach iteration i without i of these, so a `continue` added later
+  // without naming its reason fails loudly instead of silently re-opening the
+  // ask-and-act defect.
+  const continuations = [];
   // The seq of the user message that opened this turn — the key every ledger
   // row hangs off. On a retry the message is already stored, so the newest one
   // is this turn's.
@@ -484,6 +683,9 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         log.warn('llm', `request ~${requestTokens} tokens is over the ${budgets.ceiling}-token self-imposed cap ` +
           `(model window is ${budgets.modelCtx}); sending anyway — compaction could not fold enough to help.`);
       }
+      // WI-2 — the invariant, checked at the one place it matters: immediately
+      // before the provider is asked to speak again.
+      assertContinuationsAccountFor(i, continuations);
       const callStart = Date.now();
       let res;
       try {
@@ -608,8 +810,31 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
       }
 
       if (!res.toolCalls?.length) {
+        /*
+         * WI-2 — the turn ENDS on a question only the user can answer.
+         *
+         * Checked before A6 on purpose. Both look at the same prose, and on
+         * 2026-08-24 both would have matched it: A6 saw "let me know" and
+         * nudged; this sees that the model was asking which of two incidents to
+         * change. Ending is the safe reading, so ending wins.
+         *
+         * The row is the point as much as the behaviour. `a6_stalled_turn` in
+         * `tool_events` is the whole reason that incident was diagnosable at
+         * all after compaction folded the messages away — so the harness
+         * records the decision it made NOT to continue, under its own name.
+         */
+        const clarifying = detectClarifyingQuestion({ assistantText });
+        if (clarifying) {
+          log.info('gate', `turn ends on a question for the user (${clarifying.reason}: ${clarifying.quote})`);
+          recordToolEvent(sessionId, {
+            kind: 'guard', name: 'turn_ended_on_question',
+            payload: { reason: clarifying.reason, quote: clarifying.quote, asked: clarifying.asked },
+            resultStatus: 'awaiting-user', mutating: false, approval: null,
+          });
+          emit({ type: 'awaiting_user', reason: clarifying.reason, asked: clarifying.asked });
+        }
         // A6. One nudge per turn, carrying the one fact the model is missing.
-        const stalled = !stallNudged && detectStalledTurn({
+        const stalled = !stallNudged && !clarifying && detectStalledTurn({
           assistantText, userText, mutatingCallCount,
         });
         if (stalled) {
@@ -620,13 +845,18 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             `Approval is not requested in prose — it is requested BY calling the tool, which pauses and shows ` +
             `the user an approve/reject card carrying the exact arguments. You already have what you need. ` +
             `Call the tool now with the values you just described. If you are genuinely missing a value, call a ` +
-            `read-only tool to get it instead of asking.`;
+            `read-only tool to get it instead of asking. If the thing you are missing can only come from the ` +
+            `USER — which of several records they meant, a value only they know — call no tool at all: ask the ` +
+            `question on its own and end the turn. Never pick one and write to it.`;
           appendMessage(sessionId, { role: 'user', text: note });
           emit({ type: 'nudged', reason: 'stalled', asked: stalled.asked.trim() });
           recordToolEvent(sessionId, {
             kind: 'guard', name: 'a6_stalled_turn', payload: { asked: stalled.asked.trim() },
             resultStatus: 'nudged', mutating: false, approval: null,
           });
+          // The ONE sanctioned reason to speak to the provider again after a
+          // completion that called nothing (WI-2).
+          continuations.push(CONTINUATION_REASONS.A6_STALL_NUDGE);
           continue;
         }
         // Reconcile before 'done': the per-call sweeps were keyed on ids the
@@ -645,11 +875,24 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
       }
 
       /*
-       * WI-8 — hold mutations that arrived alongside a question.
+       * WI-3 — hold mutations that arrived alongside a question.
        *
        * The question is surfaced and the turn ends; nothing is written. The
        * user answers, and the next turn acts on the answer instead of on an
        * assumption the model made while asking.
+       *
+       * Reads still run. A turn that asks a question and gathers context while
+       * waiting is doing the right thing, and the reads it already chose are
+       * the cheapest way for the next turn to start from facts rather than from
+       * the same guess.
+       *
+       * The withheld calls are DISCARDED, never queued — and discarded from
+       * HISTORY too, not merely skipped. The assistant row was already written
+       * with its tool_calls, and leaving a call in it with no matching tool
+       * result is the exact shape the wire format rejects: it would poison every
+       * later request in the session. So the row is rewritten to carry only what
+       * actually ran. The payloads survive in the structured log below, which is
+       * their only remaining record.
        */
       const asking = detectQuestionWithMutation({
         assistantText,
@@ -657,21 +900,31 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         isMutating: (n) => Boolean(toolMap.get(n)?.mutating),
         enabled: agent.holdMutationsOnQuestion !== false,
       });
+      let endTurnAfterCalls = false;
+      let callsToRun = res.toolCalls;
       if (asking) {
-        log.warn('gate', `held ${asking.held.length} mutation(s) — the same completion asked the user a question`);
-        recordToolEvent(sessionId, {
-          kind: 'guard', name: 'wi8_question_with_mutation',
-          payload: { asked: asking.asked, held: asking.held },
-          resultStatus: 'held', mutating: false, approval: null,
+        endTurnAfterCalls = true;
+        callsToRun = asking.allowed;
+        log.warn('gate', `withheld ${asking.held.length} mutation(s) — the same completion asked the user a question`
+          + ` (${asking.via}: "${asking.asked.trim()}")`);
+        rewriteMessage(sessionId, assistantSeq, {
+          role: 'assistant', text: assistantText, toolCalls: callsToRun,
         });
-        emit({ type: 'mutations_held', asked: asking.asked, held: asking.held });
-        emitMutationReport({ sessionId, turnSeq, emit });
-        emit({ type: 'done' });
-        return;
+        recordToolEvent(sessionId, {
+          kind: 'guard', name: 'withheld_mutation',
+          // The discarded payloads, verbatim. Nothing else keeps them.
+          payload: { asked: asking.asked, via: asking.via, held: asking.held, discarded: asking.discarded },
+          resultStatus: 'withheld', mutating: false, approval: null,
+        });
+        emit({
+          type: 'mutations_held', asked: asking.asked, held: asking.held,
+          text: 'Proposed action withheld pending your answer.',
+          ranAnyway: callsToRun.map((c) => c.name),
+        });
       }
 
       const results = [];
-      for (const call of res.toolCalls) {
+      for (const call of callsToRun) {
         const tool = toolMap.get(call.name);
         if (!tool) {
           results.push({ id: call.id, name: call.name, output: `Unknown tool: ${call.name}`, isError: true });
@@ -911,7 +1164,26 @@ ${JSON.stringify({ businessRuleAbort: playbook }, null, 1)}` : '');
           emit({ type: 'tool_result', id: call.id, name: call.name, output, isError: true });
         }
       }
-      appendMessage(sessionId, { role: 'tool', results });
+      // Only when something ran: an empty `tool` row is a slot the model has to
+      // account for and a shape the wire format has no use for.
+      if (results.length) appendMessage(sessionId, { role: 'tool', results });
+
+      if (endTurnAfterCalls) {
+        // WI-3 — the question was already emitted as assistant_text. Nothing is
+        // fed back and the provider is not called again: the next thing that
+        // speaks is the user.
+        if (mutatingCallCount > 0) {
+          const reconciled = await reconcileTurn({ sessionId, sessionTitle, since: turnCaptureMark });
+          if (reconciled) emit(reconciled);
+        }
+        emitMutationReport({ sessionId, turnSeq, emit });
+        log.info('agent', `turn ends awaiting the user  session=${shortId(sessionId)}  ${ms(turnStart)}`);
+        emit({ type: 'done' });
+        return;
+      }
+      // WI-2 — the other legal reason to speak to the provider again: results
+      // it has not seen.
+      continuations.push(CONTINUATION_REASONS.TOOL_RESULTS);
     }
     const stopped = '(Stopped: maximum agent iterations reached for this turn.)';
     appendMessage(sessionId, { role: 'assistant', text: stopped });

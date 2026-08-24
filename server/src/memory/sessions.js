@@ -113,6 +113,28 @@ export function appendMessage(sessionId, entry) {
   return seq;
 }
 
+/**
+ * Replace one already-stored entry in place (WI-3).
+ *
+ * The narrow reason this exists: when the ask-XOR-act guard withholds a write,
+ * the assistant row carrying that tool call has already been appended. A
+ * `tool_calls` entry with no matching tool result is the one shape the wire
+ * format rejects outright, so leaving it there would not merely be untidy — it
+ * would make every later request in the session fail, which is the defect
+ * `toOpenAiMessages` was written to close. Withheld means withheld: the call
+ * leaves history with it.
+ *
+ * Deliberately not a general-purpose editor. It refuses to touch a row that is
+ * not there, and it does not renumber, move or merge anything.
+ */
+export function rewriteMessage(sessionId, seq, entry) {
+  const db = getDb();
+  const res = db.prepare('UPDATE messages SET role = ?, json = ? WHERE session = ? AND seq = ?')
+    .run(entry.role, JSON.stringify(entry), sessionId, Number(seq));
+  if (res.changes === 0) throw new Error(`No message ${seq} in session ${sessionId} to rewrite.`);
+  return seq;
+}
+
 /** The neutral history, in order — exactly what the orchestrator loop wants. */
 /** The seq of the newest user message — the key a retried turn's ledger hangs off. */
 export function latestUserSeq(sessionId) {

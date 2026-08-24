@@ -9,7 +9,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { detectQuestionWithMutation } from '../src/agent/orchestrator.js';
+import {
+  detectQuestionWithMutation,
+  detectClarifyingQuestion,
+  detectStalledTurn,
+  isAskingTheUser,
+  CLARIFICATION_MARKERS,
+} from '../src/agent/orchestrator.js';
 
 const MUTATORS = new Set(['create_record', 'update_record', 'create_incident']);
 const isMutating = (n) => MUTATORS.has(n);
@@ -79,4 +85,128 @@ test('prose that merely contains "confirm" as a noun is not treated as a questio
     assistantText: 'The flow sends a confirmation email to the requester.',
     toolCalls: calls('create_record'), isMutating,
   }), null);
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-3 — the classifier: prose only, and a question mark counts
+ * ------------------------------------------------------------------ */
+
+test('a question mark on the last prose line is enough — no marker needed', () => {
+  const r = detectQuestionWithMutation({
+    assistantText: 'There are two records here.\nWhat priority did you have in mind for the child?',
+    toolCalls: calls('update_record'), isMutating,
+  });
+  assert.ok(r, 'a plain question with no marker phrase did not hold the write');
+  assert.equal(r.via, 'question-mark');
+});
+
+test('a "?" inside a fenced code block is code, not a question', () => {
+  // The false-positive that would make this guard withhold writes on exactly
+  // the turns doing the most work.
+  const text = 'Storing this condition:\n\n```js\nconst p = rec.priority?.value ?? "4";\n```\n\nApplying it now.';
+  assert.equal(detectQuestionWithMutation({ assistantText: text, toolCalls: calls('update_record'), isMutating }), null);
+  assert.equal(isAskingTheUser(text), null);
+});
+
+test('an unterminated fence still swallows its contents', () => {
+  // A completion cut off mid-block is the shape that reaches here in practice.
+  const text = 'Here is the script:\n\n```js\nif (x?.y) {\n';
+  assert.equal(isAskingTheUser(text), null);
+});
+
+test('an inline code span carrying a "?" is code too', () => {
+  assert.equal(isAskingTheUser('The guard reads `priority?.value` and moves on.'), null);
+});
+
+test('"should include" is not "should I"', () => {
+  // Word boundaries, not substrings: markers are matched as phrases.
+  assert.equal(isAskingTheUser('The payload should include impact and urgency.'), null);
+});
+
+test('the marker list is one exported const, and every entry is live', () => {
+  assert.ok(CLARIFICATION_MARKERS.length >= 4);
+  for (const m of ['let me know', 'which one', 'please confirm', 'should i']) {
+    assert.ok(CLARIFICATION_MARKERS.includes(m), `the named baseline marker "${m}" is missing`);
+  }
+  // Every marker in the list must actually classify, or it is decoration.
+  for (const m of CLARIFICATION_MARKERS) {
+    const sample = m.replace(/\(\?:([^)]*)\)/g, (_, alts) => alts.split('|')[0]);
+    assert.ok(isAskingTheUser(`Before I go on, ${sample} something.`), `marker never fires: ${m}`);
+  }
+});
+
+test('the withheld payloads ride along, because nothing else keeps them', () => {
+  const r = detectQuestionWithMutation({
+    assistantText: 'Which one did you mean?',
+    toolCalls: [
+      { id: 'a', name: 'query_records', input: { table: 'incident' } },
+      { id: 'b', name: 'update_record', input: { table: 'incident', sys_id: 'x', data: { priority: '4' } } },
+    ],
+    isMutating,
+  });
+  assert.deepEqual(r.held, ['update_record']);
+  assert.deepEqual(r.discarded, [{ id: 'b', name: 'update_record', input: { table: 'incident', sys_id: 'x', data: { priority: '4' } } }]);
+  assert.deepEqual(r.allowed.map((c) => c.name), ['query_records'], 'the reads were not kept');
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-2 — the A6 fence
+ * ------------------------------------------------------------------ */
+
+test('the fence catches a question only the user can answer', () => {
+  for (const [text, reason] of [
+    ['Which of the two incidents did you mean?', 'asks-for-a-fact'],
+    ['Did you mean the parent or the child? Let me know.', 'asks-for-a-fact'],
+    ['What value should I use for urgency?', 'asks-for-a-fact'],
+    ['Who should this be assigned to?', 'asks-for-a-fact'],
+    // No interrogative word at all — the two candidate targets are the signal.
+    ['I found INC0010052 and INC0010053. Let me know and I will set the priority.', 'multiple-candidate-targets'],
+  ]) {
+    const r = detectClarifyingQuestion({ assistantText: text });
+    assert.ok(r, `the fence missed: ${text}`);
+    assert.equal(r.reason, reason, text);
+  }
+});
+
+test('the fence does NOT catch a request for permission — A6 must still fire', () => {
+  // Both measured stall texts A6 exists for. Fencing it must not delete it.
+  for (const text of [
+    'I have the variable sys_ids and the choice value. Shall I create this UI Policy now?',
+    "If you're happy with this design, I'll create the flow on the instance. Let me know!",
+    'Would you like me to proceed?',
+  ]) {
+    assert.equal(detectClarifyingQuestion({ assistantText: text }), null, `over-fenced: ${text}`);
+  }
+});
+
+test('naming ONE record is not ambiguity', () => {
+  // A turn that quotes the record it is about to change is doing the right
+  // thing. Two candidates is the signal; one is just precision.
+  assert.equal(detectClarifyingQuestion({
+    assistantText: 'I will set INC0010053 to priority 4. Shall I proceed?',
+  }), null);
+});
+
+test('sys_ids count as candidate targets too', () => {
+  const r = detectClarifyingQuestion({
+    assistantText: 'Two matches: 49b1d0538336cf50b939cc65eeaad3b7 and 8f1c40538336cf50b939cc65eeaad3c2. Let me know.',
+  });
+  assert.equal(r?.reason, 'multiple-candidate-targets');
+});
+
+test('the fence is checked BEFORE A6, so the ambiguous turn is never nudged', () => {
+  // The incident's exact pair: ASKS_TO_PROCEED matches "let me know" and
+  // IS_DIRECTIVE matches "change" — before the fence this nudged.
+  assert.equal(detectStalledTurn({
+    assistantText: 'I found INC0010052 (parent) and INC0010053 (child). Let me know and I will set the priority.',
+    userText: 'acha ek kaam karo pripity ko change karke LOW kardo.',
+    mutatingCallCount: 0,
+  }), null, 'A6 still fires on the turn that caused the incident');
+
+  // And the stall it exists for still reaches it.
+  assert.ok(detectStalledTurn({
+    assistantText: 'Shall I create this UI Policy now?',
+    userText: 'make the justification field mandatory when duration is Permanent',
+    mutatingCallCount: 0,
+  }));
 });

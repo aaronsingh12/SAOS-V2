@@ -204,6 +204,20 @@ export default function AgentChat() {
               status: evt.isError ? 'error' : 'done', output: evt.output, verification: evt.verification || null,
             });
             break;
+          // WI-3 — the completion asked the user something AND called a
+          // mutating tool. The write never reached the gate and was discarded;
+          // silence here would read as the model simply choosing not to act.
+          case 'mutations_held':
+            push({
+              kind: 'system',
+              text: `${evt.text} The agent asked a question ("${String(evt.asked || '').trim()}") in the same breath as `
+                + `${evt.held.join(', ')} — so the write was withheld and discarded. Answer above and it will re-plan.`,
+            });
+            break;
+          // WI-2 — the turn ended on a question only you can answer.
+          case 'awaiting_user':
+            push({ kind: 'system', text: 'Waiting for your answer — nothing was changed on the instance.' });
+            break;
           // WI-3 — a write the harness proved is a no-op never reached the gate.
           case 'tool_blocked':
             push({ kind: 'blocked', name: evt.name, input: evt.input, reason: evt.reason, text: evt.message });

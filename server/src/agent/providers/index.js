@@ -19,8 +19,23 @@ export function providerInfo() {
   };
 }
 
+/**
+ * Test seam, mirroring `_setDbForTests` in memory/db.js.
+ *
+ * The turn-control invariants (WI-2, WI-3) are properties of the LOOP — how
+ * many times it speaks to the provider, and what it does between those calls.
+ * Nothing short of driving `runTurn` against a scripted provider tests them,
+ * and a test that reaches a real model could not assert a call count on a
+ * backend measured to be non-deterministic.
+ *
+ * Null in every non-test process: only the test suite ever calls this.
+ */
+let scripted = null;
+export function _setChatTurnForTests(fn) { scripted = fn; }
+
 /** Full agent turn with tool support. history uses the neutral format (see orchestrator). */
 export async function chatTurn({ system, history, tools, maxTokens, decoding }) {
+  if (scripted) return scripted({ system, history, tools, maxTokens, decoding });
   const { llm } = getSettings();
   if (llm.provider === 'anthropic') {
     if (!llm.apiKey) throw new Error('Anthropic API key not set. Add it in Settings.');

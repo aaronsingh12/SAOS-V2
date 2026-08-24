@@ -58,6 +58,29 @@ export function getSettings() {
 }
 
 /**
+ * Test seam, mirroring `_setDbForTests` in memory/db.js.
+ *
+ * The offline suite has to pin `agent.autoApprove` and `agent.holdMutations-
+ * OnQuestion` to assert what the gate does, and pin `llm.model` to '' so the
+ * context-window probe returns its fallback instead of reaching for a daemon.
+ * Reading the developer's real `settings.json` would make those tests pass or
+ * fail on whatever that file happens to hold, and writing to it to fix that
+ * would be worse.
+ *
+ * Merged over the defaults, never over what is on disk, so a test states its
+ * whole world rather than inheriting half of one.
+ */
+export function _setSettingsForTests(patch) {
+  if (!patch) { cache = null; return null; }
+  cache = {
+    connection: { ...DEFAULTS.connection, ...(patch.connection || {}) },
+    llm: { ...DEFAULTS.llm, ...(patch.llm || {}) },
+    agent: { ...DEFAULTS.agent, ...(patch.agent || {}) },
+  };
+  return cache;
+}
+
+/**
  * Credentials arrive by paste, and pastes bring passengers. A stored password
  * once carried four embedded spaces — a password plus trailing text copied from
  * the same line — which produced nothing but "User is not authenticated" with

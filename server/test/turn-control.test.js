@@ -1,0 +1,345 @@
+/**
+ * WI-2 / WI-3 — turn control: what ends a turn, and what may write inside one.
+ *
+ *   node --test server/test/
+ *
+ * THE DEFECT (docs/incidents/2026-08-24-ask-act.md). The agent rendered a
+ * clarifying question — which of two incidents did you mean, INC0010052 or
+ * INC0010053 — and then, with no user message in between, an approval card for
+ * an update to one of them, which executed.
+ *
+ * WI-1 proved the mechanism from SQLite: the turn's first completion carried
+ * prose and ZERO tool calls, the A6 stall guard matched "let me know", appended
+ * its nudge as a user message and re-invoked the provider, and the second
+ * completion emitted the write. Two completions, ten seconds apart, separated
+ * by a message the harness wrote.
+ *
+ * So these tests are about the LOOP, not about a regex. They drive `runTurn`
+ * against a scripted provider and assert the two things the incident turned on:
+ * how many times the provider is asked to speak, and whether anything reached
+ * the gate. Every one of them is offline — no instance, no model.
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+
+import { _setDbForTests, migrate } from '../src/memory/db.js';
+
+const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nowhelpassist-turn-'));
+_setDbForTests(migrate(new DatabaseSync(path.join(scratchDir, 'test.db'))));
+
+const { _setSettingsForTests } = await import('../src/config/store.js');
+/*
+ * The whole world, stated. `llm.model` is blank on purpose: the context-window
+ * probe returns its fallback without reaching for a daemon, so this file cannot
+ * pass or fail on whether Ollama happens to be running.
+ */
+_setSettingsForTests({
+  connection: { instanceUrl: 'https://offline.invalid', authType: 'basic', username: 'test' },
+  llm: { provider: 'ollama', model: '', baseUrl: '' },
+  agent: { autoApprove: false, holdMutationsOnQuestion: true },
+});
+
+const { _setChatTurnForTests } = await import('../src/agent/providers/index.js');
+const {
+  runTurn, resolveApproval, assertContinuationsAccountFor, CONTINUATION_REASONS,
+} = await import('../src/agent/orchestrator.js');
+const { loadHistory, loadToolEvents } = await import('../src/memory/sessions.js');
+
+/* ------------------------------------------------------------------ *
+ * Harness
+ * ------------------------------------------------------------------ */
+
+/**
+ * A provider that says exactly what it is told to, once each.
+ *
+ * Asking for a completion the script does not have is an ERROR, not a fallback.
+ * That is the assertion this whole file rests on: a loop that re-invokes the
+ * provider when it should have stopped runs off the end of the script and says
+ * so, rather than quietly borrowing the last response.
+ */
+function scriptProvider(...responses) {
+  const seen = [];
+  _setChatTurnForTests(async ({ history }) => {
+    seen.push({ history: history.map((h) => ({ role: h.role, text: h.text || '', calls: (h.toolCalls || []).map((c) => c.name) })) });
+    const next = responses[seen.length - 1];
+    if (!next) throw new Error(`the loop asked for completion ${seen.length}; the script only has ${responses.length}`);
+    return { text: '', toolCalls: [], stopReason: 'stop', ...next };
+  });
+  return seen;
+}
+
+const call = (name, input = {}, id = `c-${name}`) => ({ id, name, input });
+
+let n = 0;
+const newSession = () => `turn-control-${++n}`;
+
+async function run(userText, ...responses) {
+  const seen = scriptProvider(...responses);
+  const sessionId = newSession();
+  const events = [];
+  await runTurn(sessionId, userText, (e) => events.push(e));
+  return {
+    sessionId,
+    providerCalls: seen.length,
+    seen,
+    events,
+    of: (type) => events.filter((e) => e.type === type),
+    guards: () => loadToolEvents(sessionId).filter((e) => e.kind === 'guard'),
+    toolEvents: () => loadToolEvents(sessionId),
+    history: () => loadHistory(sessionId),
+  };
+}
+
+/**
+ * Answer the gate the way a click does — on a LATER tick.
+ *
+ * `approval_required` is emitted before `awaitApproval` registers its resolver,
+ * so resolving inside the emit finds nothing and the turn waits out the full
+ * five-minute timeout. That is the real ordering, not a test artefact: a click
+ * always arrives on a later tick too.
+ */
+function autoDecide(sessionId, events, approved) {
+  return (e) => {
+    events.push(e);
+    if (e.type === 'approval_required') {
+      setImmediate(() => {
+        const ok = resolveApproval(sessionId, e.approvalId, approved);
+        if (!ok) throw new Error(`the gate never registered approval ${e.approvalId}`);
+      });
+    }
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * WI-2 — a response with no tool calls ends the turn
+ * ------------------------------------------------------------------ */
+
+test('a plain answer ends the turn after ONE provider call', async () => {
+  const r = await run('who is INC0010052 assigned to?', { text: 'It is assigned to Beth Anglin.' });
+  assert.equal(r.providerCalls, 1, 'the loop spoke to the provider more than once for a plain answer');
+  assert.equal(r.of('done').length, 1);
+  assert.equal(r.of('approval_required').length, 0);
+  assert.equal(r.of('nudged').length, 0);
+});
+
+test('THE REGRESSION — a clarifying question ends the turn, and nothing reaches the gate', async () => {
+  /*
+   * The incident, reconstructed. The user's message is verbatim; "change" in it
+   * is what IS_DIRECTIVE matched, and "let me know" in the reply is what
+   * ASKS_TO_PROCEED matched. Before the fence, this pair nudged and the second
+   * completion below executed. The script HAS that second completion, so if the
+   * loop continues it will run it and this test will fail on the gate rather
+   * than on a missing response.
+   */
+  const r = await run(
+    'acha ek kaam karo pripity ko change karke LOW kardo.',
+    {
+      text: 'I found two open incidents for this caller: INC0010052 (the parent) and INC0010053 (the child). '
+        + 'Let me know and I will set the priority.',
+    },
+    { toolCalls: [call('update_record', { table: 'incident', sys_id: '49b1d0538336cf50b939cc65eeaad3b7', data: { priority: '4' } })] },
+  );
+
+  assert.equal(r.providerCalls, 1, 'the loop re-invoked the provider after a text-only question — this is the defect');
+  assert.equal(r.of('approval_required').length, 0, 'an approval card was created for a question the user had not answered');
+  assert.equal(r.of('nudged').length, 0, 'A6 fired on a clarifying question');
+  assert.equal(r.of('done').length, 1);
+
+  // The harness records the decision it made NOT to continue. `a6_stalled_turn`
+  // is the row that made the original incident diagnosable after compaction had
+  // folded the messages away; this is its counterpart.
+  const guards = r.guards();
+  assert.equal(guards.filter((g) => g.name === 'a6_stalled_turn').length, 0);
+  const ended = guards.find((g) => g.name === 'turn_ended_on_question');
+  assert.ok(ended, 'the turn ended on a question and left no record of it');
+  assert.equal(ended.result_status, 'awaiting-user');
+  assert.equal(ended.payload.reason, 'multiple-candidate-targets');
+  assert.match(ended.payload.quote, /INC0010052/);
+  assert.match(ended.payload.quote, /INC0010053/);
+  assert.equal(r.of('awaiting_user').length, 1, 'the user was not told the turn is waiting on them');
+});
+
+test('a question that asks for a value ends the turn, by the other signal', async () => {
+  const r = await run(
+    'set the priority to low',
+    { text: 'Which incident did you mean?' },
+    { toolCalls: [call('update_record', { table: 'incident', sys_id: 'x', data: { priority: '4' } })] },
+  );
+  assert.equal(r.providerCalls, 1);
+  assert.equal(r.of('approval_required').length, 0);
+  assert.equal(r.guards().find((g) => g.name === 'turn_ended_on_question').payload.reason, 'asks-for-a-fact');
+});
+
+test('A6 still nudges a genuine stall — the ONE sanctioned continuation', async () => {
+  /*
+   * The failure A6 was written for, measured twice in three runs of the C-4
+   * acceptance: everything resolved, nothing built, "shall I create it?".
+   * Fencing A6 must not delete it — this is the test that says so.
+   */
+  const r = await run(
+    'make the justification field mandatory when duration is Permanent',
+    { text: 'I have the variable sys_ids and the choice value. Shall I create this UI Policy now?' },
+    { text: 'Done — I will call the tool.' },
+  );
+  assert.equal(r.providerCalls, 2, 'A6 stopped nudging; the stalled-turn defect is back');
+  assert.equal(r.of('nudged').length, 1);
+  assert.ok(r.guards().some((g) => g.name === 'a6_stalled_turn'));
+  assert.equal(r.of('awaiting_user').length, 0);
+  // The nudge is a real history row, and it now says what to do when the
+  // missing thing can only come from the user.
+  const nudge = r.history().find((m) => m.role === 'user' && String(m.text).startsWith('SYSTEM:'));
+  assert.ok(nudge, 'the nudge never reached the model');
+  assert.match(nudge.text, /can only come from the\s+USER/);
+  assert.match(nudge.text, /Never pick one and write to it/);
+});
+
+test('the continuation ledger is what permits another provider call', () => {
+  // Iteration 0 needs no permission — it is the turn opening.
+  assert.doesNotThrow(() => assertContinuationsAccountFor(0, []));
+  assert.doesNotThrow(() => assertContinuationsAccountFor(1, [CONTINUATION_REASONS.TOOL_RESULTS]));
+  assert.doesNotThrow(() => assertContinuationsAccountFor(2, [CONTINUATION_REASONS.A6_STALL_NUDGE, CONTINUATION_REASONS.TOOL_RESULTS]));
+
+  // A `continue` added later without recording why it is legal.
+  assert.throws(() => assertContinuationsAccountFor(1, []), /A response with no tool calls ends the turn/);
+  assert.throws(() => assertContinuationsAccountFor(3, [CONTINUATION_REASONS.TOOL_RESULTS]), /only 1 sanctioned continuation/);
+  // A reason nobody sanctioned.
+  assert.throws(() => assertContinuationsAccountFor(1, ['because_it_felt_right']), /unrecognised turn continuation/);
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-3 — ask XOR act
+ * ------------------------------------------------------------------ */
+
+test('(a) asking + a write: the write is withheld, discarded, and the turn ends', async () => {
+  const r = await run(
+    'change the priority to low',
+    {
+      text: 'Please confirm which record you meant.',
+      toolCalls: [call('update_record', { table: 'incident', sys_id: '49b1d0538336cf50b939cc65eeaad3b7', data: { priority: '4' } })],
+    },
+    { text: 'this completion must never be asked for' },
+  );
+
+  assert.equal(r.providerCalls, 1, 'the loop fed a withheld turn back to the provider');
+  assert.equal(r.of('approval_required').length, 0, 'the withheld write reached the gate anyway');
+  assert.equal(r.of('done').length, 1);
+
+  const held = r.of('mutations_held');
+  assert.equal(held.length, 1);
+  assert.deepEqual(held[0].held, ['update_record']);
+  assert.equal(held[0].text, 'Proposed action withheld pending your answer.');
+
+  // The structured event carries the payloads, because nothing else does.
+  const guard = r.guards().find((g) => g.name === 'withheld_mutation');
+  assert.ok(guard, 'no withheld_mutation event was logged');
+  assert.equal(guard.result_status, 'withheld');
+  assert.deepEqual(guard.payload.discarded[0].input.data, { priority: '4' });
+  assert.equal(guard.payload.discarded[0].name, 'update_record');
+
+  /*
+   * Discarded from HISTORY too. A stored assistant row whose tool_calls have no
+   * matching tool result is the one shape the wire format rejects outright — it
+   * would make every later request in this session fail. "Withheld" has to mean
+   * the call left history with it.
+   */
+  const assistantRows = r.history().filter((m) => m.role === 'assistant');
+  assert.equal(assistantRows.length, 1);
+  assert.equal((assistantRows[0].toolCalls || []).length, 0, 'the withheld call was left dangling in history');
+  assert.match(assistantRows[0].text, /Please confirm/);
+  assert.equal(r.history().filter((m) => m.role === 'tool').length, 0, 'an empty tool row was appended');
+});
+
+test('(b) asking + reads only: the reads run, and the question still stands', async () => {
+  const r = await run(
+    'what do we know about this instance?',
+    {
+      text: 'Which kind of fact did you want — traps or decisions?',
+      toolCalls: [call('list_instance_facts', { kind: 'trap' })],
+    },
+    { text: 'There are no traps recorded yet.' },
+  );
+
+  // A turn that asks a question and gathers context while waiting is doing the
+  // right thing: the read runs and its result feeds back.
+  assert.equal(r.providerCalls, 2);
+  assert.equal(r.of('mutations_held').length, 0);
+  const results = r.of('tool_result');
+  assert.equal(results.length, 1);
+  assert.equal(results[0].name, 'list_instance_facts');
+  assert.equal(results[0].isError, false);
+  assert.ok(r.of('assistant_text').some((e) => /Which kind of fact/.test(e.text)));
+});
+
+test('(c) a write with no question takes the normal gate path, untouched', async () => {
+  const seen = scriptProvider(
+    { text: 'Setting the priority now.', toolCalls: [call('update_record', { table: 'incident', sys_id: 'abc', data: { priority: '4' } })] },
+    { text: 'You rejected it, so nothing changed.' },
+  );
+  const sessionId = newSession();
+  const events = [];
+  // Rejected rather than approved: it proves the gate ran without letting a
+  // write off this machine.
+  await runTurn(sessionId, 'set INC0010052 to priority 4', autoDecide(sessionId, events, false));
+
+  assert.equal(seen.length, 2);
+  const asked = events.filter((e) => e.type === 'approval_required');
+  assert.equal(asked.length, 1, 'the ordinary approval flow stopped asking');
+  assert.equal(asked[0].name, 'update_record');
+  assert.equal(events.filter((e) => e.type === 'mutations_held').length, 0);
+  const resolved = events.filter((e) => e.type === 'approval_resolved');
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].approved, false);
+});
+
+test('(d) a question mark inside a fenced code block does not withhold anything', async () => {
+  const seen = scriptProvider(
+    {
+      text: 'Here is the condition I will store:\n\n```js\nconst p = rec.priority?.value ?? "4";\n```\n\nApplying it.',
+      toolCalls: [call('update_record', { table: 'incident', sys_id: 'abc', data: { priority: '4' } })],
+    },
+    { text: 'Rejected — nothing changed.' },
+  );
+  const sessionId = newSession();
+  const events = [];
+  await runTurn(sessionId, 'set the priority', autoDecide(sessionId, events, false));
+
+  assert.equal(events.filter((e) => e.type === 'mutations_held').length, 0,
+    'a `?` inside a fenced block was read as a question to the user');
+  assert.equal(events.filter((e) => e.type === 'approval_required').length, 1);
+  assert.equal(seen.length, 2);
+});
+
+test('the hold can be turned off, and then the write takes the normal path', async () => {
+  _setSettingsForTests({
+    connection: { instanceUrl: 'https://offline.invalid' },
+    llm: { provider: 'ollama', model: '', baseUrl: '' },
+    agent: { autoApprove: false, holdMutationsOnQuestion: false },
+  });
+  try {
+    const seen = scriptProvider(
+      { text: 'Please confirm which record you meant.', toolCalls: [call('update_record', { table: 'incident', sys_id: 'abc', data: { priority: '4' } })] },
+      { text: 'Rejected.' },
+    );
+    const events = [];
+    const sid = newSession();
+    await runTurn(sid, 'change the priority', autoDecide(sid, events, false));
+    assert.equal(events.filter((e) => e.type === 'mutations_held').length, 0);
+    assert.equal(events.filter((e) => e.type === 'approval_required').length, 1);
+    assert.equal(seen.length, 2);
+  } finally {
+    _setSettingsForTests({
+      connection: { instanceUrl: 'https://offline.invalid' },
+      llm: { provider: 'ollama', model: '', baseUrl: '' },
+      agent: { autoApprove: false, holdMutationsOnQuestion: true },
+    });
+  }
+});
+
+test.after(() => {
+  _setChatTurnForTests(null);
+  try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* windows may hold the file */ }
+});
