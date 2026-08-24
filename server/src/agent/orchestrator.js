@@ -5,7 +5,7 @@ import { chatTurn, providerInfo } from './providers/index.js';
 import { RETRY_ATTEMPTS } from './providers/retry.js';
 import { log, ms, shortId } from '../logging.js';
 import { TOOLS, toolMap } from './tools.js';
-import { buildSystemPrompt } from './prompts.js';
+import { buildSystemPrompt, iterationBudgetNotice } from './prompts.js';
 import { getSettings } from '../config/store.js';
 import {
   createSession,
@@ -68,7 +68,27 @@ export function resolveApproval(sessionId, approvalId, approved) {
   return true;
 }
 
-const MAX_ITERATIONS = 15;
+/**
+ * F14 — how many LLM calls one user turn may spend.
+ *
+ * 15 was sized for a conversational turn: read a couple of records, write one,
+ * report. It is not what this agent is asked to do any more. A phase pack —
+ * build the item, its variables, the UI policies, verify each write, save the
+ * sys_ids — is dozens of tool calls by construction, and every `remember_fact`
+ * spends one too, so the turn that is diligent about persisting what it
+ * learned exhausts the budget FASTER than the one that is careless.
+ *
+ * Live 2026-08-24: a phase turn failed on iteration 15 of 15 — the last call
+ * in the budget, with fact-saves having consumed several of the ones before
+ * it. The cap was not a safety margin that turn ran into; it was the turn's
+ * cause of death.
+ *
+ * 30 is the phase-pack size with room to wind down. It is still a bound, and
+ * it is now a bound the model can SEE coming: F12 warns at three calls left,
+ * so a turn that would previously have been cut off mid-work gets told to save
+ * its sys_ids and report instead.
+ */
+export const MAX_ITERATIONS = 30;
 
 /**
  * The completion budget per call. Named because the history budget subtracts
@@ -398,10 +418,20 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
        * ones the model can no longer see in its own history.
        */
       const ledgerSoFar = mutatingCallCount > 0 ? mutationsForTurn(sessionId, turnSeq) : [];
+      /*
+       * F12 — the one number the model could never see.
+       *
+       * Recomputed here every iteration and empty until the last three calls,
+       * so it costs nothing on a normal turn. It is measured into the budget
+       * below as well as sent, because a block that is in the request but not
+       * in the estimate is how a budget quietly stops describing the request.
+       */
+      const iterationNotice = iterationBudgetNotice(MAX_ITERATIONS - i);
       const provisionalSystem = buildSystemPrompt({
         sessionId,
         digestNote: buildDigestNote(sessionId),
         mutationDigest: ledgerDigestForModel(ledgerSoFar),
+        iterationNotice,
       });
       const budgets = await computeBudget({ system: provisionalSystem, tools: TOOLS, maxTokens: MAX_OUTPUT_TOKENS });
       if (i === 0) {
@@ -446,6 +476,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         sessionId,
         digestNote: buildDigestNote(sessionId),
         mutationDigest: ledgerDigestForModel(ledgerSoFar),
+        iterationNotice,
       });
       const requestTokens = budgets.fixed + estimateTokens(history);
       log.debug('llm', `request ~${requestTokens} tokens (fixed ${budgets.fixed}, history budget ${budgets.budget})`);
@@ -489,20 +520,27 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
          *
          * ONE row per failed call, and never load-bearing: a diagnostic that
          * can sink the turn it is diagnosing is worse than no diagnostic.
+         *
+         * F13 widened it. The adapter now attaches the same shape to an HTTP
+         * failure that never produced a completion at all, under its own name,
+         * so a 500 and an empty 200 land here identically but stay countable
+         * apart. The adapter names the row; the default is F4's, because that
+         * is the path that does not name one.
          */
         if (err.guardDump) {
+          const guard = err.guard || { name: 'f4_empty_completion', status: 'empty-completion' };
           try {
             recordToolEvent(sessionId, {
               kind: 'guard',
-              name: 'f4_empty_completion',
+              name: guard.name,
               payload: { iteration: i + 1, ...err.guardDump },
               result: err.message,
-              resultStatus: 'empty-completion',
+              resultStatus: guard.status,
               mutating: false,
               approval: null,
             });
           } catch (logErr) {
-            log.warn('agent', `could not persist the empty-completion dump: ${logErr.message}`);
+            log.warn('agent', `could not persist the ${guard.name} dump: ${logErr.message}`);
           }
         }
         throw err;

@@ -158,6 +158,21 @@ export function describeOutbound(messages) {
 }
 
 /**
+ * The upstream's own incident id, out of whatever it came wrapped in.
+ *
+ * Ollama's cloud shim answers a 500 with `Internal Server Error (ref: <uuid>)`.
+ * That ref is the only handle anyone outside this process has on the failure —
+ * it is what a support thread is opened with — and it was being thrown away
+ * with the rest of the response body. Deliberately not uuid-shaped: the point
+ * is to capture whatever the upstream chose to call it, not to assert a format
+ * it never promised.
+ */
+export function upstreamRefFrom(text) {
+  const m = /\(ref:\s*([^)\s]+)\)/i.exec(String(text || ''));
+  return m ? m[1] : null;
+}
+
+/**
  * Force the model resident before retrying a cold start.
  *
  * A `load` finish reason means the backend spent the request loading the model
@@ -231,7 +246,8 @@ export async function chat({ provider, apiKey, baseUrl, model, system, history, 
 
   const data = await withRetry(
     `${provider} chat`,
-    async () => {
+    // `attempt` so a persisted failure can say how many tries it took (F13).
+    async (attempt) => {
       /*
        * F5 — serialised per attempt, on purpose.
        *
@@ -272,6 +288,38 @@ export async function chat({ provider, apiKey, baseUrl, model, system, history, 
         // A 4xx is our malformed request; retrying it three times only makes a
         // clear bug slower to find.
         if (isRetryableStatus(res.status)) err.retryable = true;
+        /*
+         * F13 — the same evidence F4 keeps for an empty completion, kept for a
+         * failure that never got as far as a completion.
+         *
+         * An empty 200 is dumped and persisted in full; an HTTP 500 produced
+         * one line of stderr and nothing durable. That is backwards — the 500
+         * is the failure that actually killed a turn on 2026-08-24, and the
+         * two questions it raises are exactly the ones F4's dump was built to
+         * answer: was the request we sent degenerate, and does the upstream
+         * agree it was its own fault? `upstreamRef` answers the second: three
+         * DISTINCT refs across three attempts is what proved the upstream was
+         * genuinely failing three times rather than replaying one cached
+         * answer, and it is the only handle a support thread can be opened
+         * with.
+         *
+         * Same shape, same `tool_events` home, different name — a 500 and an
+         * empty completion must stay countable apart.
+         */
+        const outbound = describeOutbound(messages);
+        // Bounded: a raw body is unbounded and this row is written on a
+        // failure path, where a runaway write would be a second incident.
+        const bodyText = JSON.stringify(parsed ?? null).slice(0, 16_384);
+        err.guard = { name: 'f13_http_error', status: `http-${res.status}` };
+        err.guardDump = {
+          status: res.status,
+          upstreamRef: upstreamRefFrom(bodyText) || upstreamRefFrom(err.message),
+          attempts: attempt,
+          roleSequence: messages.map((m) => m.role).join('>'),
+          historyEntries: (history || []).length,
+          estRequestTokens: outbound.estTokens + estimateTextTokens(JSON.stringify(body.tools || [])),
+          body: bodyText,
+        };
         throw err;
       }
       // Parsed INSIDE the retry, so an empty completion gets another attempt.

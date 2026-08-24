@@ -6,7 +6,42 @@ import { factBlock } from '../memory/facts.js';
  * carries what this project has measured about the instance (A-4). Both are
  * system-side: established context, not forged conversational turns.
  */
-export function buildSystemPrompt({ digestNote = '', mutationDigest = '' } = {}) {
+/**
+ * F12 — the iteration budget, said out loud.
+ *
+ * The agent loop stops after a fixed number of LLM calls, and the model has
+ * never been able to see that number, how many it has spent, or how many are
+ * left. So every instruction of the form "wrap up cleanly as you approach the
+ * cap" was unexecutable: it asked the model to act on a quantity it has no
+ * access to.
+ *
+ * Live 2026-08-24 is what that costs. A phase turn died on iteration 15 of 15
+ * — the last call in the budget — with sys_ids it had resolved but not yet
+ * saved, and no report of what was done. `remember_fact` calls spend
+ * iterations like any other tool call, so a turn that is diligent about
+ * persisting what it learned reaches the cap SOONER, which is precisely
+ * backwards.
+ *
+ * The remedy is one sentence of arithmetic the harness already has. Three
+ * calls of warning is enough to save state and write a report, and short
+ * enough that it does not truncate turns that were going to finish anyway.
+ *
+ * EPHEMERAL, and that is the whole discipline of it. It is rebuilt from `i`
+ * on every iteration and goes out with one call only. It is never appended to
+ * neutral history, never written to `messages`, and never reaches the digest
+ * builder — a stale "only 1 call remains" folded into a summary would be a
+ * lie told to every later turn in the session.
+ */
+export const ITERATION_NOTICE_AT = 3;
+
+export function iterationBudgetNotice(remaining) {
+  if (remaining > ITERATION_NOTICE_AT) return '';
+  return `ITERATION BUDGET: only ${remaining} LLM call(s) remain in this turn. ` +
+    'Stop starting new work. Save any unsaved sys_ids as facts now, then output ' +
+    'a DONE / REMAINING report for this phase and end the turn.';
+}
+
+export function buildSystemPrompt({ digestNote = '', mutationDigest = '', iterationNotice = '' } = {}) {
   const { connection } = getSettings();
   const base = `You are the NowHelpAssist Agent — an autonomous ServiceNow development copilot connected to ${connection.instanceUrl || '(no instance configured yet)'}.
 
@@ -58,9 +93,13 @@ Operating rules:
   const facts = factBlock();
   if (facts) parts.push(facts);
   if (digestNote) parts.push(digestNote);
-  // LAST, so it is the nearest thing to the completion: what this turn has
-  // already done to the instance, recorded by the harness rather than
-  // remembered by the model. A compaction cannot remove it (WI-2).
+  // Last of the durable blocks, so it is the nearest thing to the completion:
+  // what this turn has already done to the instance, recorded by the harness
+  // rather than remembered by the model. A compaction cannot remove it (WI-2).
   if (mutationDigest) parts.push(mutationDigest);
+  // After even that, because it is an instruction about what to do NEXT and
+  // must not be buried under a long ledger. Ephemeral: nothing that reaches
+  // this argument is ever stored (F12).
+  if (iterationNotice) parts.push(iterationNotice);
   return parts.join('\n\n---\n\n');
 }
