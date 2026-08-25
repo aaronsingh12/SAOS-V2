@@ -151,6 +151,57 @@ export function impersonationBoundaryLine(sessionId) {
     + 'of the real initiator — NowHelpAssist\'s audit ledger is the only place that exists.';
 }
 
+/* ------------------------------------------------------------------ *
+ * B4 — the pending task-boundary question
+ * ------------------------------------------------------------------ */
+
+/**
+ * The request that stopped a turn, if one is outstanding.
+ *
+ * Held on the mode row rather than in the transcript for the same reason as the
+ * mode itself: a compaction must not be able to remove the memory that a
+ * question is waiting to be answered.
+ */
+export function getPendingBoundary(sessionId) {
+  const row = readRow(sessionId);
+  if (!row?.active || !row.pending_request) return null;
+  return { request: row.pending_request, askedAt: row.pending_asked_at };
+}
+
+export function setPendingBoundary(sessionId, request) {
+  getDb().prepare(
+    'UPDATE impersonation_mode SET pending_request = ?, pending_asked_at = ?, updated_at = ? WHERE session = ?'
+  ).run(String(request ?? ''), now(), now(), sessionId);
+  return getPendingBoundary(sessionId);
+}
+
+export function clearPendingBoundary(sessionId) {
+  getDb().prepare(
+    'UPDATE impersonation_mode SET pending_request = NULL, pending_asked_at = NULL, updated_at = ? WHERE session = ?'
+  ).run(now(), sessionId);
+}
+
+/**
+ * The user said "yes, continue as them" — so the task now legitimately covers
+ * the request that triggered the question.
+ *
+ * The descriptor is EXTENDED rather than replaced. Replacing it would let the
+ * scope drift one consented step at a time until it no longer resembles what
+ * was originally authorised, and each individual step would look reasonable.
+ * Appending keeps the original intent visible in the boundary line and in
+ * every audit row.
+ */
+export function extendTask(sessionId, addition) {
+  const row = readRow(sessionId);
+  if (!row?.active) return getMode(sessionId);
+  const extra = String(addition ?? '').replace(/\s+/g, ' ').trim();
+  if (!extra) return getMode(sessionId);
+  const merged = row.task ? `${row.task}; also: ${extra}` : extra;
+  getDb().prepare('UPDATE impersonation_mode SET task = ?, updated_at = ? WHERE session = ?')
+    .run(merged.slice(0, 2000), now(), sessionId);
+  return getMode(sessionId);
+}
+
 function safeInstance() {
   try { return currentInstance(); } catch { return null; }
 }

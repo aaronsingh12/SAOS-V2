@@ -26,6 +26,7 @@ import { openCaptureWindow, closeCaptureWindow } from '../servicenow/transport.j
 import { snapshotBefore, verifyMutation, attachVerification, isFailedWrite } from './mutation-pipeline.js';
 import { appendMutation, annotateLatestCapture, mutationsForTurn, renderMutationReport, ledgerDigestForModel } from '../memory/ledger.js';
 import { impersonationBoundaryLine, impFacts } from '../memory/impersonation-mode.js';
+import { checkTaskBoundary } from './impersonation-ops.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
 import { checkWriteTarget } from '../memory/provenance.js';
 import { businessRuleAbortPlaybook, dataVsConfigNote } from './playbooks.js';
@@ -1029,6 +1030,46 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
   openCaptureWindow(sessionId, turnCaptureMark);
   log.info('agent', `turn ${retry ? 'RETRY' : 'start'}  session=${shortId(sessionId)} ${info.provider}/${info.model}`,
     { message: userText.slice(0, 200) });
+
+  /*
+   * B4 / D3 — the task boundary, checked BEFORE the model sees the turn.
+   *
+   * Placement is the whole guarantee. A stop the model is asked to respect is a
+   * suggestion; a stop that happens before it is invoked is a stop. Reaching
+   * the model requires the classifier to have found positive evidence that this
+   * request continues the task impersonation was started for — every other
+   * outcome ends the turn with a question.
+   *
+   * Only fires while mode is active, so it is inert for every ordinary turn.
+   */
+  try {
+    const boundary = checkTaskBoundary({ sessionId, userText });
+    if (boundary.stop) {
+      log.warn('impersonation', `turn stopped at the task boundary (${boundary.verdict}: ${boundary.reason})`);
+      appendMessage(sessionId, { role: 'assistant', text: boundary.question });
+      emit({ type: 'assistant_text', text: boundary.question });
+      emit({
+        type: 'impersonation_boundary_stop',
+        verdict: boundary.verdict, reason: boundary.reason,
+        target: boundary.target, task: boundary.task, evidence: boundary.evidence,
+      });
+      emitMutationReport({ sessionId, turnSeq, emit });
+      emit({ type: 'done' });
+      closeCaptureWindow(sessionId);
+      if (state.emit === emit) state.emit = null;
+      return;
+    }
+    if (boundary.verdict === 'consented' || boundary.verdict === 'declined') {
+      log.info('impersonation', `task boundary ${boundary.verdict}`);
+      emit({ type: 'impersonation_boundary_resolved', verdict: boundary.verdict, task: boundary.task ?? null });
+    }
+  } catch (err) {
+    // A guard that crashes must not take the turn with it - but it must also
+    // not fail OPEN silently, so the failure is logged loudly rather than
+    // swallowed. An impersonating session whose boundary check is broken is a
+    // thing a human needs to know about.
+    log.error('impersonation', `task-boundary check failed, turn proceeding unchecked: ${err.message}`, err);
+  }
 
   try {
     for (let i = 0; i < MAX_ITERATIONS; i++) {

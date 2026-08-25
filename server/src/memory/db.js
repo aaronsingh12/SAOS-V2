@@ -398,6 +398,22 @@ const MIGRATIONS = [
     FOREIGN KEY (session) REFERENCES sessions(id) ON DELETE CASCADE
   );
   `,
+
+  // 11 - the pending task-boundary question (B4, D3)
+  //
+  // When a user turn does not clearly continue the task impersonation was
+  // started for, the turn STOPS and asks. The request that triggered it is held
+  // here so the next turn can tell an answer ("yes, continue") from a fresh
+  // instruction, and so consent EXTENDS the task descriptor rather than being
+  // re-asked every turn afterwards.
+  //
+  // On the mode row rather than in the transcript for the same reason as the
+  // mode itself: a compaction must not be able to remove the memory that a
+  // question is outstanding.
+  `
+  ALTER TABLE impersonation_mode ADD COLUMN pending_request TEXT;
+  ALTER TABLE impersonation_mode ADD COLUMN pending_asked_at TEXT;
+  `,
 ];
 
 /**

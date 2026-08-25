@@ -4,7 +4,11 @@ import {
 } from '../servicenow/impersonation-target.js';
 import {
   startMode, endMode, switchTarget, getMode, impFacts, impersonationBoundaryLine,
+  getPendingBoundary, setPendingBoundary, clearPendingBoundary, extendTask,
 } from '../memory/impersonation-mode.js';
+import {
+  classifyTaskBoundary, boundaryQuestion, isAffirmative, isNegative, BOUNDARY,
+} from './task-boundary.js';
 
 /**
  * B3 — the four operations that manage impersonation mode.
@@ -233,6 +237,63 @@ export async function endImpersonation({ sessionId, actorResolver } = {}) {
     previous: result.previous,
     verification,
   });
+}
+
+/**
+ * B4 / D3 — the turn-start check.
+ *
+ * Runs on every user turn while mode is active, BEFORE the model sees anything.
+ * That placement is the point: a stop the model could talk itself past is not a
+ * stop. The only outcomes are "carry on" and "stop and ask", and reaching the
+ * first requires positive evidence from the classifier.
+ *
+ * Identity changes without a confirmation are limited to explicit user commands
+ * (start / end / switch) and the wrapper's own per-execution revert, which is a
+ * mechanism detail invisible to mode. Nothing here can change the target.
+ */
+export function checkTaskBoundary({ sessionId, userText } = {}) {
+  const mode = getMode(sessionId);
+  if (!mode.active) return { stop: false, verdict: 'not_impersonating' };
+
+  const pending = getPendingBoundary(sessionId);
+
+  if (pending) {
+    if (isAffirmative(userText)) {
+      clearPendingBoundary(sessionId);
+      const after = extendTask(sessionId, pending.request);
+      return {
+        stop: false, verdict: 'consented', consentedTo: pending.request, task: after.task,
+        note: 'The user confirmed. The task descriptor now covers this request, so the same question is not asked again.',
+      };
+    }
+    if (isNegative(userText)) {
+      clearPendingBoundary(sessionId);
+      return {
+        stop: false, verdict: 'declined',
+        note: 'The user declined to continue impersonated. Call impersonation_end before doing this work.',
+      };
+    }
+    // Neither yes nor no — they moved on. Judge this turn on its own merits
+    // below, and re-ask about THIS request rather than the stale one.
+  }
+
+  const c = classifyTaskBoundary({ task: mode.task, userText, target: mode.target });
+
+  if (c.verdict === BOUNDARY.CONTINUING || c.verdict === BOUNDARY.IDENTITY_COMMAND) {
+    if (pending) clearPendingBoundary(sessionId);
+    return { stop: false, verdict: c.verdict, reason: c.reason, evidence: c.evidence };
+  }
+
+  setPendingBoundary(sessionId, userText);
+  return {
+    stop: true,
+    verdict: c.verdict,
+    reason: c.reason,
+    evidence: c.evidence,
+    target: mode.target,
+    task: mode.task,
+    question: boundaryQuestion({ target: mode.target, task: mode.task, userText, verdict: c.verdict }),
+  };
 }
 
 /**
