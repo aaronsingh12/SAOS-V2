@@ -12,6 +12,7 @@ import { listApplications } from '../servicenow/applications.js';
 import { listCapturedSets, setContents } from '../servicenow/transport.js';
 import { createApplication, vendorPrefix, suggestScopeName, validateScopeName, studioSteps, MAX_SCOPE_LENGTH } from '../servicenow/app-create.js';
 import { startImpersonation, endImpersonation, switchImpersonation, impersonationStatus } from './impersonation-ops.js';
+import { whoReallyDid, impersonationAuditForSession, impersonationAuditForTarget } from '../memory/impersonation-audit.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -983,6 +984,30 @@ export const TOOLS = [
       required: [],
     },
     execute: ({ probe }, { sessionId } = {}) => impersonationStatus({ sessionId, probe }),
+  },
+  {
+    name: 'impersonation_provenance',
+    description:
+      'Answer "who really did this" for a record changed while impersonation mode was active. The instance keeps NO '
+      + 'record of the real initiator behind an impersonated change - it stamps only the impersonated user - so this '
+      + 'NowHelpAssist ledger is the only place the answer exists. Pass a record sys_id to look one up, or omit it to '
+      + 'list what this session recorded. Read-only. Note the distinction it reports: a write that actually EXECUTED as '
+      + 'the impersonated user has an attribution gap; one that ran under the NowHelpAssist service identity while mode '
+      + 'happened to be active does not, and is attributed correctly by the instance.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sys_id: { type: 'string', description: 'The changed record sys_id to trace back to its real initiator.' },
+        target: { type: 'string', description: 'Instead: a user sys_id, to list everything that identity was used for.' },
+      },
+      required: [],
+    },
+    execute: ({ sys_id, target }, { sessionId } = {}) => {
+      if (sys_id) return whoReallyDid(sys_id);
+      if (target) return { target_sys_id: target, entries: impersonationAuditForTarget(target) };
+      return { session: sessionId, entries: impersonationAuditForSession(sessionId) };
+    },
   },
 ];
 

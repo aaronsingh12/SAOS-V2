@@ -9,6 +9,7 @@ import {
 import {
   classifyTaskBoundary, boundaryQuestion, isAffirmative, isNegative, BOUNDARY,
 } from './task-boundary.js';
+import { appendModeEvent, AUDIT_KIND } from '../memory/impersonation-audit.js';
 
 /**
  * B3 — the four operations that manage impersonation mode.
@@ -169,9 +170,20 @@ export async function startImpersonation({ sessionId, user, task, elevatedApprov
     task: String(task).trim(),
   });
 
+  // B5 — the moment authority changed hands. Without it the mutation rows
+  // describe actions with no account of when the arrangement permitting them
+  // began, and the instance records no such moment at all.
+  const audit = appendModeEvent({
+    sessionId, kind: AUDIT_KIND.MODE_START,
+    target: { sys_id: t.sys_id, user_name: t.user_name },
+    original: { sys_id: actor.sys_id, user_name: actor.user_name },
+    task: String(task).trim(), harnessSession: actor.session,
+  });
+
   return stateReport(sessionId, {
     status: 'started',
     elevated: gate.elevated,
+    provenance: audit,
     note: 'No ServiceNow session is now open. Under M1 each execution impersonates and reverts inside one '
       + 'bounded job; this records which target the next execution will stamp.',
   });
@@ -199,9 +211,17 @@ export async function switchImpersonation({ sessionId, user, task, elevatedAppro
     original: { sys_id: actor.sys_id, user_name: actor.user_name },
   });
 
+  const auditSwitch = appendModeEvent({
+    sessionId, kind: AUDIT_KIND.MODE_SWITCH,
+    target: { sys_id: t.sys_id, user_name: t.user_name },
+    original: { sys_id: actor.sys_id, user_name: actor.user_name },
+    task: getMode(sessionId).task, harnessSession: actor.session,
+  });
+
   return stateReport(sessionId, {
     status: 'switched',
     elevated: gate.elevated,
+    provenance: auditSwitch,
     previousTarget: before.active ? before.target : null,
   });
 }
@@ -232,9 +252,20 @@ export async function endImpersonation({ sessionId, actorResolver } = {}) {
     verification = { probed: false, error: String(err.message ?? err) };
   }
 
+  // Recorded only when something actually ended: an audit row for a no-op
+  // would be a claim that authority was relinquished when none was held.
+  const auditEnd = result.ended
+    ? appendModeEvent({
+      sessionId, kind: AUDIT_KIND.MODE_END,
+      target: result.previous.target, original: result.previous.original,
+      task: result.previous.task,
+    })
+    : { recorded: false, reason: 'nothing was active' };
+
   return stateReport(sessionId, {
     status: result.ended ? 'ended' : 'already_inactive',
     previous: result.previous,
+    provenance: auditEnd,
     verification,
   });
 }

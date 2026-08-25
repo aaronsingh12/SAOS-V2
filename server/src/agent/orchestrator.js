@@ -26,6 +26,7 @@ import { openCaptureWindow, closeCaptureWindow } from '../servicenow/transport.j
 import { snapshotBefore, verifyMutation, attachVerification, isFailedWrite } from './mutation-pipeline.js';
 import { appendMutation, annotateLatestCapture, mutationsForTurn, renderMutationReport, ledgerDigestForModel } from '../memory/ledger.js';
 import { impersonationBoundaryLine, impFacts } from '../memory/impersonation-mode.js';
+import { appendImpersonatedMutation } from '../memory/impersonation-audit.js';
 import { checkTaskBoundary } from './impersonation-ops.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
 import { checkWriteTarget } from '../memory/provenance.js';
@@ -1773,11 +1774,51 @@ ${JSON.stringify(planWarning.note, null, 1)}`;
             });
           }
           if (tool.mutating) {
+            const writeDescriptor = typeof tool.describeWrite === 'function' ? tool.describeWrite(call.input || {}, raw) : null;
             appendMutation({
               sessionId, turnSeq, tool: call.name,
-              descriptor: typeof tool.describeWrite === 'function' ? tool.describeWrite(call.input || {}, raw) : null,
+              descriptor: writeDescriptor,
               result: raw, verification, approval, approvedSource, approvedAt,
             });
+            /*
+             * B5 — impersonation provenance.
+             *
+             * The mutation ledger above records WHAT was written. While
+             * impersonating it cannot record WHO: the instance stamps the
+             * target's name on the record and keeps no account of the real
+             * initiator anywhere (Phase 0 D-3/D-4/D-5). This row is that
+             * account, and nothing else is.
+             *
+             * A no-op when mode is off. Never throws — but a failure to record
+             * provenance is surfaced rather than swallowed, because a change
+             * that happened with no attributable cause is precisely the state
+             * this table exists to make impossible.
+             */
+            const provenance = appendImpersonatedMutation({
+              sessionId, turnSeq, tool: call.name, descriptor: writeDescriptor, result: raw, verification,
+              /*
+               * FALSE, and stated rather than defaulted.
+               *
+               * No mutating tool routes its write through the impersonation
+               * wrapper yet — `runImpersonated` has no callers outside its own
+               * module. Every mutating tool writes over REST as the
+               * NowHelpAssist service account, so while mode is active the
+               * instance still attributes the change to that account, correctly,
+               * and there is NO attribution gap.
+               *
+               * Passing true here would fabricate one: the row would claim the
+               * record is stamped with the target's name when it is not, and
+               * `whoReallyDid` would report an audit finding someone could act
+               * on. When a tool does execute through the wrapper, it must pass
+               * true from the path that actually impersonated — never from mode
+               * being switched on.
+               */
+              executedImpersonated: false,
+            });
+            if (provenance.recorded === false && provenance.reason !== 'not-impersonating') {
+              log.error('impersonation', `PROVENANCE NOT RECORDED for ${call.name}: ${provenance.reason}`);
+              emit({ type: 'impersonation_provenance_failed', tool: call.name, reason: provenance.reason });
+            }
           }
 
           // A-4 write path: a verification that FAILED is the most valuable

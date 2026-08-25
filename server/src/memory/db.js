@@ -414,6 +414,64 @@ const MIGRATIONS = [
   ALTER TABLE impersonation_mode ADD COLUMN pending_request TEXT;
   ALTER TABLE impersonation_mode ADD COLUMN pending_asked_at TEXT;
   `,
+
+  // 12 - impersonation audit provenance (B5)
+  //
+  // THE ONLY PLACE THE REAL ACTOR EXISTS. Phase 0 measured that this instance
+  // keeps no impersonation audit of any kind: zero 'Impersonate Begin'/'End'
+  // rows in syslog and sysevent (the events are not even registered in
+  // sysevent_register), sys_user_impersonation absent, sys_user_impersonation_history
+  // present but holding zero rows ever, and - with glide.audit.track_impersonation
+  // set true and confirmed active - a sys_audit.user holding an IDENTICAL session
+  // GUID whether impersonating or not. Every impersonated record carries the
+  // TARGET's name and nothing else.
+  //
+  // So this table is not a convenience copy of something the platform already
+  // knows. Delete it and the question "who actually did this" has no answer
+  // anywhere, on any system.
+  //
+  // NO FOREIGN KEY TO sessions, deliberately - matching mutation_ledger. A row
+  // here explains a change that is still sitting on the instance; deleting the
+  // conversation must not erase the only account of who caused it.
+  `
+  CREATE TABLE IF NOT EXISTS impersonation_audit (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    session                  TEXT NOT NULL,
+    turn_seq                 INTEGER NOT NULL DEFAULT -1,
+    ts                       TEXT NOT NULL,
+    kind                     TEXT NOT NULL,   -- mutation | mode_start | mode_switch | mode_end
+    real_initiator_sys_id    TEXT NOT NULL,
+    real_initiator_user_name TEXT,
+    harness_session          TEXT,
+    target_sys_id            TEXT,
+    target_user_name         TEXT,
+    table_name               TEXT,
+    sys_id                   TEXT,
+    display_id               TEXT,
+    operation                TEXT,
+    tool                     TEXT,
+    change_summary           TEXT,
+    verification_status      TEXT,
+    task                     TEXT,
+    instance                 TEXT,
+
+    -- Did the write ACTUALLY execute under the impersonated identity, or did it
+    -- run as the NowHelpAssist service account while mode happened to be on?
+    --
+    -- This column exists because the two cases have OPPOSITE audit meanings and
+    -- are trivial to confuse. Only the first produces an attribution gap: the
+    -- instance stamps the target's name and knows nothing else. In the second
+    -- the instance already records the service account correctly and there is
+    -- no gap at all. A row that asserted the first when the second happened
+    -- would be a fabricated audit finding - worse than no row, because someone
+    -- would act on it.
+    executed_impersonated    INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_imp_audit_record  ON impersonation_audit(sys_id);
+  CREATE INDEX IF NOT EXISTS idx_imp_audit_session ON impersonation_audit(session, turn_seq);
+  CREATE INDEX IF NOT EXISTS idx_imp_audit_target  ON impersonation_audit(target_sys_id);
+  `,
 ];
 
 /**
