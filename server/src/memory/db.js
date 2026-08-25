@@ -365,6 +365,39 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_sysid_prov_lookup ON sysid_provenance(session, sys_id);
   CREATE INDEX IF NOT EXISTS idx_sysid_prov_display ON sysid_provenance(session, display_id);
   `,
+
+  // 10 - impersonation mode (B3, D6)
+  //
+  // The four `imp.*` facts, held as STATE rather than history. Under M1 there
+  // is no persistent ServiceNow session: "mode" is purely which target the next
+  // wrapper execution stamps, so it has to survive everything that rewrites the
+  // transcript. A table earns that structurally - compaction deletes from
+  // `messages` and `chunks` and touches nothing else - which is the same
+  // property that makes the mutation ledger and tool_events compaction-proof.
+  // A rule someone has to remember would not be worth as much.
+  //
+  // `original_sys_id` is the REAL actor. Phase 0 measured that the instance
+  // records only the impersonated user - no Begin/End events, an empty history
+  // table, and a sys_audit.user that is a session GUID either way - so this
+  // column is the only place the real initiator exists at all.
+  //
+  // One row per session: a session is impersonating exactly one target or none.
+  `
+  CREATE TABLE IF NOT EXISTS impersonation_mode (
+    session          TEXT PRIMARY KEY,
+    active           INTEGER NOT NULL DEFAULT 0,
+    target_sys_id    TEXT,
+    target_user_name TEXT,
+    target_display   TEXT,
+    original_sys_id  TEXT,
+    original_user_name TEXT,
+    task             TEXT,
+    started_at       TEXT,
+    updated_at       TEXT NOT NULL,
+    instance         TEXT,
+    FOREIGN KEY (session) REFERENCES sessions(id) ON DELETE CASCADE
+  );
+  `,
 ];
 
 /**

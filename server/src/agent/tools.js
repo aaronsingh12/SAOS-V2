@@ -11,6 +11,7 @@ import { recordCalculatedFields, listFacts, recordFact } from '../memory/facts.j
 import { listApplications } from '../servicenow/applications.js';
 import { listCapturedSets, setContents } from '../servicenow/transport.js';
 import { createApplication, vendorPrefix, suggestScopeName, validateScopeName, studioSteps, MAX_SCOPE_LENGTH } from '../servicenow/app-create.js';
+import { startImpersonation, endImpersonation, switchImpersonation, impersonationStatus } from './impersonation-ops.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -906,6 +907,82 @@ export const TOOLS = [
       required: [],
     },
     execute: async ({ set }) => (set ? setContents(set) : listCapturedSets({})),
+  },
+
+  /* ---------------------------------------------------------------- *
+   * Impersonation mode (B3)
+   *
+   * These do NOT open a ServiceNow session. Under M1 each execution
+   * impersonates and reverts inside one bounded job, so "mode" records which
+   * target the NEXT execution stamps. The descriptions say so, because a model
+   * that believes a session is open will reason wrongly about what ending does.
+   * ---------------------------------------------------------------- */
+  {
+    name: 'impersonation_start',
+    description:
+      'Begin acting as another user, so reads and writes are evaluated against THEIR permissions and attributed to them. '
+      + 'Requires user approval. Give a task descriptor saying what this is for — it is what lets NowHelpAssist notice later '
+      + 'that a request has wandered outside the original task instead of silently carrying another user\'s authority into '
+      + 'unrelated work. Eligibility is decided by NowHelpAssist against sys_user, not by the platform: canImpersonate() is '
+      + 'not consulted because it approves inactive users and sys_ids that match no record. If the target holds the admin '
+      + 'role this returns a refusal asking for elevated approval — tell the user plainly, and only call again with '
+      + 'elevated_approval after they explicitly confirm. Note that no persistent ServiceNow session is opened: each '
+      + 'execution impersonates and reverts inside one bounded job.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        user: { type: 'string', description: 'user_name, display name, or sys_id. A name matching more than one user is returned as a list to choose from, never picked for you.' },
+        task: { type: 'string', description: 'What this impersonation is for, in a phrase — e.g. "check what Aagamya can see on the Laptop Request item".' },
+        elevated_approval: {
+          type: 'boolean',
+          description: 'Only after the user has explicitly confirmed they want to impersonate an ADMINISTRATOR. Never set this on your own initiative; it appears on the approval card the user sees.',
+        },
+      },
+      required: ['user', 'task'],
+    },
+    execute: ({ user, task, elevated_approval }, { sessionId } = {}) =>
+      startImpersonation({ sessionId, user, task, elevatedApproval: elevated_approval }),
+  },
+  {
+    name: 'impersonation_switch',
+    description:
+      'Re-target impersonation to a different user. Same eligibility gate and approval as impersonation_start. '
+      + 'The real initiator is preserved — switching changes who is being impersonated, never who is doing it.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        user: { type: 'string', description: 'user_name, display name, or sys_id.' },
+        task: { type: 'string', description: 'Optional new task descriptor. Omit to keep the current one.' },
+        elevated_approval: { type: 'boolean', description: 'Only after explicit user confirmation for an ADMINISTRATOR target.' },
+      },
+      required: ['user'],
+    },
+    execute: ({ user, task, elevated_approval }, { sessionId } = {}) =>
+      switchImpersonation({ sessionId, user, task, elevatedApproval: elevated_approval }),
+  },
+  {
+    name: 'impersonation_end',
+    description:
+      'Stop acting as another user and return to the NowHelpAssist service identity. Not gated — stopping is always safe. '
+      + 'Verifies by reading gs.getUserID() off the instance rather than assuming.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    execute: (_input, { sessionId } = {}) => endImpersonation({ sessionId }),
+  },
+  {
+    name: 'impersonation_status',
+    description:
+      'Report whether impersonation mode is active, who the target is, who the real initiator is, and the task it was '
+      + 'started for. Pass probe: true to additionally read the effective user off the instance. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { probe: { type: 'boolean', description: 'Also read gs.getUserID() live. Costs one bounded execution (a few seconds).' } },
+      required: [],
+    },
+    execute: ({ probe }, { sessionId } = {}) => impersonationStatus({ sessionId, probe }),
   },
 ];
 

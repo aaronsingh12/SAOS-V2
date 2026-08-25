@@ -25,6 +25,7 @@ import { captureAfterTool, captureMark, reconcileTurn } from './capture.js';
 import { openCaptureWindow, closeCaptureWindow } from '../servicenow/transport.js';
 import { snapshotBefore, verifyMutation, attachVerification, isFailedWrite } from './mutation-pipeline.js';
 import { appendMutation, annotateLatestCapture, mutationsForTurn, renderMutationReport, ledgerDigestForModel } from '../memory/ledger.js';
+import { impersonationBoundaryLine, impFacts } from '../memory/impersonation-mode.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
 import { checkWriteTarget } from '../memory/provenance.js';
 import { businessRuleAbortPlaybook, dataVsConfigNote } from './playbooks.js';
@@ -223,7 +224,38 @@ function truncate(str) {
  * rather than becoming less likely. Emitted as its own event so the renderer
  * can style it from the same verification statuses (WI-6).
  */
+/*
+ * B3/D6 — the impersonation boundary, surfaced every turn it is active.
+ *
+ * Separate from the mutation report because it must appear on a turn that
+ * mutated NOTHING. The thing a human most needs to not lose track of is whose
+ * authority their next instruction carries, and a read performed as someone
+ * else is exactly the case the mutation report is silent about.
+ *
+ * Rendered from the mode TABLE, not from anything the model said, so it cannot
+ * be omitted or paraphrased — the same property that makes the mutation report
+ * trustworthy.
+ */
+const boundaryEmitted = new Set();
+
+function emitImpersonationBoundary({ sessionId, turnSeq, emit }) {
+  const key = `${sessionId}:${turnSeq}`;
+  if (boundaryEmitted.has(key)) return;          // several terminal paths call the reporter
+  try {
+    const line = impersonationBoundaryLine(sessionId);
+    if (!line) return;
+    boundaryEmitted.add(key);
+    if (boundaryEmitted.size > 500) boundaryEmitted.clear();   // bounded; it is a de-dupe, not a record
+    const facts = impFacts(sessionId);
+    emit({ type: 'impersonation_boundary', markdown: line, facts });
+    log.info('impersonation', `turn ${turnSeq}: acting as ${facts['imp.target']?.user_name}`);
+  } catch (err) {
+    log.error('impersonation', `could not render the impersonation boundary: ${err.message}`);
+  }
+}
+
 function emitMutationReport({ sessionId, turnSeq, emit }) {
+  emitImpersonationBoundary({ sessionId, turnSeq, emit });
   let entries = [];
   try { entries = mutationsForTurn(sessionId, turnSeq); }
   catch (err) { log.error('ledger', `could not read the mutation ledger: ${err.message}`); return; }
@@ -275,8 +307,13 @@ export const APPROVAL_RESOLVED = new Set(['approved', 'auto']);
  * authorisation cannot be attributed does not run, rather than running and
  * leaving a row nobody can interpret a month later.
  */
-export async function executeTool(tool, input, approval, provenance = null) {
-  if (!tool.mutating) return tool.execute(input || {});
+export async function executeTool(tool, input, approval, provenance = null, context = null) {
+  // `context` carries turn-scoped facts a tool cannot derive from its own
+  // arguments — currently { sessionId, turnSeq }, which the impersonation-mode
+  // tools need because "mode" is per-session state, not an argument. Optional
+  // and ignored by every tool that does not read it, so existing tools and
+  // their tests are unaffected.
+  if (!tool.mutating) return tool.execute(input || {}, context || {});
 
   if (!APPROVAL_RESOLVED.has(approval)) {
     throw Object.assign(
@@ -313,7 +350,7 @@ export async function executeTool(tool, input, approval, provenance = null) {
       + `"${source ?? 'none'}" rather than auto_approve.`);
   }
 
-  return tool.execute(input || {});
+  return tool.execute(input || {}, context || {});
 }
 
 /**
@@ -1641,7 +1678,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         try {
           const raw = await executeTool(tool, call.input || {}, approval, {
             source: approvedSource, autoApprove: Boolean(agent.autoApprove),
-          });
+          }, { sessionId, turnSeq });
 
           // The write landed on the instance. Whether it landed as REQUESTED is
           // a different question, and until this the answer was never asked.
