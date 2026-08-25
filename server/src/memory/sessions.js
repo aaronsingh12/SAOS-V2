@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { getDb } from './db.js';
 import { getSettings } from '../config/store.js';
 import { currentActor } from './audit.js';
+import { registerFromToolResult, registerFromUserMessage } from './provenance.js';
 
 /**
  * A-1 — session persistence.
@@ -108,6 +109,13 @@ export function appendMessage(sessionId, entry) {
   if (entry.role === 'user') {
     const s = getSession(sessionId);
     if (!s.title) db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(deriveTitle(entry.text), sessionId);
+    /*
+     * WI-1 — a sys_id the USER typed is a target by definition, and this is the
+     * only moment it is guaranteed to still be here: compaction folds messages
+     * away, and the provenance index must outlive the message it came from.
+     * Written by the same call that writes the row, so there is one producer.
+     */
+    registerFromUserMessage(sessionId, entry.text);
   }
   db.prepare('UPDATE sessions SET updated = ? WHERE id = ?').run(ts, sessionId);
   return seq;
@@ -208,6 +216,17 @@ export function recordToolEvent(sessionId, event) {
     actor,
     now()
   );
+  /*
+   * WI-1 — index what this result put into context, from the same call that
+   * stores it. The result JSON is the only place the table, the row count and
+   * the number-to-sys_id pairing all exist at once, so this is the one moment
+   * the index can be built without inferring anything.
+   */
+  if (event.kind === 'tool_call') {
+    registerFromToolResult({
+      sessionId, seq, table: event.payload?.table || null, result: event.result,
+    });
+  }
   return seq;
 }
 

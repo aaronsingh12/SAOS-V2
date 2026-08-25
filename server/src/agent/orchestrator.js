@@ -26,6 +26,7 @@ import { openCaptureWindow, closeCaptureWindow } from '../servicenow/transport.j
 import { snapshotBefore, verifyMutation, attachVerification, isFailedWrite } from './mutation-pipeline.js';
 import { appendMutation, annotateLatestCapture, mutationsForTurn, renderMutationReport, ledgerDigestForModel } from '../memory/ledger.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
+import { checkWriteTarget } from '../memory/provenance.js';
 import { businessRuleAbortPlaybook, dataVsConfigNote } from './playbooks.js';
 import { planTimeTrapCheck } from './plan-check.js';
 
@@ -792,15 +793,42 @@ export function candidateTargets(prose) {
  * showing that record's payload needs no essay. The defect was never silence;
  * it was silence while CHOOSING.
  */
-export function ambiguousTarget({ userText, history = [] }) {
-  if (candidateTargets(userText || '').length >= 1) return null;
-  // The last few entries only: a record named twenty turns ago is not a
-  // candidate the user is currently weighing.
-  const recent = history.slice(-8)
-    .map((m) => (m?.role === 'assistant' || m?.role === 'user' ? String(m.text || '') : ''))
-    .join('\n');
-  const candidates = candidateTargets(recent);
-  return candidates.length >= 2 ? { candidates } : null;
+/**
+ * FOLLOW-UP WI-1 — ambiguity read off the REGISTRY, not off prose.
+ *
+ * The prose version this replaces scanned the last eight history entries for
+ * identifiers and counted them. Three things were wrong with that, and all
+ * three are structural rather than tuning:
+ *
+ *   - it counted STRINGS. "INC0010055 (sys_id 3324…)" is one record named
+ *     twice, and counting identifiers cost a live round last sprint. The
+ *     registry answers about records, because the read that resolved them is
+ *     where both identifiers were in hand at once;
+ *   - it could only see what was still in `messages`, so a compaction erased
+ *     the ambiguity along with the turns that created it;
+ *   - it was a second derivation of "which records are in play", separate from
+ *     the one the hard block uses. Two derivations of the same question drift.
+ *
+ * Now: a write is ambiguous when its target arrived ONLY as one row of a
+ * multi-row read and nothing has narrowed it since. `checkWriteTarget` decides
+ * that, and it is the same call the hard block makes.
+ */
+export function ambiguousWrites({ sessionId, userText, toolCalls = [], isMutating = () => false, describe = () => null }) {
+  const hits = [];
+  for (const call of toolCalls || []) {
+    if (!isMutating(call.name)) continue;
+    const sysId = describe(call)?.sys_id;
+    if (!sysId) continue;
+    const target = checkWriteTarget({ sessionId, sysId, userText });
+    if (target.verdict === 'ambiguous') {
+      hits.push({ name: call.name, sys_id: sysId, rowCount: target.rowCount, candidates: target.candidates });
+    }
+  }
+  if (!hits.length) return null;
+  // One candidate list for the bounce message: the writes in one completion
+  // are almost always siblings from the same read.
+  const candidates = [...new Set(hits.flatMap((h) => h.candidates))];
+  return { hits, candidates };
 }
 
 export function detectUnexplainedMutation({
@@ -934,10 +962,6 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
   // for, and one line of prose disarms it for the rest of the turn.
   let unexplainedBounces = 0;
   let turnHasProse = false;
-  // Computed ONCE, from what the user said and what was on screen when they
-  // said it. Recomputing it per iteration would let the model's own listing of
-  // candidates create the ambiguity the guard then punishes it for.
-  let turnAmbiguity = null;
   let compactedThisTurn = false;
   let mutatingCallCount = 0;
   // WI-2 — one entry per SANCTIONED re-invocation of the provider. The loop
@@ -955,11 +979,6 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
     turnSeq = userSeq;
   } else {
     turnSeq = latestUserSeq(sessionId);
-  }
-  turnAmbiguity = ambiguousTarget({ userText, history: loadHistory(sessionId).slice(0, -1) });
-  if (turnAmbiguity) {
-    log.info('gate', `this turn has ${turnAmbiguity.candidates.length} candidate targets on screen `
-      + `(${turnAmbiguity.candidates.join(', ')}) and the user named none`);
   }
   const info = providerInfo();
   emit({ type: 'meta', ...info });
@@ -1369,11 +1388,24 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
        * turn, which the sanitizer drops on the next read: nothing happened, and
        * history says nothing happened.
        */
+      const describeCall = (c) => {
+        const t = toolMap.get(c.name);
+        if (typeof t?.describeWrite !== 'function') return null;
+        try { return t.describeWrite(c.input || {}, null); } catch { return null; }
+      };
       const unexplained = !asking && detectUnexplainedMutation({
         assistantText,
         toolCalls: res.toolCalls,
         turnHasProse,
-        ambiguity: turnAmbiguity,
+        // WI-1 — the ambiguity now comes from the provenance registry, computed
+        // per completion against the calls actually being made. The prose
+        // derivation this replaced could not survive a compaction and counted
+        // identifiers rather than records.
+        ambiguity: ambiguousWrites({
+          sessionId, userText, toolCalls: res.toolCalls,
+          isMutating: (n) => Boolean(toolMap.get(n)?.mutating),
+          describe: describeCall,
+        }),
         isMutating: (n) => Boolean(toolMap.get(n)?.mutating),
       });
       if (unexplained) {
@@ -1455,6 +1487,46 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         if (tool.mutating && typeof tool.describeWrite === 'function') {
           try { guardDescriptor = tool.describeWrite(call.input || {}, null); } catch { /* unverifiable */ }
         }
+
+        /*
+         * WI-1 — A SYS_ID WITH NO PROVENANCE IS NOT A TARGET.
+         *
+         * The standing debt: a weak model produces a well-formed 32-hex string
+         * that no record has ever had (`bfdd8816…`), puts it in an update
+         * payload, and the gate renders it a card. Nothing downstream catches
+         * it either — the write goes to a sys_id that does not exist, the
+         * platform answers, and the read-back verifies whatever it finds.
+         *
+         * So this is a HARD BLOCK and it happens before the gate: no card, and
+         * the payload goes to the log because it is the only remaining record
+         * of what was about to be authorised. The message is written to be
+         * recoverable — the model can read the record it actually means and
+         * try again, which registers the sys_id on the way past.
+         */
+        if (tool.mutating && guardDescriptor?.sys_id) {
+          const target = checkWriteTarget({ sessionId, sysId: guardDescriptor.sys_id, userText });
+          if (target.verdict === 'confabulated') {
+            const message =
+              `BLOCKED: sys_id ${guardDescriptor.sys_id} has never appeared in this session — not in a tool `
+              + 'result, not in anything the user typed, and not in the knowledge ledger. It was not submitted to '
+              + 'the approval gate and nothing was changed. Do not retype it. Look the record up (query_records or '
+              + 'get_record) and use the sys_id that read returns.';
+            log.error('gate', `${call.name} HARD BLOCKED — sys_id ${guardDescriptor.sys_id} has no provenance in this session`);
+            results.push({ id: call.id, name: call.name, output: message, isError: true });
+            recordToolEvent(sessionId, {
+              kind: 'guard', name: 'confabulated_sys_id',
+              // The full payload, because nothing else keeps it.
+              payload: { tool: call.name, table: guardDescriptor.table, sys_id: guardDescriptor.sys_id, input: call.input },
+              result: message, resultStatus: 'blocked', mutating: false, approval: null,
+            });
+            emit({
+              type: 'tool_blocked', id: call.id, name: call.name, input: call.input,
+              reason: 'confabulated-sys-id', message,
+            });
+            continue;   // never reaches the gate
+          }
+        }
+
         if (tool.mutating && guardDescriptor) {
           const verdict = checkBeforeGate({
             sessionId, turnSeq, tool: call.name, descriptor: guardDescriptor,

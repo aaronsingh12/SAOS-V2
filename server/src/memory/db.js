@@ -316,6 +316,55 @@ const MIGRATIONS = [
   UPDATE mutation_ledger SET approved_source = 'unknown' WHERE approval IS NOT NULL AND approved_source IS NULL;
   UPDATE tool_events     SET approved_source = 'unknown' WHERE approval IS NOT NULL AND approved_source IS NULL;
   `,
+
+  // 9 — sys_id PROVENANCE (follow-up WI-1)
+  //
+  // WHY THIS IS AN INDEX AND NOT A SECOND SOURCE OF TRUTH.
+  //
+  // The obvious home for "which sys_ids does this session know about" was the
+  // thing that already carries identifiers across a compaction. There isn't
+  // one: `replaceSpanWithDigest` deletes from `messages` and `chunks` and
+  // writes ONE row to `digests`, whose only payload is `text` — free-form
+  // markdown authored by the summariser model. Its own prompt says "A mistyped
+  // sys_id is worse than an omitted one — it will be used", and compaction.js
+  // records a measured run where a digest dropped a flow sys_id entirely. A
+  // hard block on writes cannot take its truth from the artefact it exists to
+  // police.
+  //
+  // So every row here is written by the SAME CALL that writes the durable
+  // record it is derived from — `recordToolEvent`, `appendMessage`,
+  // `recordFact`. One producer per source, nothing to reconcile, nothing that
+  // can drift out of step with the thing it indexes.
+  //
+  // It survives compaction for the same structural reason `tool_events` does:
+  // compaction touches `messages` and `chunks` and nothing else.
+  //
+  // `row_count` is the cardinality of the RESULT SET the sys_id arrived in — a
+  // read that returned five incidents registers five rows of row_count 5, and
+  // "the model picked one of those and wrote to it" becomes a fact the harness
+  // can check instead of a shape it has to infer from prose.
+  //
+  // `event_seq` defaults to -1 rather than NULL because SQLite treats NULLs as
+  // distinct in a UNIQUE index, and a nullable column there would let the same
+  // user-supplied sys_id insert without limit.
+  `
+  CREATE TABLE IF NOT EXISTS sysid_provenance (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session    TEXT NOT NULL,
+    sys_id     TEXT NOT NULL,
+    table_name TEXT,
+    display_id TEXT,                       -- INC0010052, when the row carried one
+    source     TEXT NOT NULL,              -- user_message | tool_result | ledger_fact
+    event_seq  INTEGER NOT NULL DEFAULT -1,-- tool_events.seq of the read it came from
+    row_count  INTEGER NOT NULL DEFAULT 1, -- records in that result set
+    ts         TEXT NOT NULL,
+    UNIQUE (session, sys_id, source, event_seq),
+    FOREIGN KEY (session) REFERENCES sessions(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sysid_prov_lookup ON sysid_provenance(session, sys_id);
+  CREATE INDEX IF NOT EXISTS idx_sysid_prov_display ON sysid_provenance(session, display_id);
+  `,
 ];
 
 /**
