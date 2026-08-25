@@ -27,6 +27,7 @@ import { snapshotBefore, verifyMutation, attachVerification, isFailedWrite } fro
 import { appendMutation, annotateLatestCapture, mutationsForTurn, renderMutationReport, ledgerDigestForModel } from '../memory/ledger.js';
 import { impersonationBoundaryLine, impFacts } from '../memory/impersonation-mode.js';
 import { appendImpersonatedMutation } from '../memory/impersonation-audit.js';
+import { impersonationChip } from './impersonation-render.js';
 import { checkTaskBoundary } from './impersonation-ops.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
 import { checkWriteTarget } from '../memory/provenance.js';
@@ -1659,6 +1660,17 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           emit({
             type: 'approval_required', approvalId, nonce, name: call.name, input: call.input,
             warning: planWarning?.message || null,
+            /*
+             * B6 — whose authority this card carries.
+             *
+             * `executesImpersonated: false` is the truth for every tool in the
+             * registry today: none routes its write through the impersonation
+             * wrapper, so the write lands as the NowHelpAssist service account
+             * even while mode is on. The chip says exactly that rather than
+             * "AS <user>", because an approval card is the one place a false
+             * claim about identity gets acted on by a human.
+             */
+            impersonation: impersonationChip(sessionId, { executesImpersonated: false }),
           });
           log.warn('gate', `approval required: ${call.name} — waiting for the user`);
           const decision = await awaitApproval(state, approvalId, nonce);
@@ -1834,6 +1846,7 @@ ${JSON.stringify(planWarning.note, null, 1)}`;
           // absence of an exception (WI-6).
           emit({
             type: 'tool_result', id: call.id, name: call.name, output, isError: failedWrite,
+            impersonation: impersonationChip(sessionId, { executesImpersonated: false }),
             verification: verification && {
               status: verification.status, summary: verification.summary,
               dropped: verification.dropped, transformed: verification.transformed,

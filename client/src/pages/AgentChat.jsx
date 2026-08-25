@@ -7,6 +7,7 @@ import { confirmDestructive, promptFor, CONSEQUENCE } from '../components/confir
 import { toast } from '../components/toast.js';
 import { SkeletonLines, LoadingRegion, EmptyState, DisconnectedBanner } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
+import ImpersonationChip from '../components/ImpersonationChip.jsx';
 import { writeOutcome, captureReason, approvalProvenance } from '../components/writeOutcome.js';
 
 const SAMPLES = [
@@ -197,6 +198,9 @@ export default function AgentChat() {
             push({
               kind: 'approval', approvalId: evt.approvalId, name: evt.name, input: evt.input,
               decided: null, warning: evt.warning || null,
+              // B6 — whose authority this card carries. Null unless impersonation
+              // mode is active.
+              impersonation: evt.impersonation || null,
               // WI-3 — the token this card must present to approve. It arrives
               // once, with the card, and is never re-requested.
               nonce: evt.nonce || null,
@@ -215,6 +219,7 @@ export default function AgentChat() {
             // from the same object (WI-6).
             patchMsg((m) => m.kind === 'tool' && m.toolId === evt.id, {
               status: evt.isError ? 'error' : 'done', output: evt.output, verification: evt.verification || null,
+              impersonation: evt.impersonation || null,
             });
             break;
           // WI-3 — the completion asked the user something AND called a
@@ -632,6 +637,7 @@ export default function AgentChat() {
                     <span className={`dot ${v.tone === 'ok' ? 'on' : ''}`} style={v.dotStyle} />
                     <span className="name">{m.name}</span>
                     {m.mutating && <span className="badge amber">mutation</span>}
+                    {m.impersonation && <ImpersonationChip chip={m.impersonation} />}
                     <span className={`badge ${v.badgeClass}`} style={{ marginLeft: 'auto' }} title={v.title}>{v.label}</span>
                   </div>
                   {v.detail && (
@@ -657,6 +663,13 @@ export default function AgentChat() {
               return (
                 <div key={m.id} className="approval-card">
                   <div className="title">Approval required — {m.name}</div>
+                  {/* B6 — identity first: whose authority is being asked for is
+                      part of the decision, not a detail of the payload. */}
+                  {m.impersonation && (
+                    <div style={{ marginTop: 6 }}>
+                      <ImpersonationChip chip={m.impersonation} />
+                    </div>
+                  )}
                   {/* WI-5 — above the payload, because it is about the decision. */}
                   {m.warning && (
                     <div style={{ color: 'var(--amber)', fontSize: 12, marginTop: 6 }}>
