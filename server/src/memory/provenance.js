@@ -71,6 +71,56 @@ export function extractRecords(value, depth = 0, out = [], seen = new Set()) {
   return out;
 }
 
+/**
+ * The FIRST complete JSON value in a string, ignoring whatever follows it.
+ *
+ * THE BUG THIS EXISTS FOR, found by auditing the hard block for false
+ * positives before shipping it. What `tool_events.result` holds is not one JSON
+ * document — the harness appends its own blocks to the tool's output:
+ *
+ *   {…the created record…}
+ *   {"verification": {…}}          <- mutation-pipeline.attachVerification
+ *   {"capture": {…}}               <- the transport annotation
+ *   {"planTimeWarning": …}         <- WI-5
+ *
+ * `JSON.parse` on that throws at the second document, so EVERY MUTATION RESULT
+ * was silently dropped from the index. The consequence was severity-1 and
+ * ordinary: create an incident, then "now assign it to the network team", and
+ * the created sys_id — which exists in that result string and nowhere else —
+ * was never registered, so the follow-up update was hard blocked as a
+ * confabulation. Reproduced end to end before fixing.
+ *
+ * Scanning for balance rather than splitting on newlines, because a record's
+ * own field values contain both braces and newlines.
+ */
+export function parseLeadingJson(text) {
+  const s = String(text ?? '');
+  try { return JSON.parse(s); } catch { /* the appended-blocks case */ }
+  const start = s.search(/[[{]/);
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') { inString = true; continue; }
+    if (c === '{' || c === '[') depth += 1;
+    else if (c === '}' || c === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        try { return JSON.parse(s.slice(start, i + 1)); } catch { return null; }
+      }
+    }
+  }
+  return null;   // unbalanced — a truncated result
+}
+
 function insert({ session, sys_id, table_name, display_id, source, event_seq, row_count }) {
   getDb().prepare(
     `INSERT OR IGNORE INTO sysid_provenance
@@ -88,21 +138,50 @@ function insert({ session, sys_id, table_name, display_id, source, event_seq, ro
  */
 export function registerFromToolResult({ sessionId, seq, table, result }) {
   try {
-    let parsed = result;
-    if (typeof parsed === 'string') {
-      // Tool results are stored as text, sometimes with harness notes appended
-      // after the JSON. Parse what parses; a failure is a miss, not an error.
-      try { parsed = JSON.parse(parsed); } catch { return 0; }
-    }
-    const records = extractRecords(parsed);
-    if (!records.length) return 0;
+    const text = typeof result === 'string' ? result : null;
+    const parsed = text === null ? result : parseLeadingJson(text);
+    const records = parsed ? extractRecords(parsed) : [];
+
     for (const r of records) {
       insert({
         session: sessionId, sys_id: r.sys_id, table_name: table || null, display_id: r.display_id,
         source: PROVENANCE_SOURCES.TOOL_RESULT, event_seq: seq ?? -1, row_count: records.length,
       });
     }
-    return records.length;
+
+    /*
+     * Anything else the result put in front of the model.
+     *
+     * Reference fields (`caller_id`, `assigned_to`), sys_ids inside the
+     * appended harness blocks, and everything in a result too truncated to
+     * parse at all. The model SAW these, so a write to one is not a
+     * confabulation and blocking it would be the guard wrong in the expensive
+     * direction.
+     *
+     * They are registered SEPARATELY from the records above, each with
+     * row_count 1, and that separation is the whole point: a `get_record` on
+     * one incident returns six reference sys_ids, and folding them into the
+     * record count would make a unique read look like a six-way choice and
+     * bounce a write that was never ambiguous.
+     */
+    const known = new Set(records.map((r) => r.sys_id));
+    const loose = text === null
+      ? []
+      : [...new Set(text.toLowerCase().match(SYS_ID_RE) || [])].filter((id) => !known.has(id));
+    for (const sys_id of loose) {
+      insert({
+        session: sessionId, sys_id, table_name: null, display_id: null,
+        source: PROVENANCE_SOURCES.TOOL_RESULT, event_seq: seq ?? -1, row_count: 1,
+      });
+    }
+
+    // Loud when structure was lost, because a result the index cannot read is
+    // how the create-then-update chain broke in the first place.
+    if (text !== null && parsed === null && loose.length) {
+      log.warn('provenance',
+        `a tool result could not be parsed (truncated or malformed); indexed ${loose.length} loose sys_id(s) from its text`);
+    }
+    return records.length + loose.length;
   } catch (err) {
     log.warn('provenance', `could not index a tool result: ${err.message}`);
     return 0;

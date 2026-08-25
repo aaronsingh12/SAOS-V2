@@ -45,14 +45,16 @@ _setSettingsForTests({
 
 const { _setChatTurnForTests } = await import('../src/agent/providers/index.js');
 const {
-  runTurn, resolveApproval, assertContinuationsAccountFor, CONTINUATION_REASONS,
+  runTurn, resolveApproval, APPROVAL_SOURCES, assertContinuationsAccountFor, CONTINUATION_REASONS,
   detectUnexplainedMutation, ambiguousWrites, MAX_UNEXPLAINED_BOUNCES,
   proseHead, PROSE_HEAD_CHARS, stallIntent,
 } = await import('../src/agent/orchestrator.js');
 const { loadHistory, loadToolEvents, createSession, replaceSpanWithDigest } = await import('../src/memory/sessions.js');
 const {
   checkWriteTarget, provenanceFor, resolveDisplayId, targetsNamedByUser, extractRecords,
+  registerFromToolResult, parseLeadingJson,
 } = await import('../src/memory/provenance.js');
+const { attachVerification } = await import('../src/agent/mutation-pipeline.js');
 const { recordFact } = await import('../src/memory/facts.js');
 const { getDb } = await import('../src/memory/db.js');
 const { toolMap } = await import('../src/agent/tools.js');
@@ -115,9 +117,18 @@ function autoDecide(sessionId, events, approved) {
     events.push(e);
     if (e.type === 'approval_required') {
       setImmediate(() => {
-        // WI-3 — the card presents the token it was given. A helper that
-        // skipped it would make every test here a token-mismatch test.
-        const r = resolveApproval(sessionId, e.approvalId, approved, undefined, e.nonce);
+        /*
+         * Exactly what POST /api/agent/approve does: the card's token, and
+         * `user_click` as the source.
+         *
+         * Both matter. Without the token every test here would be a
+         * token-mismatch test (WI-3); without the source, WI-4's executor
+         * refuses the mutation as unattributable — which is correct behaviour
+         * and made an APPROVED call fail silently, since the failure lands in
+         * the tool result rather than in the assertions most of these tests
+         * make.
+         */
+        const r = resolveApproval(sessionId, e.approvalId, approved, APPROVAL_SOURCES.USER_CLICK, e.nonce);
         if (!r?.ok) throw new Error(`the gate refused approval ${e.approvalId}: ${r?.reason}`);
       });
     }
@@ -783,4 +794,163 @@ test('the head is bounded and collapsed — telemetry is not a second transcript
 test.after(() => {
   _setChatTurnForTests(null);
   try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* windows may hold the file */ }
+});
+
+test('the hard block\'s SURFACE is exactly the tools that take a caller-supplied target', () => {
+  /*
+   * The guard reads `describeWrite(input, null).sys_id` — the pre-gate call,
+   * with no result yet. So a tool whose target comes from its RESULT is
+   * structurally exempt: a create has no target to confabulate.
+   *
+   * This enumerates the surface rather than asserting a list, so adding a tool
+   * that takes a sys_id from its input shows up here as a new name. That is
+   * the moment to think about whether a hard block is right for it — not the
+   * first time a live write is refused.
+   */
+  const exposed = [...toolMap.values()]
+    .filter((t) => t.mutating && typeof t.describeWrite === 'function')
+    .filter((t) => {
+      let d = null;
+      try { d = t.describeWrite({}, null); } catch { return false; }
+      // Called with an EMPTY input, so anything that yields a sys_id here is
+      // reading it from somewhere other than the caller — none do today.
+      return Boolean(d?.sys_id);
+    })
+    .map((t) => t.name);
+  assert.deepEqual(exposed, [], 'a tool produces a sys_id from nothing');
+
+  const fromInput = [...toolMap.values()]
+    .filter((t) => t.mutating && typeof t.describeWrite === 'function')
+    .filter((t) => {
+      let d = null;
+      try { d = t.describeWrite({ table: 'incident', sys_id: 'a'.repeat(32), data: {} }, null); } catch { return false; }
+      return Boolean(d?.sys_id);
+    })
+    .map((t) => t.name)
+    .sort();
+  assert.deepEqual(fromInput, ['delete_record', 'update_record'],
+    'the set of tools inside the confabulation hard block changed — is a hard block right for the new one?');
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-1 — the false-block bug found by auditing the hard block before
+ * shipping it. Severity-1 and entirely ordinary: create a record, then
+ * change it.
+ * ------------------------------------------------------------------ */
+
+test('THE FALSE BLOCK — a result with the harness\'s own blocks appended still indexes', () => {
+  /*
+   * `tool_events.result` is not one JSON document. attachVerification appends
+   * {"verification":…}, capture appends {"capture":…}, WI-5 appends
+   * {"planTimeWarning":…}. JSON.parse on the whole string throws at the second
+   * one, so EVERY MUTATION RESULT was silently dropped from the index — and a
+   * created record's sys_id exists in that string and nowhere else.
+   */
+  const sid = newSession();
+  createSession({ id: sid });
+  const raw = {
+    sys_id: { display_value: CHILD, value: CHILD },
+    number: { display_value: 'INC0010055', value: 'INC0010055' },
+  };
+  const verification = {
+    verified: true, status: 'applied', summary: 'stored as sent',
+    applied: [{ field: 'short_description' }], dropped: [], transformed: [], unverifiable: [],
+  };
+  const stored = attachVerification(JSON.stringify(raw, null, 1), verification)
+    + `\n${JSON.stringify({ capture: { captured: false, message: 'data, not configuration' } }, null, 1)}`;
+  // If this ever stops throwing, the harness stopped appending its own blocks
+  // and this whole guard can be simplified.
+  assert.throws(() => JSON.parse(stored));
+
+  assert.equal(registerFromToolResult({ sessionId: sid, seq: 0, table: 'incident', result: stored }), 1);
+  const row = provenanceFor(sid)[0];
+  assert.equal(row.sys_id, CHILD);
+  assert.equal(row.display_id, 'INC0010055', 'structure was lost — the number did not survive');
+  assert.equal(row.table_name, 'incident');
+  assert.equal(row.row_count, 1);
+});
+
+test('CREATE THEN CHANGE IT — the ordinary chain is not blocked', async () => {
+  // The user-visible failure: "create an incident" then "now assign it".
+  const sid = newSession();
+  try {
+    toolMap.set('test_local_create', {
+      name: 'test_local_create', mutating: true,
+      execute: async () => ({ sys_id: CHILD, number: 'INC0010055' }),
+      // A create takes its sys_id from the RESULT, so the guard cannot fire on
+      // it — which is exactly why the create is the only producer here.
+      describeWrite: (_input, result) => ({ table: 'incident', operation: 'insert', requested: {}, sys_id: result?.sys_id }),
+    });
+    localWrite();
+    scriptProvider(
+      { text: 'Creating it.', toolCalls: [call('test_local_create', { table: 'incident', data: { short_description: 'x' } })] },
+      { text: 'Created INC0010055.' },
+    );
+    await runTurn(sid, 'create an incident for the scanner outage', autoDecide(sid, [], true));
+    assert.ok(provenanceFor(sid).some((r) => r.sys_id === CHILD), 'the created sys_id was never indexed');
+
+    scriptProvider(
+      { text: 'Assigning it.', toolCalls: [call('test_local_write', { table: 'incident', sys_id: CHILD, data: { assignment_group: 'net' } })] },
+      { text: 'Rejected.' },
+    );
+    const events = [];
+    await runTurn(sid, 'now assign it to the network team', autoDecide(sid, events, false));
+    assert.equal(events.filter((e) => e.type === 'tool_blocked').length, 0,
+      'the follow-up write to a record this session CREATED was hard blocked');
+    assert.equal(events.filter((e) => e.type === 'approval_required').length, 1);
+  } finally { toolMap.delete('test_local_create'); dropLocals(); }
+});
+
+test('reference fields do not make a unique read look like a choice', () => {
+  /*
+   * A get_record returns the record plus six reference sys_ids. Folding those
+   * into the record count would bounce a write that was never ambiguous, so
+   * loose ids are registered separately with their own row_count.
+   */
+  const sid = newSession();
+  createSession({ id: sid });
+  registerFromToolResult({
+    sessionId: sid, seq: 0, table: 'incident',
+    result: JSON.stringify({
+      sys_id: CHILD, number: 'INC0010055',
+      caller_id: { display_value: 'Abel Tuter', value: PARENT },
+      assigned_to: { display_value: 'Beth Anglin', value: 'aaaa1111aaaa1111aaaa1111aaaa1111' },
+    }),
+  });
+  const rec = provenanceFor(sid).find((r) => r.sys_id === CHILD);
+  assert.equal(rec.row_count, 1, 'reference sys_ids were counted as sibling records');
+  assert.equal(checkWriteTarget({ sessionId: sid, sysId: CHILD, userText: '' }).verdict, 'ok');
+  // The references are still known — a write to one is not a confabulation.
+  assert.equal(checkWriteTarget({ sessionId: sid, sysId: PARENT, userText: '' }).verdict, 'ok');
+});
+
+test('a truncated result still yields its sys_ids, and says structure was lost', () => {
+  // RESULT_CHAR_LIMIT cuts long reads and appends a marker, which breaks the
+  // parse. Falling back to a text sweep beats refusing a legitimate write.
+  const sid = newSession();
+  createSession({ id: sid });
+  const truncated = `{\n "sys_id": "${CHILD}",\n "number": "INC0010055",\n "desc": "aaaa` + '\n…[truncated]';
+  assert.equal(parseLeadingJson(truncated), null, 'the premise changed — a truncated doc now parses');
+  assert.equal(registerFromToolResult({ sessionId: sid, seq: 0, table: 'incident', result: truncated }), 1);
+  assert.equal(checkWriteTarget({ sessionId: sid, sysId: CHILD, userText: '' }).verdict, 'ok');
+});
+
+test('parseLeadingJson takes the FIRST document and ignores the rest', () => {
+  assert.deepEqual(parseLeadingJson('{"a":1}'), { a: 1 });
+  assert.deepEqual(parseLeadingJson('{"a":1}\n{"verification":{"status":"applied"}}'), { a: 1 });
+  assert.deepEqual(parseLeadingJson('[{"a":1}]\n{"capture":{}}'), [{ a: 1 }]);
+  // Braces and newlines inside a string value must not end the scan early.
+  assert.deepEqual(parseLeadingJson('{"a":"}\\n{ not the end"}\n{"b":2}'), { a: '}\n{ not the end' });
+  assert.equal(parseLeadingJson('Error: nothing happened'), null);
+  assert.equal(parseLeadingJson(''), null);
+});
+
+test('a 2-row query is still ambiguous — the fix did not weaken the count', () => {
+  const sid = newSession();
+  createSession({ id: sid });
+  registerFromToolResult({
+    sessionId: sid, seq: 0, table: 'incident',
+    result: JSON.stringify([{ sys_id: CHILD, number: 'INC0010055' }, { sys_id: PARENT, number: 'INC0010054' }]),
+  });
+  assert.equal(checkWriteTarget({ sessionId: sid, sysId: CHILD, userText: 'set it to low' }).verdict, 'ambiguous');
 });
