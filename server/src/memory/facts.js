@@ -196,6 +196,45 @@ const SEED = [
     value: 'A catalog UI policy is evaluated in the BROWSER, so no server-side read can prove it works — the record being correct and the form behaving are different claims. Related: setting the Angular model directly on a portal control changes the value WITHOUT re-evaluating the policy; only a real interaction does. Verify a policy by driving the form, never by reading the record back.',
     provenance: 'fluent-research §23, measured while driving /sp', confidence: 0.9 },
 
+  // --- Track D: user impersonation (docs/impersonation-phase0-ledger.md) ---
+  // These are the operating assumptions the M1 impersonation feature is built on.
+  // Each is EXECUTED-tier: measured on the live instance, not read from documentation.
+  { scope: UNIVERSAL, kind: 'trap', key: 'impersonation-predicates-are-constants',
+    value: 'In a background (sysauto_script) execution the session is ALREADY `system` impersonating `admin`, so the impersonation predicates are constants and must never be branched on. `isImpersonating()` returns true before, during AND after an impersonation — it never flips. `canImpersonate()` returned true for an INACTIVE user and for a generated GUID matching zero sys_user rows, so it is not an eligibility gate. `gs.getUserID()` is the only trustworthy identity signal; assert on it before and after every switch.',
+    provenance: 'impersonation-phase0-ledger D-1/D-2 (P0.0, P0.2, P0.3, P0.4)', confidence: 0.99 },
+
+  { scope: UNIVERSAL, kind: 'trap', key: 'impersonate-unknown-sysid-lands-on-guest',
+    value: 'impersonate() with a well-formed sys_id that matches NO sys_user row does not fail and does not no-op — it silently switches the session to a DIFFERENT real user. Measured: a minted GUID landed on `guest` (active, zero roles), while canImpersonate() had already returned true for the same id. There is no error, no exception and no return value that distinguishes this from success, so code that trusts the requested target believes it is acting as that user while actually acting as guest. Always assert gs.getUserID() === the requested sys_id immediately after the switch and abort if it differs.',
+    provenance: 'B1 proof gate T4, live on dev442675; extends impersonation-phase0-ledger D-2', confidence: 0.99 },
+
+  { scope: UNIVERSAL, kind: 'trap', key: 'gliderecordsecure-rowcount-lies',
+    value: '`getRowCount()` on a GlideRecordSecure query does not report what you can read. Called before iterating it returns the UNFILTERED count (73 incidents, 3801 properties for a role-less user); called after iterating it returned 0 where 6 rows were genuinely readable. Trusting it produced a clean false "ACLs make no difference" pass. Count impersonated reads by iteration: while (gr.next()) n++.',
+    provenance: 'impersonation-phase0-ledger §4 (P0.5/P0.5b)', confidence: 0.99 },
+
+  { scope: UNIVERSAL, kind: 'trap', key: 'plain-gliderecord-ignores-impersonation',
+    value: 'Under impersonation a plain GlideRecord returns the ADMIN row set — it ignores the ACLs of the impersonated user entirely. Measured for a role-less user: 200/200/73/200 rows via GlideRecord vs 6/0/0/0 via GlideRecordSecure. Worse, `.get()` returned true and 9 rows iterated while `canRead()` on that same object returned false. The data is a false permission picture; the capability booleans are truthful. Use GlideRecordSecure on every impersonated path.',
+    provenance: 'impersonation-phase0-ledger §4/§8 (P0.5b, P0.12b)', confidence: 0.99 },
+
+  { scope: UNIVERSAL, kind: 'trap', key: 'impersonated-denials-are-silent',
+    value: 'NOTHING throws on a denial — not a denied read, not a denied write, not a cross-scope block. Ten such operations were attempted and every one returned normally. A denied GlideRecordSecure read returns boolean false; a denied update shows up as the row simply being absent from the result set, indistinguishable from "no such row". There is no exception to catch and no falsy return to test. Read canRead/canCreate/canWrite/canDelete BEFORE acting, and read the record back afterwards to confirm the effect.',
+    provenance: 'impersonation-phase0-ledger §5/§8 (P0.6, P0.12)', confidence: 0.99 },
+
+  { scope: UNIVERSAL, kind: 'trap', key: 'es3-reserved-key-kills-job-silently',
+    value: 'The platform script engine is ES3-era: a reserved word as an unquoted object key (`{ case: 1 }`) is a SYNTAX ERROR there but legal in modern JS. A sysauto_script containing one is accepted by the Table API, stored byte-identical, marked active=true — and never runs, with no syslog row and no error. The harness then misreports it as the scheduler not claiming the job. `new Function()` in Node does NOT catch this (V8 allows reserved words as property names), so validation needs an explicit ES3 reserved-word lint as well.',
+    provenance: 'impersonation-phase0-ledger §11 trap A/D; re-measured in Node 24 while building B1', confidence: 0.99 },
+
+  { scope: UNIVERSAL, kind: 'decision', key: 'impersonation-crash-safety-is-the-boundary',
+    value: 'Crash safety for impersonation rests on the EXECUTION BOUNDARY, not on a finally block. A deliberate leak (impersonate, throw, no revert) was followed until a later execution landed on the SAME pooled worker session (glide.scheduler.worker.1) and it came up admin. Keep the finally as belt-and-suspenders for the rest of the current execution, but the boundary is the guarantee.',
+    provenance: 'impersonation-phase0-ledger §6 (P0.10)', confidence: 0.95 },
+
+  { scope: UNIVERSAL, kind: 'decision', key: 'impersonation-eligibility-is-nha-owned',
+    value: 'Because canImpersonate() approves inactive users and non-existent GUIDs, eligibility is decided by NHA against sys_user: the record exists (exactly one row), active is true, user_name is non-empty, the target is not the executor and not the integration account, and an admin-role target is a soft-deny requiring elevated human approval. The platform will not stop any of these.',
+    provenance: 'impersonation-phase0-ledger D-2 / build pack B2', confidence: 0.95 },
+
+  { scope: 'instance', kind: 'mapping', key: 'impersonation-has-no-instance-audit',
+    value: 'This instance keeps NO audit of impersonation. Zero Impersonate Begin/End rows in syslog and zero in sysevent — the events are not even registered in sysevent_register. `sys_user_impersonation` does not exist; `sys_user_impersonation_history` exists but holds 0 rows ever and captured none of the Phase 0 sessions. With glide.audit.track_impersonation set true and confirmed active, sys_audit.user held an IDENTICAL session GUID with and without impersonation, so the real performer is recorded nowhere — only the impersonated user, via sys_created_by. The NHA-side audit ledger is therefore the sole provenance for who really did an impersonated action.',
+    provenance: 'impersonation-phase0-ledger D-3/D-4/D-5 (P0.7, P0.8, P0.9)', confidence: 0.99 },
+
   // --- Measured on THIS instance, and scoped to it ---
   { scope: 'instance', kind: 'mapping', key: 'incident.problem-link-absent',
     value: 'This instance has no `problem_id`, `rfc` or `caused_by` on incident, and NO field on incident/task references `problem` at all. A request to "link the problem back to the incident" cannot be satisfied here. The available task-to-task links are `incident.parent` and `problem.first_reported_by_task`.',

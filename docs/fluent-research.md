@@ -1029,6 +1029,7 @@ Each one cost a debugging cycle here.
 | 14 | **Plain `GlideRecord` hands back rows that `canRead()` denies** | under impersonation `.get()` → `true` and 9 rows iterate, while `canRead()` on the same object → `false` | Plain `GlideRecord` ignores the impersonated user's ACLs entirely. `canRead`/`canWrite`/`canCreate`/`canDelete` are truthful; the returned data is not |
 | 15 | **`isImpersonating()` and `canImpersonate()` are constants in a background job** | `isImpersonating()` is `true` before, during and after; `canImpersonate()` returns `true` for an inactive user and for a GUID matching no `sys_user` row | The job session is already `system` impersonating `admin`. `gs.getUserID()` is the only identity authority; eligibility must be NHA's own `sys_user` query |
 | 16 | **An impersonated denial never says anything** | no exception, no falsy return — a denied read/update is shaped exactly like "no such row" | Only read-back-as-admin proves what happened. See `docs/impersonation-phase0-ledger.md` |
+| 17 | **`impersonate()` with an unknown sys_id silently lands on `guest`** | no error, no no-op — the session becomes a different real user, and `canImpersonate()` already said `true` for that id | Assert `gs.getUserID() === ` the requested sys_id immediately after the switch and abort if it differs. Measured at the B1 proof gate |
 
 ---
 
