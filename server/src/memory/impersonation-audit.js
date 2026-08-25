@@ -163,6 +163,137 @@ export function appendModeEvent({
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * B7 — write-ahead provenance
+ * ------------------------------------------------------------------ */
+
+export const AUDIT_STATUS = {
+  INTENT: 'intent',
+  CONFIRMED: 'confirmed',
+  ABORTED: 'aborted',
+};
+
+/**
+ * Record what is ABOUT to be written, before the instance is touched.
+ *
+ * B5 recorded after the fact, which cannot survive the one case that matters:
+ * a crash between the write landing and the row being written leaves a real
+ * change on a real record with no account of who caused it. Recording intent
+ * first inverts the failure — a crash now leaves a row with no change, which is
+ * merely untidy, instead of a change with no row, which is unanswerable.
+ *
+ * Returns the id the caller must later confirm or abort.
+ */
+export function recordWriteIntent({
+  sessionId, turnSeq, tool, table, sysId = null, operation, requested = {}, harnessSession = null,
+} = {}) {
+  try {
+    const mode = getMode(sessionId);
+    if (!mode.active) return { recorded: false, reason: 'not-impersonating' };
+    const ts = now();
+    return insertAndReadBack({
+      session: sessionId,
+      turn_seq: Number(turnSeq ?? -1),
+      ts,
+      kind: AUDIT_KIND.MUTATION,
+      real_initiator_sys_id: mode.original.sys_id,
+      real_initiator_user_name: mode.original.user_name ?? null,
+      harness_session: harnessSession,
+      target_sys_id: mode.target.sys_id,
+      target_user_name: mode.target.user_name,
+      table_name: table ?? null,
+      sys_id: sysId,
+      display_id: null,
+      operation: operation ?? null,
+      tool: tool ?? null,
+      change_summary: summariseChange({ descriptor: { operation, requested }, tool }),
+      verification_status: null,
+      task: mode.task ?? null,
+      instance: safeInstance(),
+      executed_impersonated: 1,
+      status: AUDIT_STATUS.INTENT,
+      intent_at: ts,
+      confirmed_at: null,
+      abort_reason: null,
+      attributed_user_name: null,
+    });
+  } catch (err) {
+    return { recorded: false, reason: `impersonation write-ahead failed: ${err.message}` };
+  }
+}
+
+/**
+ * The write landed and was read back. Records what the INSTANCE says about who
+ * did it, rather than assuming it matches what we intended.
+ */
+export function confirmWriteIntent(id, {
+  sysId = null, displayId = null, verificationStatus = null, attributedUserName = null,
+} = {}) {
+  try {
+    const db = getDb();
+    const before = db.prepare('SELECT * FROM impersonation_audit WHERE id = ?').get(id);
+    if (!before) return { confirmed: false, reason: `no intent row with id ${id}` };
+    if (before.status === AUDIT_STATUS.ABORTED) {
+      // An aborted write never reached the instance. Confirming it would assert
+      // a change that does not exist.
+      return { confirmed: false, reason: 'that intent was aborted and cannot be confirmed' };
+    }
+    db.prepare(
+      `UPDATE impersonation_audit
+          SET status = ?, confirmed_at = ?, sys_id = COALESCE(?, sys_id), display_id = COALESCE(?, display_id),
+              verification_status = ?, attributed_user_name = ?
+        WHERE id = ?`
+    ).run(AUDIT_STATUS.CONFIRMED, now(), sysId, displayId, verificationStatus, attributedUserName, id);
+
+    const back = db.prepare('SELECT * FROM impersonation_audit WHERE id = ?').get(id);
+    if (back?.status !== AUDIT_STATUS.CONFIRMED) {
+      return { confirmed: false, reason: 'the row did not read back as confirmed' };
+    }
+    return { confirmed: true, row: back };
+  } catch (err) {
+    return { confirmed: false, reason: `confirm failed: ${err.message}` };
+  }
+}
+
+/**
+ * The write never reached the instance — pre-flight refused it, or the target
+ * could not see the record.
+ *
+ * Distinct from an unconfirmed intent on purpose: "we decided not to" and "we
+ * do not know whether it happened" are different facts, and collapsing them
+ * would either hide a real unknown or manufacture a false one.
+ */
+export function abortWriteIntent(id, reason) {
+  try {
+    const db = getDb();
+    const before = db.prepare('SELECT * FROM impersonation_audit WHERE id = ?').get(id);
+    if (!before) return { aborted: false, reason: `no intent row with id ${id}` };
+    if (before.status === AUDIT_STATUS.CONFIRMED) {
+      return { aborted: false, reason: 'that write is already confirmed; it cannot be un-done by an abort' };
+    }
+    db.prepare('UPDATE impersonation_audit SET status = ?, abort_reason = ? WHERE id = ?')
+      .run(AUDIT_STATUS.ABORTED, String(reason ?? 'unspecified'), id);
+    const back = db.prepare('SELECT * FROM impersonation_audit WHERE id = ?').get(id);
+    return { aborted: back?.status === AUDIT_STATUS.ABORTED, row: back };
+  } catch (err) {
+    return { aborted: false, reason: `abort failed: ${err.message}` };
+  }
+}
+
+/**
+ * Intents that were never resolved — the flaggable state.
+ *
+ * Each of these is "a write may have landed on the instance and we cannot say
+ * whether it did". Not an error to swallow: it is the one question this whole
+ * table exists to be able to ask.
+ */
+export function unconfirmedIntents({ olderThanMs = 0, limit = 200 } = {}) {
+  const cutoff = new Date(Date.now() - Math.max(0, olderThanMs)).toISOString();
+  return getDb().prepare(
+    'SELECT * FROM impersonation_audit WHERE status = ? AND intent_at <= ? ORDER BY id DESC LIMIT ?'
+  ).all(AUDIT_STATUS.INTENT, cutoff, limit);
+}
+
 /**
  * THE REVERSE LOOKUP — the question this whole phase exists to answer.
  *
@@ -172,9 +303,19 @@ export function appendModeEvent({
 export function whoReallyDid(sysId) {
   const id = String(sysId ?? '').trim();
   if (!id) return { found: false, sys_id: null, entries: [] };
+  /*
+   * Aborted rows are excluded: they record a write that was decided against and
+   * never reached the instance. Returning one as an answer to "who changed this
+   * record" would attribute a change that does not exist.
+   *
+   * Intent rows are NOT excluded. An unresolved intent is precisely the case a
+   * person investigating needs to see — a write that may have landed with no
+   * confirmation — and hiding it would leave the lookup confidently silent
+   * about the one state it exists to surface.
+   */
   const rows = getDb().prepare(
-    'SELECT * FROM impersonation_audit WHERE sys_id = ? AND kind = ? ORDER BY ts DESC, id DESC'
-  ).all(id, AUDIT_KIND.MUTATION);
+    'SELECT * FROM impersonation_audit WHERE sys_id = ? AND kind = ? AND status != ? ORDER BY ts DESC, id DESC'
+  ).all(id, AUDIT_KIND.MUTATION, AUDIT_STATUS.ABORTED);
 
   if (!rows.length) {
     return {
@@ -199,10 +340,24 @@ export function whoReallyDid(sysId) {
    * attributed correctly by the instance; describing it as a gap would be
    * inventing an audit finding someone might act on.
    */
+  const unconfirmed = latest.status === AUDIT_STATUS.INTENT;
+
   return {
     found: true,
     sys_id: id,
     executed_impersonated: gap,
+    status: latest.status,
+    unconfirmed,
+    // What the instance itself stamped, read back after the write rather than
+    // assumed. Present only once a write has been confirmed.
+    instance_attribution: latest.attributed_user_name ?? null,
+    ...(unconfirmed
+      ? {
+        warning: 'This write was recorded as INTENT and never confirmed. The change may or may not have landed on '
+          + 'the instance — read the record to find out. Provenance recorded the intention before dispatching, so '
+          + 'the initiator is known either way.',
+      }
+      : {}),
     real_initiator: { sys_id: latest.real_initiator_sys_id, user_name: latest.real_initiator_user_name },
     attributed_to: gap
       ? { sys_id: latest.target_sys_id, user_name: latest.target_user_name }

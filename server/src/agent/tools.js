@@ -13,6 +13,7 @@ import { listCapturedSets, setContents } from '../servicenow/transport.js';
 import { createApplication, vendorPrefix, suggestScopeName, validateScopeName, studioSteps, MAX_SCOPE_LENGTH } from '../servicenow/app-create.js';
 import { startImpersonation, endImpersonation, switchImpersonation, impersonationStatus } from './impersonation-ops.js';
 import { whoReallyDid, impersonationAuditForSession, impersonationAuditForTarget } from '../memory/impersonation-audit.js';
+import { writeAsCurrentIdentity } from './impersonated-write.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -216,9 +217,16 @@ export const TOOLS = [
       },
       required: ['table', 'data'],
     },
-    execute: ({ table: t, data }) => {
+    // B7 — routes through the impersonation wrapper while mode is active, so
+    // the record is created BY the impersonated user rather than merely on
+    // their behalf. Nothing changes when mode is off.
+    impersonable: true,
+    execute: ({ table: t, data }, ctx = {}) => {
       assertCreatableTable(t);
-      return table.create(t, data);
+      return writeAsCurrentIdentity({
+        ctx, tool: 'create_record', table: t, operation: 'create', data,
+        direct: () => table.create(t, data),
+      });
     },
     describeWrite: ({ table: t, data }, result) => ({
       table: t, operation: 'insert', requested: data || {}, sys_id: cellValue(result?.sys_id),
@@ -243,7 +251,11 @@ export const TOOLS = [
       },
       required: ['table', 'sys_id', 'data'],
     },
-    execute: ({ table: t, sys_id, data }) => table.update(t, sys_id, data),
+    impersonable: true,
+    execute: ({ table: t, sys_id, data }, ctx = {}) => writeAsCurrentIdentity({
+      ctx, tool: 'update_record', table: t, sysId: sys_id, operation: 'update', data,
+      direct: () => table.update(t, sys_id, data),
+    }),
     describeWrite: ({ table: t, sys_id, data }) => ({
       table: t, operation: 'update', requested: data || {}, sys_id,
     }),
@@ -257,7 +269,11 @@ export const TOOLS = [
       properties: { table: { type: 'string' }, sys_id: { type: 'string' } },
       required: ['table', 'sys_id'],
     },
-    execute: ({ table: t, sys_id }) => table.remove(t, sys_id),
+    impersonable: true,
+    execute: ({ table: t, sys_id }, ctx = {}) => writeAsCurrentIdentity({
+      ctx, tool: 'delete_record', table: t, sysId: sys_id, operation: 'delete',
+      direct: () => table.remove(t, sys_id),
+    }),
     describeWrite: ({ table: t, sys_id }) => ({ table: t, operation: 'delete', requested: {}, sys_id }),
   },
   {

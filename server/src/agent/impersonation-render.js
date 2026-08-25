@@ -88,19 +88,30 @@ export const DENIAL = {
  * capability booleans have to be read BEFORE the operation rather than after it
  * fails, because it will not fail.
  *
- * THE DISCRIMINATOR IS `canRead`:
+ * TWO DISCRIMINATORS, in order of how much they are worth.
  *
- *   Layer-1 (application/scope policy) refuses the OPERATION and leaves the
- *   table readable — measured `canRead: true` with canWrite/canCreate/canDelete
- *   all false on a caller_access=2 table from the global harness.
+ * BEST — the ADMIN BASELINE (B7). The wrapper reads the same table's flags as
+ * admin, before switching, in the same execution. Refused for admin too means
+ * the TABLE refuses the operation; refused only for the target means the target
+ * does. This is direct evidence rather than inference, and it is used whenever
+ * the caller supplies it.
  *
- *   Layer-2 (the user's ACLs) removes the user's sight of the rows entirely —
- *   measured `canRead: false` for a role-less impersonated user, with the
- *   secure query iterating zero rows.
+ * FALLBACK — `canRead`, for callers with no baseline (a bare pre-flight, or a
+ * cached one). Layer-1 typically refuses the operation while leaving the table
+ * readable (measured: `canRead: true`, everything else false, on a
+ * caller_access=2 table from the global harness); Layer-2 usually removes sight
+ * of the rows entirely (measured: `canRead: false` for a role-less impersonated
+ * user, secure query iterating zero rows).
+ *
+ * THE FALLBACK IS A HEURISTIC AND IS KNOWN TO BE WRONG SOMETIMES. Measured on
+ * `sys_user`: the impersonated target has `canRead: true`, `canWrite: false` —
+ * the Layer-1 signature — but the cause is their own ACLs, because admin writes
+ * that table freely. That is why the baseline exists and why it wins when
+ * present. A caller that can supply `adminPreflight` should.
  *
  * `canRead: true` with everything else also true is not a denial at all.
  */
-export function classifyDenial({ preflight, operation = 'write' } = {}) {
+export function classifyDenial({ preflight, adminPreflight = null, operation = 'write' } = {}) {
   if (!preflight || typeof preflight !== 'object') {
     return {
       layer: DENIAL.UNKNOWN,
@@ -139,6 +150,39 @@ export function classifyDenial({ preflight, operation = 'write' } = {}) {
     };
   }
 
+  /*
+   * THE ADMIN BASELINE, when the wrapper supplied one (B7).
+   *
+   * This is strictly better evidence than `canRead`, and it exists because the
+   * canRead heuristic was measured to be wrong: on `sys_user` the impersonated
+   * target has canRead TRUE and canWrite FALSE — the Layer-1 signature — while
+   * the actual cause is their own ACLs, since admin writes that table freely.
+   *
+   * Refused for admin too, from the privileged global harness, means the TABLE
+   * is refusing the operation. Refused only for the target means the target is.
+   */
+  if (adminPreflight && typeof adminPreflight === 'object') {
+    const adminAllowed = truthy(operationFlag(adminPreflight, operation));
+    if (!adminAllowed) {
+      return {
+        layer: DENIAL.LAYER_1,
+        allowed: false,
+        label: 'blocked by application/scope access',
+        basis: 'admin-baseline',
+        detail: 'The same operation is refused to NowHelpAssist itself on this table, so the block is a property of '
+          + 'the TABLE rather than of any user — it would apply whoever was acting.',
+      };
+    }
+    return {
+      layer: DENIAL.LAYER_2,
+      allowed: false,
+      label: 'the acting user lacks permission',
+      basis: 'admin-baseline',
+      detail: 'NowHelpAssist can perform this operation on this table and the acting user cannot, so the block is '
+        + 'their ACLs rather than the application scope. A different user might be permitted.',
+    };
+  }
+
   // Sight of the table is intact, the operation is not: the table is refusing
   // the operation, not the person.
   if (canRead && !opAllowed) {
@@ -166,8 +210,8 @@ export function classifyDenial({ preflight, operation = 'write' } = {}) {
  * one. Kept separate from the classification so the label can be tested without
  * a session and rendered with one.
  */
-export function denialSentence({ preflight, operation = 'write', target = null } = {}) {
-  const verdict = classifyDenial({ preflight, operation });
+export function denialSentence({ preflight, adminPreflight = null, operation = 'write', target = null } = {}) {
+  const verdict = classifyDenial({ preflight, adminPreflight, operation });
   if (verdict.layer === DENIAL.ALLOWED) return { ...verdict, sentence: null };
   if (verdict.layer === DENIAL.UNKNOWN) return { ...verdict, sentence: verdict.label };
 

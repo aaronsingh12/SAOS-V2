@@ -35,7 +35,8 @@ import { runConfirmedScript, LIVENESS } from './script-liveness.js';
 /** Sentinel marker for the impersonation path, per the build pack's contract. */
 export const IMPERSONATION_MARKER = 'NHA_IMP::';
 
-export const OP_MODES = ['preflight', 'read'];
+export const OP_MODES = ['preflight', 'read', 'create', 'update', 'delete'];
+export const WRITE_MODES = ['create', 'update', 'delete'];
 
 const SYS_ID_RE = /^[0-9a-f]{32}$/i;
 const IDENTIFIER_RE = /^[a-z0-9_]+$/i;
@@ -90,6 +91,86 @@ function buildOpSource(op) {
   ].join('\n');
 
   if (mode === 'preflight') return preflight;
+
+  /*
+   * B7 — the write modes.
+   *
+   * The shape that matters: the operation's OWN capability flag is asked before
+   * anything is attempted, and a refusal does NOT dispatch the write. Phase 0
+   * measured that a denied write throws nothing and returns nothing falsy — it
+   * is shaped exactly like "no such row" — so the only way to know a write was
+   * refused rather than lost is to have decided beforehand.
+   *
+   * `update` and `delete` must additionally POSITION on the record as the
+   * target, through GlideRecordSecure. Measured at P0.6: for a record the target
+   * cannot read, `.get()` returns boolean false and the query yields zero rows,
+   * so an unpositioned update would do nothing and look identical to success.
+   * That case gets its own reason rather than being folded into a generic
+   * failure.
+   *
+   * Values reach the record through setValue() and a JSON literal, never
+   * concatenation.
+   */
+  if (WRITE_MODES.includes(mode)) {
+    const data = op.data && typeof op.data === 'object' ? op.data : {};
+    const sysId = mode === 'create' ? null : assertSysId(op.sys_id, 'op.sys_id');
+    const capability = { create: 'canCreate', update: 'canWrite', delete: 'canDelete' }[mode];
+
+    const applyFields = [
+      `          var payload = ${jsLiteral(data)};`,
+      '          for (var pk in payload) { if (payload.hasOwnProperty(pk)) { w.setValue(pk, payload[pk]); } }',
+    ];
+
+    const body = mode === 'create'
+      ? [
+        `          var w = new GlideRecordSecure(${jsLiteral(table)});`,
+        '          w.initialize();',
+        ...applyFields,
+        '          var writtenId = String(w.insert());',
+        "          out.result = { dispatched: true, operation: 'create', sys_id: writtenId };",
+      ]
+      : [
+        `          var w = new GlideRecordSecure(${jsLiteral(table)});`,
+        `          if (!w.get(${jsLiteral(sysId)})) {`,
+        // The measured silent shape: not an error, just an absent row.
+        `            out.result = { dispatched: false, reason: 'target_cannot_see_record',`,
+        `                           operation: ${jsLiteral(mode)}, sys_id: ${jsLiteral(sysId)} };`,
+        '          } else {',
+        ...(mode === 'update'
+          ? [
+            ...applyFields.map((l) => `  ${l}`),
+            '            var updateReturn = String(w.update());',
+            `            out.result = { dispatched: true, operation: 'update', sys_id: ${jsLiteral(sysId)},`,
+            '                           updateReturn: updateReturn };',
+          ]
+          : [
+            '            var removed = w.deleteRecord();',
+            `            out.result = { dispatched: true, operation: 'delete', sys_id: ${jsLiteral(sysId)},`,
+            '                           deleteReturn: String(removed) };',
+          ]),
+        '          }',
+      ];
+
+    return [
+      preflight,
+      '',
+      `      if (!probe.${capability}()) {`,
+      `        out.result = { dispatched: false, reason: 'preflight_denied',`,
+      `                       operation: ${jsLiteral(mode)}, capability: ${jsLiteral(capability)} };`,
+      '      } else {',
+      ...body,
+      '',
+      '        // Read back AS THE TARGET, still impersonated. For a user who can',
+      '        // write but not read (measured on incident: canCreate true,',
+      '        // canRead false) this correctly finds nothing — the write landed',
+      '        // and they cannot see it. A real state, not a failure.',
+      '        if (out.result.dispatched && out.result.sys_id) {',
+      `          var back = new GlideRecordSecure(${jsLiteral(table)});`,
+      '          out.result.readback_as_target = { found: back.get(out.result.sys_id) };',
+      '        }',
+      '      }',
+    ].join('\n');
+  }
 
   const collect = fields.length
     ? [
@@ -147,6 +228,7 @@ export function buildImpersonationBody({ adminSysId, targetSysId, op }) {
   }
   if (!op || typeof op !== 'object') throw new Error('An op descriptor is required.');
   const opSource = buildOpSource(op);
+  const isWrite = WRITE_MODES.includes(op.mode);
 
   return [
     `  out.identity = { admin: ${jsLiteral(admin)}, requested: ${jsLiteral(target)} };`,
@@ -157,6 +239,26 @@ export function buildImpersonationBody({ adminSysId, targetSysId, op }) {
     `  new GlideImpersonate().impersonate(${jsLiteral(admin)});`,
     `  if (gs.getUserID() !== ${jsLiteral(admin)}) { throw 'IDENTITY_ASSERT_FAILED_ADMIN:' + gs.getUserID(); }`,
     "  out.phase = 'admin_confirmed';",
+    /*
+     * B7 — the ADMIN BASELINE, taken while still admin and before the switch.
+     *
+     * `canRead` alone cannot tell a scope-policy block from a user-ACL block,
+     * and this was measured rather than reasoned: on `sys_user` the target has
+     * canRead TRUE and canWrite FALSE, which is the Layer-1 signature, but the
+     * cause is the user's own ACLs — admin writes that table freely. Labelling
+     * it "blocked by application/scope access — not by their permissions" would
+     * have been exactly backwards.
+     *
+     * Comparing the same table's flags as admin and as the target separates the
+     * two properly: refused for BOTH is the table, refused only for the target
+     * is the target. It costs nothing — the execution is already here, already
+     * admin, and one bounded job still does one logical op.
+     */
+    ...(op.table ? [
+      `  var adminProbe = new GlideRecordSecure(${jsLiteral(op.table)});`,
+      '  out.preflight_admin = { canRead: adminProbe.canRead(), canCreate: adminProbe.canCreate(),',
+      '                          canWrite: adminProbe.canWrite(), canDelete: adminProbe.canDelete() };',
+    ] : []),
     '',
     `  var original = String(new GlideImpersonate().impersonate(${jsLiteral(target)}));`,
     '  out.identity.original = original;',
@@ -180,6 +282,30 @@ export function buildImpersonationBody({ adminSysId, targetSysId, op }) {
     '    out.identity.reverted_to = gs.getUserID();',
     `    out.identity.revert_ok = (gs.getUserID() === ${jsLiteral(admin)});`,
     '  }',
+    /*
+     * B7 — the attribution read-back, AS ADMIN, after the revert.
+     *
+     * This is the half a human will see on the instance months later, and the
+     * half NowHelpAssist's provenance row has to be reconciled against. Read as
+     * admin on purpose: the target may be unable to see what they just wrote
+     * (canCreate true / canRead false is a measured shape), so asking them would
+     * report "gone" for a record that is sitting right there.
+     *
+     * For a delete, found:false IS the confirmation.
+     */
+    ...(isWrite ? [
+      '',
+      '  if (out.result && out.result.dispatched && out.result.sys_id) {',
+      `    var attr = new GlideRecord(${jsLiteral(op.table)});`,
+      '    if (attr.get(out.result.sys_id)) {',
+      '      out.attribution = { found: true,',
+      "                          sys_created_by: attr.getValue('sys_created_by'),",
+      "                          sys_updated_by: attr.getValue('sys_updated_by') };",
+      '    } else {',
+      '      out.attribution = { found: false };',
+      '    }',
+      '  }',
+    ] : []),
   ].join('\n');
 }
 

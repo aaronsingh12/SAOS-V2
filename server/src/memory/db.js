@@ -472,6 +472,36 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_imp_audit_session ON impersonation_audit(session, turn_seq);
   CREATE INDEX IF NOT EXISTS idx_imp_audit_target  ON impersonation_audit(target_sys_id);
   `,
+
+  // 13 - write-ahead provenance (B7)
+  //
+  // B5 recorded provenance AFTER the fact, which cannot survive the one case
+  // that matters: a crash between the write landing on the instance and the row
+  // being written. That leaves a real change on a real record with no account of
+  // who caused it - the exact state this table exists to make impossible.
+  //
+  // So an impersonated write now records INTENT first, dispatches, then
+  // confirms. The three terminal states are distinguishable on purpose:
+  //
+  //   intent    + no mutation   -> harmless orphan (crash before dispatch)
+  //   intent    + mutation      -> UNCONFIRMED: a change may exist unrecorded,
+  //                               and `unconfirmedIntents` is how it is found
+  //   confirmed                 -> the write landed and was read back
+  //   aborted                   -> never dispatched (pre-flight refused it),
+  //                               and must never be mistaken for either
+  //
+  // `attributed_user_name` is what the INSTANCE says afterwards, read back as
+  // admin. Storing it rather than assuming it is what lets a later reader see
+  // that NowHelpAssist's claim and the instance's stamp actually agree.
+  `
+  ALTER TABLE impersonation_audit ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed';
+  ALTER TABLE impersonation_audit ADD COLUMN intent_at TEXT;
+  ALTER TABLE impersonation_audit ADD COLUMN confirmed_at TEXT;
+  ALTER TABLE impersonation_audit ADD COLUMN abort_reason TEXT;
+  ALTER TABLE impersonation_audit ADD COLUMN attributed_user_name TEXT;
+
+  CREATE INDEX IF NOT EXISTS idx_imp_audit_status ON impersonation_audit(status);
+  `,
 ];
 
 /**

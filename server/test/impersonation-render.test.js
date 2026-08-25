@@ -176,6 +176,47 @@ test('everything permitted is not a denial and produces no sentence', () => {
   assert.equal(s.sentence, null);
 });
 
+test('the ADMIN BASELINE overrules the canRead heuristic, because the heuristic is measurably wrong', () => {
+  /*
+   * Measured live on dev442675: the impersonated target has canRead TRUE and
+   * canWrite FALSE on `sys_user` — the Layer-1 signature — while the cause is
+   * their own ACLs, since admin writes that table freely. Labelling it "blocked
+   * by application/scope access, not by their permissions" is exactly backwards.
+   */
+  const targetOnSysUser = { canRead: true, canCreate: false, canWrite: false, canDelete: false };
+  const adminOnSysUser = { canRead: true, canCreate: true, canWrite: true, canDelete: true };
+
+  // Without the baseline, the heuristic gets it wrong — and that is why the
+  // baseline exists. Pinned so nobody "simplifies" it back.
+  assert.equal(classifyDenial({ preflight: targetOnSysUser, operation: 'update' }).layer, DENIAL.LAYER_1);
+
+  // With it, the truth.
+  const v = classifyDenial({ preflight: targetOnSysUser, adminPreflight: adminOnSysUser, operation: 'update' });
+  assert.equal(v.layer, DENIAL.LAYER_2);
+  assert.equal(v.basis, 'admin-baseline');
+  assert.match(v.detail, /NowHelpAssist can perform this operation/);
+
+  const s = denialSentence({ preflight: targetOnSysUser, adminPreflight: adminOnSysUser, operation: 'update', target: TARGET });
+  assert.equal(s.sentence, 'aagamya.tanwar lacks permission for this.');
+});
+
+test('refused for admin too IS the table, and the sentence still does not blame the user', () => {
+  const bothRefused = { canRead: true, canCreate: false, canWrite: false, canDelete: false };
+  const v = classifyDenial({ preflight: bothRefused, adminPreflight: bothRefused, operation: 'update' });
+  assert.equal(v.layer, DENIAL.LAYER_1);
+  assert.equal(v.basis, 'admin-baseline');
+  const s = denialSentence({ preflight: bothRefused, adminPreflight: bothRefused, operation: 'update', target: TARGET });
+  assert.ok(!/aagamya\.tanwar lacks/.test(s.sentence));
+});
+
+test('the baseline never manufactures a denial where the target is permitted', () => {
+  // Target can create, admin cannot (a real possibility on a scoped table).
+  const v = classifyDenial({
+    preflight: { canRead: false, canCreate: true }, adminPreflight: { canRead: true, canCreate: false }, operation: 'create',
+  });
+  assert.equal(v.layer, DENIAL.ALLOWED, "the target's own flag still decides whether it is a denial at all");
+});
+
 test('a missing pre-flight is UNKNOWN, never "fine"', () => {
   for (const p of [null, undefined, 'nope']) {
     const v = classifyDenial({ preflight: p });

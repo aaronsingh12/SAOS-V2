@@ -28,6 +28,7 @@ import { appendMutation, annotateLatestCapture, mutationsForTurn, renderMutation
 import { impersonationBoundaryLine, impFacts } from '../memory/impersonation-mode.js';
 import { appendImpersonatedMutation } from '../memory/impersonation-audit.js';
 import { impersonationChip } from './impersonation-render.js';
+import { willExecuteImpersonated } from './impersonated-write.js';
 import { checkTaskBoundary } from './impersonation-ops.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
 import { checkWriteTarget } from '../memory/provenance.js';
@@ -1661,16 +1662,19 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             type: 'approval_required', approvalId, nonce, name: call.name, input: call.input,
             warning: planWarning?.message || null,
             /*
-             * B6 — whose authority this card carries.
+             * B6/B7 — whose authority this card carries, bound to what will
+             * ACTUALLY happen rather than to whether mode is switched on.
              *
-             * `executesImpersonated: false` is the truth for every tool in the
-             * registry today: none routes its write through the impersonation
-             * wrapper, so the write lands as the NowHelpAssist service account
-             * even while mode is on. The chip says exactly that rather than
-             * "AS <user>", because an approval card is the one place a false
-             * claim about identity gets acted on by a human.
+             * `willExecuteImpersonated` is true only for a tool that routes its
+             * write through the impersonation wrapper (B7). Everything else
+             * still writes over REST as the service account while mode is on,
+             * and the chip says so in different words and a different colour.
+             * An approval card is the one place a false claim about identity
+             * gets acted on by a human.
              */
-            impersonation: impersonationChip(sessionId, { executesImpersonated: false }),
+            impersonation: impersonationChip(sessionId, {
+              executesImpersonated: willExecuteImpersonated(sessionId, tool),
+            }),
           });
           log.warn('gate', `approval required: ${call.name} — waiting for the user`);
           const decision = await awaitApproval(state, approvalId, nonce);
@@ -1806,8 +1810,18 @@ ${JSON.stringify(planWarning.note, null, 1)}`;
              * that happened with no attributable cause is precisely the state
              * this table exists to make impossible.
              */
-            const provenance = appendImpersonatedMutation({
-              sessionId, turnSeq, tool: call.name, descriptor: writeDescriptor, result: raw, verification,
+            /*
+             * B7 — a tool that routed through the impersonation wrapper has
+             * ALREADY recorded its own provenance, write-ahead: intent before
+             * dispatch, confirmed after read-back. Appending here as well would
+             * produce a second row for one change, and the post-hoc row would
+             * be the weaker of the two.
+             */
+            const routedItself = willExecuteImpersonated(sessionId, tool);
+            const provenance = routedItself
+              ? { recorded: true, reason: 'recorded write-ahead by the impersonated write path' }
+              : appendImpersonatedMutation({
+                sessionId, turnSeq, tool: call.name, descriptor: writeDescriptor, result: raw, verification,
               /*
                * FALSE, and stated rather than defaulted.
                *
@@ -1825,8 +1839,8 @@ ${JSON.stringify(planWarning.note, null, 1)}`;
                * true from the path that actually impersonated — never from mode
                * being switched on.
                */
-              executedImpersonated: false,
-            });
+                executedImpersonated: false,
+              });
             if (provenance.recorded === false && provenance.reason !== 'not-impersonating') {
               log.error('impersonation', `PROVENANCE NOT RECORDED for ${call.name}: ${provenance.reason}`);
               emit({ type: 'impersonation_provenance_failed', tool: call.name, reason: provenance.reason });
@@ -1846,7 +1860,9 @@ ${JSON.stringify(planWarning.note, null, 1)}`;
           // absence of an exception (WI-6).
           emit({
             type: 'tool_result', id: call.id, name: call.name, output, isError: failedWrite,
-            impersonation: impersonationChip(sessionId, { executesImpersonated: false }),
+            impersonation: impersonationChip(sessionId, {
+              executesImpersonated: willExecuteImpersonated(sessionId, tool),
+            }),
             verification: verification && {
               status: verification.status, summary: verification.summary,
               dropped: verification.dropped, transformed: verification.transformed,
