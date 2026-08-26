@@ -22,6 +22,8 @@ import {
   composeAclCondition,
   buildAclPayload,
   buildAclAuthorSource,
+  buildUpdateSetScopedSource,
+  buildUpdateSetTeardownSource,
   validateAclCondition,
   verifyAclLive,
   describeEffect,
@@ -337,6 +339,54 @@ test('a marker is required so the residue check cannot match an unrelated ACL', 
   assert.throws(() => buildAclAuthorSource({ payload, marker: '' }), /run marker is required/);
 });
 
+/* ---- update-set scoping ---- */
+
+test('the previous update set is captured before anything else can fail', () => {
+  const src = buildUpdateSetScopedSource({ inner: OP, setName: 'disposable', marker: 'M' });
+  const capture = src.indexOf('US.previous = String(new GlideUpdateSet().get())');
+  const create = src.indexOf("new GlideRecord('sys_update_set')");
+  assert.ok(capture > 0 && capture < create, 'the previous set must be read before the disposable one is created');
+});
+
+test('the restore is in a finally and is PROVEN by a read-back, not by set() not throwing', () => {
+  const src = buildUpdateSetScopedSource({ inner: OP, setName: 'disposable', marker: 'M' });
+  const finallyAt = src.indexOf('} finally {');
+  const restoreAt = src.indexOf('US.previous) { new GlideUpdateSet().set(US.previous)');
+  assert.ok(finallyAt > 0 && restoreAt > finallyAt, 'the restore must sit inside the finally');
+  // Verification point 1: the worker must be read back, not assumed.
+  assert.match(src, /US\.current_after_restore = String\(new GlideUpdateSet\(\)\.get\(\)\)/);
+  assert.match(src, /US\.restore_ok = \(US\.current_after_restore === US\.previous\)/);
+});
+
+test('setting the disposable set is also proven by read-back', () => {
+  const src = buildUpdateSetScopedSource({ inner: OP, setName: 'disposable', marker: 'M' });
+  assert.match(src, /US\.set_ok = \(US\.current_after_set === usId\)/);
+});
+
+test('the update-set wrapper refuses to build without a name or marker', () => {
+  assert.throws(() => buildUpdateSetScopedSource({ inner: OP, setName: '', marker: 'M' }), /set name is required/);
+  assert.throws(() => buildUpdateSetScopedSource({ inner: OP, setName: 'x', marker: '' }), /run marker is required/);
+  assert.throws(() => buildUpdateSetScopedSource({ inner: '', setName: 'x', marker: 'M' }), /inner source is required/);
+});
+
+test('teardown measures the cascade and deletes nothing but the set itself', () => {
+  const src = buildUpdateSetTeardownSource(ACL_ID);
+  assert.match(src, /teardown\.children_before/);
+  assert.match(src, /teardown\.orphan_count/);
+  assert.match(src, /cascade_clears_children/);
+  // Verification point 2: orphans are recorded, never swept. Exactly one
+  // deleteRecord in the whole source, and it is the update set's own.
+  const deletes = src.match(/deleteRecord\(\)/g) ?? [];
+  assert.equal(deletes.length, 1, 'teardown must delete only the update set');
+  assert.match(src, /usr\.deleteRecord\(\)/);
+  assert.throws(() => buildUpdateSetTeardownSource('nope'), /32-character hex/);
+});
+
+test('the scoped and teardown sources are dispatchable', () => {
+  assertDispatchable(buildUpdateSetScopedSource({ inner: OP, setName: 'disposable', marker: 'M' }), 'update-set scoped');
+  assertDispatchable(buildUpdateSetTeardownSource(ACL_ID), 'teardown');
+});
+
 /* ---- 4.4, the confabulation guard ---- */
 
 const EXPECTED = { name: 'incident', operation: 'read', active: 'false', condition: 'state=1^EQ', description: 'd' };
@@ -393,6 +443,47 @@ test('an ACL whose role association did not land does NOT verify', async () => {
   assert.equal(r.reason, 'role_link_mismatch');
 });
 
+test('a platform-rewritten description is a TRANSFORM, not a dropped write', async () => {
+  /*
+   * Measured at 4.3 and corroborated: the ACTIVE business rule "Generate ACL
+   * Description on First Save" (after/insert, order 1000) rewrites description,
+   * and sys_mod_count is 1 immediately after creation. The guard caught this on
+   * the first live author; collapsing it into "mismatch" would report a
+   * perfectly good write as unverified.
+   */
+  const live = {
+    ...EXPECTED,
+    description: 'Allow read for records in incident, for users with role itil, and if the ACL condition (…) evaluates to true.',
+  };
+  const r = await verifyAclLive({ sysId: ACL_ID, expected: EXPECTED, readRecord: async () => live });
+  assert.equal(r.verified, true, 'the write landed; only a platform-owned field differs');
+  assert.deepEqual(r.mismatches, []);
+  assert.equal(r.transformed.length, 1);
+  assert.equal(r.transformed[0].field, 'description');
+  assert.match(r.transformed[0].reason, /Generate ACL Description on First Save/);
+  assert.match(r.detail, /transformed, not applied/);
+});
+
+test('but an EMPTY platform-owned field is still a real drop', async () => {
+  // The distinction that keeps the reclassification honest: "the platform
+  // computed this" and "our value vanished" must not share a branch.
+  const r = await verifyAclLive({
+    sysId: ACL_ID, expected: EXPECTED, readRecord: async () => ({ ...EXPECTED, description: '' }),
+  });
+  assert.equal(r.verified, false);
+  assert.equal(r.reason, 'field_mismatch');
+  assert.deepEqual(r.transformed, []);
+  assert.equal(r.mismatches[0].field, 'description');
+});
+
+test('a rewritten CONDITION is never excused — only measured platform fields are', async () => {
+  const r = await verifyAclLive({
+    sysId: ACL_ID, expected: EXPECTED, readRecord: async () => ({ ...EXPECTED, condition: 'state=7^EQ' }),
+  });
+  assert.equal(r.verified, false);
+  assert.equal(r.mismatches[0].field, 'condition');
+});
+
 test('reference cells shaped { value, display_value } compare on value', async () => {
   const r = await verifyAclLive({
     sysId: ACL_ID, expected: EXPECTED,
@@ -434,8 +525,36 @@ test('a control that SUCCEEDS refutes the demo claim rather than being reported 
 test('an elevated run that also fails establishes nothing, and says so', () => {
   const e = describeEffect({
     control: { authored: { dispatched: false, residue: { counted: 0 } } },
-    elevated: { authored: { dispatched: false } },
+    elevated: { authored: { dispatched: false, preflight: { canCreate: false } } },
   });
   assert.equal(e.loadBearing, false);
+  assert.equal(e.predicateOutcomeSplit, false);
   assert.match(e.notEstablished.join(' '), /establishes nothing/);
+});
+
+test('THE STOP CONDITION: canCreate true but insert null is a failure, not an inconclusive run', () => {
+  const e = describeEffect({
+    control: { authored: { dispatched: false, residue: { counted: 0 } } },
+    elevated: { authored: { dispatched: false, preflight: { canCreate: true }, insert_return: 'null' } },
+  });
+  assert.equal(e.predicateOutcomeSplit, true);
+  assert.equal(e.loadBearing, false);
+  const said = e.notEstablished.join(' ');
+  assert.match(said, /STOP CONDITION MET/);
+  assert.match(said, /real failure and a finding/);
+  // The specific wrong move, named so it cannot be reached for absent-mindedly.
+  assert.match(said, /Do NOT retry through a plain GlideRecord/);
+  // And it must not ALSO emit the generic "establishes nothing" line.
+  assert.equal(e.notEstablished.length, 1);
+});
+
+test('no module in the ACL path ever falls back to a plain GlideRecord insert', async () => {
+  // 0.5 proved the plain API writes here unelevated, so a fallback would
+  // manufacture a green demo for a broken mechanism.
+  const src = await (await import('node:fs/promises')).readFile(
+    new URL('../src/servicenow/acl-authoring.js', import.meta.url), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*\*|^\s*\/\*|^\s*\/\//.test(l)).join('\n');
+  assert.ok(!/new GlideRecord\('sys_security_acl'\)[\s\S]{0,400}\.insert\(\)/.test(code),
+    'sys_security_acl must only ever be inserted through GlideRecordSecure');
+  assert.match(code, /new GlideRecordSecure\('sys_security_acl'\)/);
 });

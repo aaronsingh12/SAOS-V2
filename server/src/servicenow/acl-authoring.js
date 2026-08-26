@@ -262,6 +262,15 @@ export function buildAclAuthorSource({ payload, roleName = null, marker }) {
     '  // RESIDUE. A denied secure insert should leave nothing; this is what',
     '  // proves it rather than assuming it. Queried on the marker, which is',
     '  // unique to this run, so an unrelated ACL of the same name is not counted.',
+    '  //',
+    '  // THE MARKER IS NOT DURABLE, and that is fine HERE but nowhere else.',
+    '  // Measured at 4.3: the "Generate ACL Description on First Save" business',
+    '  // rule rewrites `description` after insert, so the marker is gone from any',
+    '  // ACL that was successfully created by the time a LATER execution looks.',
+    '  // This check still does its job, because its job is to prove that a DENIED',
+    '  // insert created nothing — and when nothing was created there is nothing',
+    '  // for the rule to rewrite. Any later lookup of a kept artifact must go by',
+    '  // sys_id, never by this marker.',
     "  var rc = new GlideRecord('sys_security_acl');",
     "  rc.addQuery('description', 'CONTAINS', MARKER);",
     '  rc.query();',
@@ -305,6 +314,123 @@ export function buildAclAuthorSource({ payload, roleName = null, marker }) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Update-set scoping — instance hygiene for the authored artifact
+ * ------------------------------------------------------------------ */
+
+/**
+ * Wrap an op so it runs inside a DISPOSABLE update set, and put the worker back
+ * where it was afterwards.
+ *
+ * Why this exists: Phase 0 trap I measured that deleting an ACL leaves its
+ * `sys_update_xml` rows behind — configuration outliving the record it
+ * describes. Sweeping those rows individually is the thing the sprint text
+ * explicitly does not want; the set-level teardown is the remedy under test.
+ *
+ * THE RESTORE IS THE DANGEROUS HALF, and it is why the previous set is captured
+ * before anything else and read back after. The Gate 4 probe measured the
+ * worker's current update set as `9055f633…` — NOT Default. A scheduler worker
+ * left pointed at a disposable set would silently capture whatever ran on it
+ * next, on a pooled worker shared with every other harness call in the process.
+ * So the restore sits in a `finally`, and its success is asserted by re-reading
+ * `GlideUpdateSet().get()` rather than inferred from `set()` not throwing —
+ * the same discipline Phase 0 forced on `enableElevatedRole`, for the same
+ * reason: the call reports nothing useful.
+ */
+export function buildUpdateSetScopedSource({ inner, setName, marker }) {
+  if (!inner || !String(inner).trim()) throw new Error('An inner source is required.');
+  if (!setName) throw new Error('A set name is required so the disposable set is identifiable on the instance.');
+  if (!marker) throw new Error('A run marker is required.');
+  return [
+    `  var US = { requested_name: ${jsLiteral(setName)}, marker: ${jsLiteral(marker)} };`,
+    '  US.previous = null; US.disposable = null; US.created = false; US.set_ok = false; US.restore_ok = false;',
+    '',
+    '  // Captured FIRST. Everything below can fail; this must not be unknown.',
+    '  try { US.previous = String(new GlideUpdateSet().get()); }',
+    '  catch (usErr) { US.previous_error = String(usErr); }',
+    '',
+    "  var usg = new GlideRecord('sys_update_set');",
+    '  usg.initialize();',
+    `  usg.setValue('name', ${jsLiteral(setName)});`,
+    `  usg.setValue('description', ${jsLiteral(`NowHelpAssist disposable set for role-elevation demo. ${marker}`)});`,
+    "  usg.setValue('state', 'in progress');",
+    '  var usId = String(usg.insert());',
+    '  US.disposable = usId;',
+    '  US.created = (usId.length === 32);',
+    "  var usb = new GlideRecord('sys_update_set');",
+    '  if (US.created && usb.get(usId)) {',
+    "    US.readback = { name: String(usb.getValue('name')), state: String(usb.getValue('state')),",
+    "                    application: String(usb.getValue('application')) };",
+    '  } else { US.readback = null; }',
+    '',
+    '  if (US.created) {',
+    '    try {',
+    '      new GlideUpdateSet().set(usId);',
+    '      US.current_after_set = String(new GlideUpdateSet().get());',
+    '      US.set_ok = (US.current_after_set === usId);',
+    '    } catch (setErr) { US.set_error = String(setErr); }',
+    '  }',
+    '  out.update_set = US;',
+    '',
+    '  try {',
+    inner,
+    '  } finally {',
+    '    // The restore, and the READ-BACK that proves it. Verification point 1.',
+    '    try {',
+    '      if (US.previous) { new GlideUpdateSet().set(US.previous); }',
+    '      US.current_after_restore = String(new GlideUpdateSet().get());',
+    '      US.restore_ok = (US.current_after_restore === US.previous);',
+    '    } catch (restErr) { US.restore_error = String(restErr); }',
+    '    out.update_set = US;',
+    '  }',
+  ].join('\n');
+}
+
+/**
+ * Delete the disposable set and MEASURE whether its children went with it.
+ *
+ * Deliberately does not remove anything else. If the cascade does not happen,
+ * the orphans are counted, named and left exactly where they are — recording an
+ * unwanted platform behaviour is the point of the probe, and sweeping the
+ * evidence would turn a finding into a chore nobody knows about. The individual
+ * `sys_update_xml` delete is also the call the local permission classifier
+ * declined during Phase 0, so this path must never depend on it.
+ */
+export function buildUpdateSetTeardownSource(updateSetSysId) {
+  const id = assertSysId(updateSetSysId, 'the disposable update set sys_id');
+  return [
+    `  var SET = ${jsLiteral(id)};`,
+    '  var teardown = { set: SET };',
+    '',
+    "  var kids = new GlideRecord('sys_update_xml');",
+    "  kids.addQuery('update_set', SET);",
+    '  kids.query();',
+    '  var before = [];',
+    '  while (kids.next()) {',
+    "    before.push({ sys_id: kids.getUniqueValue(), target_name: String(kids.getValue('target_name') || ''),",
+    "                  type: String(kids.getValue('type') || ''), name: String(kids.getValue('name') || '') });",
+    '  }',
+    '  teardown.children_before = before;',
+    '',
+    "  var usr = new GlideRecord('sys_update_set');",
+    '  teardown.set_found = usr.get(SET);',
+    '  if (teardown.set_found) { usr.deleteRecord(); }',
+    "  var usv = new GlideRecord('sys_update_set');",
+    '  teardown.set_deleted = (usv.get(SET) === false);',
+    '',
+    "  var after = new GlideRecord('sys_update_xml');",
+    "  after.addQuery('update_set', SET);",
+    '  after.query();',
+    '  var orphans = [];',
+    '  while (after.next()) { orphans.push(after.getUniqueValue()); }',
+    '  teardown.orphans = orphans;',
+    '  teardown.orphan_count = orphans.length;',
+    '  teardown.cascade_clears_children = (before.length > 0 && orphans.length === 0);',
+    '  // NOTHING IS DELETED HERE. Orphans are recorded, not swept.',
+    '  out.teardown = teardown;',
+  ].join('\n');
+}
+
+/* ------------------------------------------------------------------ *
  * The two runs
  * ------------------------------------------------------------------ */
 
@@ -316,9 +442,12 @@ export function buildAclAuthorSource({ payload, roleName = null, marker }) {
  * the difference in outcome can be attributed to the lifecycle.
  */
 export async function runAclAuthor({
-  payload, roleName, marker, role, requireElevation, emit, timeoutMs,
+  payload, roleName, marker, role, requireElevation, updateSetName = null, emit, timeoutMs,
 } = {}) {
-  const opSource = buildAclAuthorSource({ payload, roleName, marker });
+  let opSource = buildAclAuthorSource({ payload, roleName, marker });
+  if (updateSetName) {
+    opSource = buildUpdateSetScopedSource({ inner: opSource, setName: updateSetName, marker });
+  }
   const res = await runElevated({
     role,
     opSource,
@@ -334,6 +463,7 @@ export async function runAclAuthor({
     elevation: res.payload?.elevation ?? null,
     elevationVerdict: assessElevation(res.payload),
     authored: res.payload?.authored ?? null,
+    updateSet: res.payload?.update_set ?? null,
     opError: res.payload?.opError ?? null,
   };
 }
@@ -344,6 +474,36 @@ export async function runAclAuthor({
 
 /** Fields compared field-by-field against the live record. */
 const VERIFIED_FIELDS = ['name', 'operation', 'type', 'active', 'admin_overrides', 'condition', 'script', 'description'];
+
+/**
+ * Fields the PLATFORM owns on this table, and the evidence that it does.
+ *
+ * MEASURED, not assumed (4.3, 2026-08-26). The first live elevated author came
+ * back `verified: false` with `description` mismatched: the requested text was
+ * replaced by
+ *
+ *   "Allow read for records in incident, for users with role itil, and if the
+ *    ACL condition (...) evaluates to true."
+ *
+ * The confabulation guard caught it, which is the guard doing its job — and then
+ * the cause was corroborated rather than guessed. `sys_script` where
+ * `collection=sys_security_acl` holds an ACTIVE business rule named
+ * "Generate ACL Description on First Save": `when=after`, `order=1000`,
+ * `action_insert=1`, `action_update=0`, and its script references `description`.
+ * The record's `sys_mod_count` is `1` immediately after creation — inserted,
+ * then modified once by that rule.
+ *
+ * So a differing description here is a TRANSFORM, not a dropped write, and
+ * collapsing the two would be the mistake write-verify.js exists to prevent:
+ * "the platform computed this" and "our value was silently discarded" are
+ * opposite facts. A field is only treated as transformed when the live value is
+ * non-empty — an EMPTY live value where text was requested is a real drop, and
+ * still fails.
+ */
+const PLATFORM_COMPUTED = {
+  description: 'the "Generate ACL Description on First Save" business rule (after/insert, order 1000) '
+    + 'rewrites this field on creation',
+};
 
 /**
  * Re-read the ACL over a DIFFERENT transport and compare every field.
@@ -384,11 +544,19 @@ export async function verifyAclLive({ sysId, expected, roleLink = null, readReco
 
   const cell = (v) => (v && typeof v === 'object' ? (v.value ?? '') : (v ?? ''));
   const mismatches = [];
+  const transformed = [];
   for (const f of VERIFIED_FIELDS) {
     if (!(f in expected)) continue;
     const want = String(expected[f] ?? '');
     const got = String(cell(live[f]));
-    if (want !== got) mismatches.push({ field: f, requested: want, live: got });
+    if (want === got) continue;
+    // A platform-computed field that came back with SOMETHING is a transform.
+    // One that came back empty is a drop, and stays a failure.
+    if (PLATFORM_COMPUTED[f] && got !== '') {
+      transformed.push({ field: f, requested: want, live: got, reason: PLATFORM_COMPUTED[f] });
+      continue;
+    }
+    mismatches.push({ field: f, requested: want, live: got });
   }
 
   let link = null;
@@ -412,15 +580,22 @@ export async function verifyAclLive({ sysId, expected, roleLink = null, readReco
   }
 
   const verified = mismatches.length === 0 && (link === null || link.verified === true);
+  const transformNote = transformed.length
+    ? ` ${transformed.length} field(s) were rewritten by the platform and are reported as transformed, not applied: `
+      + `${transformed.map((t) => `${t.field} (${t.reason})`).join('; ')}.`
+    : '';
   return {
     verified,
     reason: verified ? null : (mismatches.length ? 'field_mismatch' : 'role_link_mismatch'),
     sys_id: id,
     mismatches,
+    transformed,
     roleLink: link,
     detail: verified
-      ? `The ACL re-read over the Table API and every compared field matches what was requested${link ? ', including its role association' : ''}.`
-      : `The record exists but does not match what was requested: ${mismatches.map((m) => `${m.field} requested "${m.requested}", live "${m.live}"`).join('; ') || 'role association differs'}.`,
+      ? `The ACL re-read over the Table API and every field this write controls matches what was requested`
+        + `${link ? ', including its role association' : ''}.${transformNote}`
+      : `The record exists but does not match what was requested: `
+        + `${mismatches.map((m) => `${m.field} requested "${m.requested}", live "${m.live}"`).join('; ') || 'role association differs'}.${transformNote}`,
   };
 }
 
@@ -450,6 +625,33 @@ export function describeEffect({ control, elevated }) {
     notEstablished: [],
   };
 
+  /*
+   * THE STOP CONDITION.
+   *
+   * `canCreate()` true and `insert()` still null is not a soft "inconclusive" —
+   * it is the predicate and the outcome disagreeing on the one table this whole
+   * feature turns on, in the direction that Phase 0 never observed. (0.5
+   * measured the OPPOSITE disagreement: canCreate false, plain insert landing.)
+   *
+   * It is called out separately, and first, because the tempting response is the
+   * wrong one: swap in a plain `GlideRecord`, watch the row appear, and report a
+   * successful demo. That would be manufacturing the result. The plain API is
+   * already known to work here unelevated (0.5), so falling back to it proves
+   * nothing about elevation and would produce a green report for a broken
+   * mechanism. No code path in this module does it.
+   */
+  const predicateOutcomeSplit = elevated?.authored?.preflight?.canCreate === true
+    && elevated?.authored?.dispatched === false;
+  if (predicateOutcomeSplit) {
+    claims.notEstablished.push(
+      'STOP CONDITION MET: elevated, GlideRecordSecure.canCreate() reported true, and insert() still returned '
+      + `${JSON.stringify(elevated?.authored?.insert_return ?? null)}. The capability predicate and the outcome `
+      + 'disagree on sys_security_acl. This is a real failure and a finding for the ledger, not an inconclusive '
+      + 'run. Do NOT retry through a plain GlideRecord to obtain a green demo: Phase 0 0.5 already showed the '
+      + 'plain API writes here unelevated, so a row produced that way would be evidence of nothing.'
+    );
+  }
+
   if (controlDispatched === false && elevatedDispatched === true) {
     claims.supported.push(
       'Elevating security_admin is what allowed this ACL to be authored THROUGH GlideRecordSecure: '
@@ -462,7 +664,7 @@ export function describeEffect({ control, elevated }) {
       'The unelevated control SUCCEEDED, so elevation cannot be credited with the secure write on this run. '
       + 'Report this as the measurement, not as a failed demo — it is the same class of result as Phase 0 0.5.'
     );
-  } else if (elevatedDispatched === false) {
+  } else if (elevatedDispatched === false && !predicateOutcomeSplit) {
     claims.notEstablished.push(
       'The elevated author did not insert either, so the A/B establishes nothing about elevation. '
       + 'The control failing on its own is not evidence.'
@@ -480,6 +682,7 @@ export function describeEffect({ control, elevated }) {
     elevatedDispatched,
     controlResidue,
     loadBearing: controlDispatched === false && elevatedDispatched === true,
+    predicateOutcomeSplit,
     ...claims,
   };
 }
