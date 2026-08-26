@@ -410,7 +410,10 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
       kind: 'tool_call', name: call.name, payload: call.input, result: msg,
       resultStatus: 'elev_blocked_no_runner', mutating: true, approval: null,
     });
-    emit({ type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: 'elevation_no_runner', message: msg });
+    emit({
+      type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: 'elevation_no_runner', message: msg,
+      elevation: { tier: null, state: 'FAIL_CLOSED', required_role: null, elevation_occurred: false, target: { table: descriptor.table, sys_id: descriptor.sys_id ?? null }, reason: msg },
+    });
     return true;
   }
 
@@ -444,7 +447,15 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
       kind: 'tool_call', name: call.name, payload: call.input, result: msg,
       resultStatus: `elev_${r.decision}`, mutating: true, approval: null,
     });
-    emit({ type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: `elevation_${r.decision}`, message: msg });
+    emit({
+      type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: `elevation_${r.decision}`, message: msg,
+      elevation: {
+        tier: null,
+        state: r.decision === 'blocked_read_failed' ? 'FAIL_CLOSED' : 'REFUSED',
+        required_role: r.plan.requiredRole, elevation_occurred: false,
+        target: { table: r.plan.op.table, sys_id: descriptor.sys_id ?? null }, reason: r.plan.reason || msg,
+      },
+    });
     return true;
   }
 
@@ -458,7 +469,13 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
       resultStatus: 'elev_denied', mutating: true, approval: 'rejected', approvedSource: r.approvalSource,
     });
     // approval_resolved was already emitted by the approval callback; not re-emitted here.
-    emit({ type: 'tool_result', id: call.id, name: call.name, output: msg, isError: true });
+    emit({
+      type: 'tool_result', id: call.id, name: call.name, output: msg, isError: true,
+      elevation: {
+        tier: null, state: 'DENIED', required_role: r.plan.requiredRole, elevation_occurred: false,
+        target: { table: r.plan.op.table, sys_id: descriptor.sys_id ?? null }, reason: msg,
+      },
+    });
     return true;
   }
 
@@ -495,7 +512,23 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
   }
   if (isError) log.warn('gate', `elevation ${tier} on ${r.plan.op.table} — ${r.outcome?.detail}`);
   else log.info('gate', `elevation EXECUTED on ${r.plan.op.table} — ${r.outcome?.sys_id}`);
-  emit({ type: 'tool_result', id: call.id, name: call.name, output, isError, elevation: { tier } });
+  emit({
+    type: 'tool_result', id: call.id, name: call.name, output, isError,
+    // The renderer derives its state SOLELY from this object — never from
+    // isError, a sys_id, or "approved". Green is reachable only from tier===EXECUTED.
+    elevation: {
+      tier, state: null, required_role: r.plan.requiredRole,
+      elevation_occurred: r.elevated === true,
+      target: { table: r.plan.op.table, sys_id: r.outcome?.sys_id ?? null },
+      compared_fields: r.outcome?.compared_fields ?? [],
+      compared_detail: r.outcome?.compared_detail ?? [],
+      mismatches: r.outcome?.mismatches ?? [],
+      coerced: r.outcome?.coerced ?? [],
+      unverified: r.outcome?.unverified ?? [],
+      detail: r.outcome?.detail ?? null,
+      not_implemented: r.not_implemented === true,
+    },
+  });
   return true;
 }
 

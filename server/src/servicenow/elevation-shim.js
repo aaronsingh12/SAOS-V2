@@ -163,38 +163,66 @@ export async function readTargetByNonce({ table: tableName, nonce, name = null, 
 /** The field projection a requested-vs-actual comparison needs: sys_id + every requested key. */
 function fieldsForComparison(payload, nonceField) {
   const keys = new Set(['sys_id', nonceField, ...Object.keys(payload || {})]);
-  return [...keys].join(',');
+  return [...keys];
 }
 
 /**
  * Tier one outcome from the target read-back, comparing requested vs actual.
- *   EXECUTED — landed and every requested field matches.
- *   COERCED  — landed but a requested field differs (silent platform coercion).
+ *   EXECUTED — landed and every asserted field was VERIFIED to match.
+ *   COERCED  — landed but a field differs, was platform-rewritten, or was
+ *              asserted OUTSIDE the read-back projection (so not confirmable).
  *   FAILED   — not present.
+ *
+ * PROJECTION-SUPERSET GUARD (WI-4). EXECUTED is reachable only when the read-back
+ * projection is a SUPERSET of every asserted field. An asserted field that was
+ * not in the projection was not read, so it cannot be confirmed — treating it as
+ * matched would be the M3/renderer-dishonesty class one layer down. Such a field
+ * is surfaced as `unverified` and the tier is DOWNGRADED off EXECUTED. Only the
+ * fields actually compared appear in `compared_fields`/`compared_detail`, so the
+ * renderer's "confirmed" scope is exactly the verified scope.
+ *
+ * `comparedFields` is the projection actually fetched. Omitting it defaults to
+ * "every requested field was projected" (back-compat) — callers that read a
+ * partial projection MUST pass it so the guard can see the gap.
  * `platformOwned` names fields the platform rewrites (e.g. an ACL `description`
  * business rule) so their divergence reads as COERCED, never as a dropped write.
  */
-export function assessOutcomeTier({ requested, actual, platformOwned = [] }) {
+export function assessOutcomeTier({ requested, actual, comparedFields = null, platformOwned = [] }) {
+  const reqKeys = Object.keys(requested || {});
   if (!actual) {
-    return { tier: 'FAILED', landed: false, sys_id: null, mismatches: [], coerced: [], detail: 'the target record is not present — the write did not land' };
+    return { tier: 'FAILED', landed: false, sys_id: null, mismatches: [], coerced: [], unverified: reqKeys, compared_fields: [], compared_detail: [], detail: 'the target record is not present — the write did not land' };
   }
   const cell = (v) => (v && typeof v === 'object' ? (v.value ?? '') : (v ?? ''));
+  const projection = comparedFields ? new Set(comparedFields) : new Set(reqKeys);
   const owned = new Set(platformOwned);
   const mismatches = [];
   const coerced = [];
-  for (const [f, want] of Object.entries(requested || {})) {
+  const unverified = [];        // asserted, but outside the projection — NOT confirmable
+  const compared_fields = [];   // asserted AND projected — the verified scope
+  const compared_detail = [];
+  for (const f of reqKeys) {
+    const want = String(requested[f] ?? '');
+    if (!projection.has(f)) { unverified.push(f); continue; }
     const got = String(cell(actual[f]) ?? '');
-    if (String(want ?? '') === got) continue;
-    if (owned.has(f) && got !== '') coerced.push({ field: f, requested: String(want ?? ''), actual: got });
-    else mismatches.push({ field: f, requested: String(want ?? ''), actual: got });
+    compared_fields.push(f);
+    compared_detail.push({ field: f, requested: want, actual: got });
+    if (want === got) continue;
+    if (owned.has(f) && got !== '') coerced.push({ field: f, requested: want, actual: got });
+    else mismatches.push({ field: f, requested: want, actual: got });
   }
+  const base = { landed: true, sys_id: cell(actual.sys_id) || null, compared_fields, compared_detail, unverified };
   if (mismatches.length) {
-    return { tier: 'COERCED', landed: true, sys_id: cell(actual.sys_id) || null, mismatches, coerced, detail: `landed, but ${mismatches.length} field(s) differ from what was requested` };
+    return { tier: 'COERCED', ...base, mismatches, coerced, detail: `landed, but ${mismatches.length} field(s) differ from what was requested` };
+  }
+  if (unverified.length) {
+    // Landed, nothing seen to differ — but an asserted field was never read, so
+    // this cannot be called EXECUTED. Loud, non-green.
+    return { tier: 'COERCED', ...base, mismatches: [], coerced, detail: `landed, but ${unverified.length} asserted field(s) were outside the read-back projection and are NOT confirmed: ${unverified.join(', ')}` };
   }
   if (coerced.length) {
-    return { tier: 'COERCED', landed: true, sys_id: cell(actual.sys_id) || null, mismatches: [], coerced, detail: `landed; ${coerced.length} platform-owned field(s) were rewritten` };
+    return { tier: 'COERCED', ...base, mismatches: [], coerced, detail: `landed; ${coerced.length} platform-owned field(s) were rewritten` };
   }
-  return { tier: 'EXECUTED', landed: true, sys_id: cell(actual.sys_id) || null, mismatches: [], coerced: [], detail: 'landed and every requested field matches' };
+  return { tier: 'EXECUTED', ...base, mismatches: [], coerced: [], detail: 'landed and every requested field matches' };
 }
 
 /**
@@ -243,16 +271,17 @@ export async function dispatchElevatedWrite({
     created = true;
     emit({ type: 'elev_job_created', job: jobId });
 
+    const projection = fieldsForComparison(payload, nonceField);
     let actual = null;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await sleep(pollMs);
-      const rows = await readTargetByNonce({ table: tbl, nonce, name, nonceField, fields: fieldsForComparison(payload, nonceField) });
+      const rows = await readTargetByNonce({ table: tbl, nonce, name, nonceField, fields: projection.join(',') });
       if (rows.length) { actual = rows[0]; break; }
       emit({ type: 'elev_waiting', remainingMs: Math.max(0, deadline - Date.now()) });
     }
 
-    const outcome = assessOutcomeTier({ requested: payload, actual, platformOwned });
+    const outcome = assessOutcomeTier({ requested: payload, actual, comparedFields: projection, platformOwned });
     return { dispatched: true, job: jobId, nonce, outcome, actual, validation };
   } finally {
     if (created) {

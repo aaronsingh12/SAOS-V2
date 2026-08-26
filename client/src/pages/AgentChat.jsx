@@ -9,6 +9,7 @@ import { SkeletonLines, LoadingRegion, EmptyState, DisconnectedBanner } from '..
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import ImpersonationChip from '../components/ImpersonationChip.jsx';
 import { writeOutcome, captureReason, approvalProvenance } from '../components/writeOutcome.js';
+import { elevationOutcome } from '../components/elevationOutcome.js';
 
 const SAMPLES = [
   'Create a "Laptop Request" catalog item with 6 sensible variables including a reference to sys_user and a model select box',
@@ -204,6 +205,9 @@ export default function AgentChat() {
               // WI-3 — the token this card must present to approve. It arrives
               // once, with the card, and is never re-requested.
               nonce: evt.nonce || null,
+              // WI-4 — the elevation context: this card authorises elevating a
+              // role, and the human must see that before approving.
+              elevation: evt.elevation || null,
             });
             break;
           case 'approval_resolved':
@@ -215,6 +219,13 @@ export default function AgentChat() {
             });
             break;
           case 'tool_result':
+            // WI-4 — a gated ELEVATION result is its own bubble, rendered SOLELY
+            // from the honest tier (no prior tool_use exists to patch). Its
+            // green is structurally reachable only from tier === EXECUTED.
+            if (evt.elevation) {
+              push({ kind: 'elevation', name: evt.name, elevation: evt.elevation, output: evt.output });
+              break;
+            }
             // `verification` rides along so the card's glyph and words come
             // from the same object (WI-6).
             patchMsg((m) => m.kind === 'tool' && m.toolId === evt.id, {
@@ -238,6 +249,12 @@ export default function AgentChat() {
             break;
           // WI-3 — a write the harness proved is a no-op never reached the gate.
           case 'tool_blocked':
+            // WI-4 — a pre-write elevation refusal (REFUSED / FAIL_CLOSED) is an
+            // elevation bubble, rendered distinctly and never as generic error.
+            if (evt.elevation) {
+              push({ kind: 'elevation', name: evt.name, elevation: evt.elevation, output: null });
+              break;
+            }
             push({ kind: 'blocked', name: evt.name, input: evt.input, reason: evt.reason, text: evt.message });
             break;
           // WI-2 — the harness's own account of what changed, which the model
@@ -622,6 +639,59 @@ export default function AgentChat() {
                 </div>
               );
             }
+            if (m.kind === 'elevation') {
+              // WI-4 — the elevation bubble. Its ENTIRE visual state comes from
+              // elevationOutcome(m.elevation), which derives green solely from
+              // tier === EXECUTED. isError, a sys_id, or "approved" never reach
+              // this render — the M3 class cannot recur here.
+              const o = elevationOutcome(m.elevation);
+              return (
+                <div key={m.id} className="msg">
+                  <div className="tool-card">
+                    <div className="tool-head">
+                      <span
+                        className={`dot ${o.green ? 'on' : ''}`}
+                        style={o.tone === 'bad' ? { background: 'var(--red)' } : o.tone === 'warn' ? { background: 'var(--amber)' } : {}}
+                      />
+                      <span className="name">{m.name || 'role elevation'}</span>
+                      {o.role && <span className="badge amber" title="required role">{o.role}</span>}
+                      <span className={`badge ${o.badgeClass}`} style={{ marginLeft: 'auto' }}>{o.label}</span>
+                    </div>
+                    <div className="tool-body">
+                      <div style={{ fontSize: 12.5, color: o.tone === 'bad' ? 'var(--red)' : o.tone === 'warn' ? 'var(--amber)' : 'inherit' }}>
+                        {o.headline}
+                      </div>
+                      {o.target?.table && (
+                        <div className="label" style={{ marginTop: 6 }}>
+                          target: {o.target.table}{o.target.sys_id ? ` · ${o.target.sys_id}` : ''}
+                        </div>
+                      )}
+                      {o.green && o.confirmedFields.length > 0 && (
+                        <div style={{ marginTop: 6 }}>
+                          <div className="label">verified fields</div>
+                          {o.confirmedFields.map((f) => (
+                            <div key={f.field} style={{ fontSize: 12 }}>✓ {f.field} = {f.actual}</div>
+                          ))}
+                        </div>
+                      )}
+                      {o.showDiff && o.diffs.length > 0 && (
+                        <div style={{ marginTop: 6 }}>
+                          <div className="label" style={{ color: 'var(--amber)' }}>requested vs actual</div>
+                          {o.diffs.map((d) => (
+                            <div key={d.field} style={{ fontSize: 12, color: 'var(--amber)' }}>
+                              {d.field}: requested "{d.requested}" → actual "{d.actual}"
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {o.reason && !o.green && (
+                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{o.reason}</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
             if (m.kind === 'tool') {
               // WI-6 — the glyph and the words come from ONE object.
               //
@@ -674,6 +744,26 @@ export default function AgentChat() {
                   {m.warning && (
                     <div style={{ color: 'var(--amber)', fontSize: 12, marginTop: 6 }}>
                       Heads up — {m.warning}
+                    </div>
+                  )}
+                  {/* WI-4 — this card authorises ELEVATING a role. The human must
+                      see that, and the eligibility verdict behind it, before approving. */}
+                  {m.elevation?.will_elevate && (
+                    <div style={{ border: '1px solid var(--amber)', borderRadius: 6, padding: '6px 8px', marginTop: 6, fontSize: 12 }}>
+                      <div style={{ color: 'var(--amber)', fontWeight: 600 }}>
+                        Elevates {m.elevation.required_role} — high-risk
+                      </div>
+                      {m.elevation.op && (
+                        <div style={{ color: 'var(--muted)' }}>
+                          {m.elevation.op.operation} on {m.elevation.op.table}
+                        </div>
+                      )}
+                      {m.elevation.eligibility && (
+                        <div style={{ color: 'var(--muted)' }}>
+                          eligibility: {m.elevation.eligibility.eligible ? 'eligible' : 'not eligible'}
+                          {m.elevation.eligibility.branch ? ` (${m.elevation.eligibility.branch})` : ''}
+                        </div>
+                      )}
                     </div>
                   )}
                   <pre>{JSON.stringify(m.input, null, 1)}</pre>

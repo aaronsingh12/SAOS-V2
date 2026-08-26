@@ -156,3 +156,36 @@ test('reference cells shaped { value } compare on value', () => {
   const r = assessOutcomeTier({ requested: { operation: 'read' }, actual: { sys_id: 'a'.repeat(32), operation: { value: 'read', display_value: 'Read' } } });
   assert.equal(r.tier, 'EXECUTED');
 });
+
+/* ---- WI-4: projection-superset guard (backend half) ---- */
+
+test('INVARIANT — EXECUTED is unreachable when an asserted field is OUTSIDE the read-back projection', () => {
+  // The write landed and nothing seen differs, but `active` was never projected,
+  // so it cannot be confirmed. The tier must NOT be EXECUTED.
+  const r = assessOutcomeTier({
+    requested: { name: 'x', active: 'false' },
+    actual: { sys_id: 'a'.repeat(32), name: 'x' },     // active not fetched
+    comparedFields: ['sys_id', 'name'],                 // projection ⊄ asserted
+  });
+  assert.notEqual(r.tier, 'EXECUTED');
+  assert.equal(r.tier, 'COERCED');
+  assert.deepEqual(r.unverified, ['active']);
+  assert.match(r.detail, /outside the read-back projection/);
+  // Confirmed scope is exactly the compared scope — `active` is not in it.
+  assert.deepEqual(r.compared_fields, ['name']);
+});
+
+test('the compared scope carries per-field requested/actual, and equals the verified scope', () => {
+  const r = assessOutcomeTier({
+    requested: { name: 'x', active: 'false' },
+    actual: { sys_id: 'a'.repeat(32), name: 'x', active: 'false' },
+    comparedFields: ['sys_id', 'name', 'active'],
+  });
+  assert.equal(r.tier, 'EXECUTED');
+  assert.deepEqual(r.compared_fields, ['name', 'active']);
+  assert.deepEqual(r.compared_detail, [
+    { field: 'name', requested: 'x', actual: 'x' },
+    { field: 'active', requested: 'false', actual: 'false' },
+  ]);
+  assert.deepEqual(r.unverified, []);
+});
