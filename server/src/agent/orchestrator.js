@@ -34,6 +34,8 @@ import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js'
 import { checkWriteTarget } from '../memory/provenance.js';
 import { businessRuleAbortPlaybook, dataVsConfigNote } from './playbooks.js';
 import { planTimeTrapCheck } from './plan-check.js';
+import { isGatedDescriptor, runGatedWrite, resolveRunnerSysId } from '../servicenow/elevation-shim-client.js';
+import { registerElevatedWrite } from '../memory/provenance.js';
 
 /**
  * The backbone, modeled on Claude Code / opencode:
@@ -378,6 +380,123 @@ function awaitApproval(state, approvalId, nonce) {
       },
     });
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * WI-3 — the ELEVATION GATE, wired into the mutation path.
+ *
+ * A write to a security_admin-gated table (sys_security_acl CRUD) CANNOT land
+ * un-elevated (WI-1). So instead of the normal REST executeTool path — which
+ * would silently no-op — a gated op is routed here, and this is the ONLY route
+ * to elevation. The model has no elevate verb; it cannot reach the shim; it
+ * cannot bypass this gate or force a plain-GR fallback.
+ *
+ * Order enforced by the shim client: mechanical (table,op) derivation ->
+ * classifier -> eligibility -> APPROVAL -> shim -> target read-back -> tier.
+ * Refuse/fail-closed happen BEFORE approval; deny => nothing elevated. No
+ * un-elevated revert on any failure path.
+ *
+ * Returns true when it fully handled the call (result + audit pushed).
+ * ------------------------------------------------------------------ */
+async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq, state, emit, results, autoApprove }) {
+  let runner;
+  try {
+    runner = await resolveRunnerSysId();
+  } catch (err) {
+    // FAIL-CLOSED: no resolvable runner means no eligible elevation.
+    const msg = `Refused: this operation on ${descriptor.table} requires elevation, but the runner identity could not be resolved (${err.message}). No elevation, no write.`;
+    results.push({ id: call.id, name: call.name, output: msg, isError: true });
+    recordToolEvent(sessionId, {
+      kind: 'tool_call', name: call.name, payload: call.input, result: msg,
+      resultStatus: 'elev_blocked_no_runner', mutating: true, approval: null,
+    });
+    emit({ type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: 'elevation_no_runner', message: msg });
+    return true;
+  }
+
+  const requestApproval = autoApprove
+    ? async () => ({ approved: true, source: APPROVAL_SOURCES.AUTO_APPROVE, at: new Date().toISOString() })
+    : async (elevationPayload) => {
+        // The amber gate fires BEFORE any elevation or write, enriched with the
+        // elevation context, nonce-bound exactly like every other mutation.
+        const approvalId = crypto.randomUUID();
+        const nonce = crypto.randomBytes(32).toString('base64url');
+        emit({
+          type: 'approval_required', approvalId, nonce, name: call.name, input: call.input,
+          warning: elevationPayload.note, elevation: elevationPayload,
+        });
+        log.warn('gate', `elevation approval required: ${call.name} on ${descriptor.table} — waiting for the user`);
+        const decision = await awaitApproval(state, approvalId, nonce);
+        emit({ type: 'approval_resolved', approvalId, approved: decision.approved, source: decision.source, at: decision.at });
+        return decision;
+      };
+
+  const r = await runGatedWrite({ descriptor, runnerUserSysId: runner, requestApproval, emit });
+
+  // Refused before approval — ineligible or eligibility-read-failed (fail-closed).
+  if (r.refused) {
+    const why = r.decision === 'blocked_read_failed'
+      ? 'eligibility could not be verified (fail-closed)'
+      : 'the runner is not eligible for the required role';
+    const msg = `Refused: ${r.plan.op.table}.${r.plan.op.operation} requires ${r.plan.requiredRole} and ${why}. ${r.plan.reason || ''} No elevation, no write, no fallback.`;
+    results.push({ id: call.id, name: call.name, output: msg, isError: true });
+    recordToolEvent(sessionId, {
+      kind: 'tool_call', name: call.name, payload: call.input, result: msg,
+      resultStatus: `elev_${r.decision}`, mutating: true, approval: null,
+    });
+    emit({ type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: `elevation_${r.decision}`, message: msg });
+    return true;
+  }
+
+  // Denied at the gate — nothing elevated, nothing written.
+  if (r.decision === 'denied') {
+    const msg = 'The user did not approve the elevation. Nothing was elevated or written. Do not retry it; ask what they would like to change.';
+    recordRejection({ sessionId, turnSeq, tool: call.name, table: descriptor.table, sys_id: descriptor.sys_id, requested: descriptor.requested });
+    results.push({ id: call.id, name: call.name, output: msg, isError: true });
+    recordToolEvent(sessionId, {
+      kind: 'tool_call', name: call.name, payload: call.input, result: msg,
+      resultStatus: 'elev_denied', mutating: true, approval: 'rejected', approvedSource: r.approvalSource,
+    });
+    // approval_resolved was already emitted by the approval callback; not re-emitted here.
+    emit({ type: 'tool_result', id: call.id, name: call.name, output: msg, isError: true });
+    return true;
+  }
+
+  // Approved and executed. Truth is the tier from the target read-back.
+  const tier = r.outcome?.tier ?? 'FAILED';
+  const isError = tier !== 'EXECUTED';
+  const output = JSON.stringify({
+    elevation: {
+      tier, op: r.plan.op, required_role: r.plan.requiredRole,
+      elevated: r.elevated === true, ingestion_tier: r.ingestionTier || 'elevated-path',
+      target: r.outcome, not_implemented: r.not_implemented || undefined,
+    },
+  }, null, 1);
+  results.push({ id: call.id, name: call.name, output, isError });
+  recordToolEvent(sessionId, {
+    kind: 'tool_call', name: call.name, payload: call.input, result: output,
+    resultStatus: `elev_${tier.toLowerCase()}`, mutating: true,
+    approval: 'approved', approvedSource: r.approvalSource, approvedAt: r.approvalAt,
+  });
+  // The mutation ledger, tagged with the elevated ingestion tier.
+  appendMutation({
+    sessionId, turnSeq, tool: call.name,
+    descriptor: { table: r.plan.op.table, operation: r.plan.op.operation, requested: descriptor.requested, sys_id: r.outcome?.sys_id ?? null },
+    result: r.actual,
+    verification: {
+      status: tier === 'EXECUTED' ? 'applied' : (tier === 'COERCED' ? 'transformed' : 'no-op'),
+      summary: r.outcome?.detail || tier, ingestion: 'elevated-path',
+    },
+    approval: 'approved', approvedSource: r.approvalSource, approvedAt: r.approvalAt,
+  });
+  // sys_id provenance — the created record, marked elevated-path.
+  if (r.outcome?.sys_id) {
+    registerElevatedWrite({ sessionId, seq: turnSeq, table: r.plan.op.table, sysId: r.outcome.sys_id });
+  }
+  if (isError) log.warn('gate', `elevation ${tier} on ${r.plan.op.table} — ${r.outcome?.detail}`);
+  else log.info('gate', `elevation EXECUTED on ${r.plan.op.table} — ${r.outcome?.sys_id}`);
+  emit({ type: 'tool_result', id: call.id, name: call.name, output, isError, elevation: { tier } });
+  return true;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1645,6 +1764,22 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           try { planWarning = planTimeTrapCheck(guardDescriptor); }
           catch (err) { log.debug?.('gate', `plan-time check failed: ${err.message}`); }
           if (planWarning) log.warn('gate', `plan-time trap: ${planWarning.message}`);
+        }
+
+        /*
+         * WI-3 — the ELEVATION GATE. A write to a security_admin-gated table
+         * cannot land un-elevated (WI-1), so it does NOT take the normal REST
+         * approval+executeTool path below — it is routed through the shim client:
+         * mechanical (table,op) -> classifier -> eligibility -> approval -> shim
+         * -> target read-back -> tier. This is the only route to elevation, and
+         * the model has no verb that reaches it any other way.
+         */
+        if (tool.mutating && guardDescriptor && isGatedDescriptor(guardDescriptor)) {
+          const handled = await handleGatedElevation({
+            tool, call, descriptor: guardDescriptor, sessionId, turnSeq, state, emit, results,
+            autoApprove: Boolean(agent.autoApprove),
+          });
+          if (handled) { mutatingCallCount += 1; continue; }
         }
 
         // Permission gate — the heart of the platform's safety model.

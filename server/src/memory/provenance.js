@@ -35,6 +35,11 @@ export const PROVENANCE_SOURCES = Object.freeze({
   USER_MESSAGE: 'user_message',
   TOOL_RESULT: 'tool_result',
   LEDGER_FACT: 'ledger_fact',
+  // WI-3 — a record authored through the ELEVATED (security_admin) write path.
+  // A distinct ingestion tier so provenance can say not just "this session
+  // produced this sys_id" but "and it was written under elevation", which is
+  // the backlog item this closes.
+  ELEVATED_WRITE: 'elevated_write',
 });
 
 /** A ServiceNow sys_id, and the id a human reads off a card. */
@@ -184,6 +189,26 @@ export function registerFromToolResult({ sessionId, seq, table, result }) {
     return records.length + loose.length;
   } catch (err) {
     log.warn('provenance', `could not index a tool result: ${err.message}`);
+    return 0;
+  }
+}
+
+/**
+ * WI-3 — register a record authored through the elevated write path, tagged with
+ * the `elevated_write` ingestion tier. The mutated record is real provenance
+ * (a gated write cannot land un-elevated), and this is where "written under
+ * elevation" becomes queryable rather than merely logged. Never throws.
+ */
+export function registerElevatedWrite({ sessionId, seq, table, sysId, displayId = null }) {
+  if (!sessionId || !/^[0-9a-f]{32}$/i.test(String(sysId || ''))) return 0;
+  try {
+    insert({
+      session: sessionId, sys_id: String(sysId).toLowerCase(), table_name: table || null,
+      display_id: displayId, source: PROVENANCE_SOURCES.ELEVATED_WRITE, event_seq: seq ?? -1, row_count: 1,
+    });
+    return 1;
+  } catch (err) {
+    log.warn('provenance', `could not register an elevated write: ${err.message}`);
     return 0;
   }
 }
