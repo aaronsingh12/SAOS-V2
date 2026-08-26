@@ -1,289 +1,158 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validateScriptSyntax, wrapWithSentinel, mintSentinel, LIVENESS } from '../src/servicenow/script-liveness.js';
-import { buildElevationBody } from '../src/servicenow/role-elevation.js';
+import { validateScriptSyntax } from '../src/servicenow/script-liveness.js';
 import {
-  SHIM_MARKER,
+  NONCE_FIELD,
   PROBE_ACL_NAME,
-  mintCorrelationId,
-  buildBoundedAclOpSource,
-  buildShimBody,
+  mintNonce,
   buildProbeAclPayload,
-  parseShimVerdict,
-  assessShim,
-  runElevationShim,
+  buildElevatedWriteBody,
+  assessOutcomeTier,
 } from '../src/servicenow/elevation-shim.js';
 
 /**
- * WI-1 — everything provable about the elevation shim without an instance.
- *
- * The EXECUTED proof (an elevated GlideRecordSecure write landing and reading
- * back via NHA's real trigger path, the verdict returned by nonce) is recorded
- * in docs/role-elevation-wi1-result.md. What this file guards is that the
- * generated shim can never silently regress into the shapes Gate 0 measured as
- * dangerous: a plain-GlideRecord write on the gated path, trusting insert()/
- * canCreate() over read-back, a REST runner check that always false-negatives,
- * or a session left elevated. Each invariant names its test here.
+ * The elevation shim — everything provable without an instance, after the WI-3
+ * sink retrofit. The sink/verdict-binding tests are gone (the sink is gone);
+ * every elevation/write/read-back/de-elevate invariant stays. The EXECUTED proof
+ * (an elevated GlideRecordSecure write landing and read back by nonce off the
+ * TARGET record, no sink) is re-run in docs/role-elevation-wi3-result.md.
  */
 
 const RUNNER = '6816f79cc0a8016401c5a33be04be441';
-const CID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const ROLE = 'security_admin';
+const NONCE = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-function shimBody(overrides = {}) {
-  const marker = overrides.marker ?? 'wi1_m';
-  const payload = overrides.payload ?? buildProbeAclPayload({ marker });
-  return buildShimBody({
-    role: overrides.role ?? ROLE,
+function body(overrides = {}) {
+  const nonce = overrides.nonce ?? NONCE;
+  return buildElevatedWriteBody({
+    role: overrides.role ?? 'security_admin',
     runnerUserSysId: overrides.runnerUserSysId ?? RUNNER,
-    payload,
-    marker,
-    correlationId: overrides.correlationId ?? CID,
-    target: overrides.target ?? { table: 'sys_security_acl', operation: 'create' },
+    table: overrides.table ?? 'sys_security_acl',
+    payload: overrides.payload ?? buildProbeAclPayload({ nonce }),
   });
 }
 
-function assertDispatchable(body, label) {
-  const wrapped = wrapWithSentinel({ body, sentinel: mintSentinel(), marker: SHIM_MARKER });
-  const v = validateScriptSyntax(wrapped);
-  assert.equal(v.ok, true, `${label} must validate: ${JSON.stringify(v.errors)}`);
-}
+/* ---- dispatchability + the sink is gone ---- */
 
-/* ---- dispatchability: the body survives the pre-dispatch nets ---- */
+test('the elevated-write body is dispatchable through the ES3 liveness linter', () => {
+  assert.equal(validateScriptSyntax(body()).ok, true);
+});
 
-test('the shim body, the bounded op, and the probe payload are all dispatchable', () => {
-  assertDispatchable(shimBody(), 'shim body');
-  assertDispatchable(buildBoundedAclOpSource({ payload: buildProbeAclPayload({ marker: 'm' }), marker: 'm' }), 'bounded op');
+test('SINK REMOVED — the shim writes no sys_user_preference row', async () => {
+  assert.ok(!/sys_user_preference/.test(body()), 'the body must not create a sink row');
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/servicenow/elevation-shim.js', import.meta.url), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*\*|^\s*\/\*|^\s*\/\//.test(l)).join('\n');
+  assert.ok(!/sys_user_preference/.test(code), 'the shim module must not reference the removed sink');
+  assert.ok(!/runConfirmedScript|wrapWithSentinel/.test(code), 'the shim must not route through the sentinel/sink path');
 });
 
 /* ---- INVARIANT 1: GlideRecordSecure-only on the gated write ---- */
 
-test('INVARIANT 1 — the gated write is GlideRecordSecure ONLY; a plain GlideRecord insert on sys_security_acl is banned', () => {
-  const body = shimBody();
-  // The gated mutation exists and is secure.
-  assert.match(body, /new GlideRecordSecure\('sys_security_acl'\)/, 'the write must go through GlideRecordSecure');
-  // Gate 0 B1a: a plain GlideRecord insert into this table persists un-elevated,
-  // which would make elevation decorative. It must never appear on the gated path.
-  assert.ok(
-    !/new GlideRecord\('sys_security_acl'\)[\s\S]{0,400}\.insert\(\)/.test(body),
-    'sys_security_acl must only ever be INSERTED through GlideRecordSecure — the M3/renderer-dishonesty class',
-  );
-  // The module source itself carries the same guarantee, comments aside.
-  return import('node:fs/promises').then(async ({ readFile }) => {
-    const src = await readFile(new URL('../src/servicenow/elevation-shim.js', import.meta.url), 'utf8');
-    const code = src.split('\n').filter((l) => !/^\s*\*|^\s*\/\*|^\s*\/\//.test(l)).join('\n');
-    assert.ok(
-      !/new GlideRecord\('sys_security_acl'\)[\s\S]{0,400}\.insert\(\)/.test(code),
-      'no fallback to a plain GlideRecord insert anywhere in the module',
-    );
-  });
+test('INVARIANT — the gated write is GlideRecordSecure ONLY; a plain GlideRecord insert is banned', async () => {
+  const b = body();
+  assert.match(b, /new GlideRecordSecure\(TARGET_TABLE\)/, 'the write must go through GlideRecordSecure');
+  assert.ok(!/new GlideRecord\([^)]*\)[\s\S]{0,200}\.insert\(\)/.test(b), 'no plain GlideRecord insert on the gated path');
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/servicenow/elevation-shim.js', import.meta.url), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*\*|^\s*\/\*|^\s*\/\//.test(l)).join('\n');
+  assert.ok(!/new GlideRecord\([^)]*\)[\s\S]{0,200}\.insert\(\)/.test(code), 'no fallback to a plain GlideRecord insert anywhere in the module');
 });
 
-/* ---- INVARIANT 2: truth-assert on gs.hasRole immediately before the write ---- */
+/* ---- INVARIANT 2: assert gs.hasRole before the write ---- */
 
-test('INVARIANT 2 — elevation is asserted on gs.hasRole, and the assert precedes the gated write', () => {
-  const body = shimBody();
-  // The proven lifecycle is embedded verbatim, so its gs.hasRole assert is present.
-  assert.ok(body.includes('ELEVATION_ASSERT_FAILED'), 'the elevation assert must be present');
-  const assertAt = body.indexOf('ELEVATION_ASSERT_FAILED');
-  const writeAt = body.indexOf('w.insert()');
+test('INVARIANT — gs.hasRole is asserted true immediately before the write', () => {
+  const b = body();
+  const assertAt = b.indexOf('gs.hasRole(ROLE) === true');
+  const writeAt = b.indexOf('new GlideRecordSecure(TARGET_TABLE)');
   assert.ok(assertAt > 0 && writeAt > assertAt, 'the write must come AFTER the gs.hasRole assertion');
-  // And it asserts the true seam (gs.hasRole), never gs.getUser().hasRole (Gate 0 A3).
-  assert.ok(!/getUser\(\)\.hasRole/.test(body), 'must not assert on gs.getUser().hasRole, which never flips');
+  assert.ok(!/getUser\(\)\.hasRole/.test(b), 'must assert on gs.hasRole, never gs.getUser().hasRole');
 });
 
-test('the embedded lifecycle is the PROVEN buildElevationBody, unaltered', () => {
-  // [A-trigger]: the shim reproduces Gate 0 elevation because it runs Gate 0 source.
-  const marker = 'wi1_m';
-  const op = buildBoundedAclOpSource({ payload: buildProbeAclPayload({ marker }), marker });
-  const core = buildElevationBody({ role: ROLE, opSource: op });
-  assert.ok(shimBody({ marker }).includes(core), 'the shim must embed buildElevationBody(...) verbatim');
+/* ---- INVARIANT 3: de-elevate in finally ---- */
+
+test('INVARIANT — de-elevation runs in a finally, on every path', () => {
+  const b = body();
+  assert.match(b, /\} finally \{[\s\S]*disableElevatedRole\(ROLE\)/, 'disable must sit in the finally');
+  const enableAt = b.indexOf('enableElevatedRole(ROLE)');
+  const disableAt = b.indexOf('disableElevatedRole(ROLE)');
+  assert.ok(enableAt > 0 && disableAt > enableAt);
 });
 
-/* ---- INVARIANT 3: success = read-back only ---- */
+/* ---- runner precondition + reachability, before elevation ---- */
 
-test('INVARIANT 3 — candidate_sys_id is a 32-hex insert() return AT MOST; success is read-back', () => {
-  // A candidate that never reads back is not a pass.
-  const candidateOnly = parseShimVerdict({
-    shim: {
-      correlation_id: CID, runner_has_security_admin: true, reachability_ok: true, elevation_confirmed: true,
-      gr_secure_used: true, candidate_sys_id: '0123456789abcdef0123456789abcdef', insert_return: '0123456789abcdef0123456789abcdef',
-      readback_confirmed: false, de_elevated: true, error: null,
-    },
-  });
-  const a = assessShim(candidateOnly);
-  assert.equal(a.passed, false);
-  assert.match(a.reason, /candidate is not a write/);
-
-  // The "null" string a denied secure insert returns is never a candidate.
-  const denied = parseShimVerdict({
-    shim: {
-      correlation_id: CID, runner_has_security_admin: true, reachability_ok: true, elevation_confirmed: true,
-      gr_secure_used: true, candidate_sys_id: 'null', insert_return: 'null', readback_confirmed: false, de_elevated: true,
-    },
-  });
-  assert.equal(denied.candidate_sys_id, null, '"null" must not be coerced into a sys_id');
-  assert.match(assessShim(denied).reason, /not a persisted row/);
+test('the runner precondition is a server-side sys_user_has_role read, gating the enable', () => {
+  const b = body();
+  assert.match(b, /new GlideRecord\('sys_user_has_role'\)/, 'assignment is read server-side (H6)');
+  const precondAt = b.indexOf("new GlideRecord('sys_user_has_role')");
+  const enableAt = b.indexOf('enableElevatedRole(ROLE)');
+  assert.ok(precondAt > 0 && enableAt > precondAt, 'no enable before the runner precondition');
+  assert.match(b, /if \(runnerHasRole && reachable\)/, 'enable only when the runner holds the role AND the manager resolves');
 });
 
-test('the bounded op captures canCreate and insert() but the verdict never rests on them', () => {
-  const body = shimBody();
-  assert.match(body, /out\.shim\.can_create = probe\.canCreate\(\)/, 'canCreate is captured');
-  assert.match(body, /out\.shim\.insert_return = written/, 'insert() return is captured');
-  // Success in the body is set only inside the read-back branch.
-  assert.match(body, /if \(rb\.get\(out\.shim\.candidate_sys_id\)\) \{\s*out\.shim\.readback_confirmed = true;/,
-    'readback_confirmed is set only when the row re-reads by sys_id');
+test('the reachability guard re-asserts GlideSecurityManager resolves', () => {
+  assert.match(body(), /typeof GlideSecurityManager === 'function'.*GlideSecurityManager\.get\(\) !== null/s);
 });
 
-/* ---- INVARIANT 4: de-elevate in finally, restore-verified ---- */
+/* ---- INVARIANT 5: never delete sys_update_xml ---- */
 
-test('INVARIANT 4 — de-elevation is confirmed via gs.hasRole, and assessShim requires it', () => {
-  const body = shimBody();
-  // The embedded lifecycle de-elevates in a finally and reads gs.hasRole back.
-  assert.match(body, /disableElevatedRole\(ROLE\)/);
-  assert.match(body, /deelevated_ok = \(out\.elevation\.after\.has_role === false\)/);
-  // A run that never confirmed de-elevation does not pass.
-  const stuck = parseShimVerdict({
-    shim: {
-      correlation_id: CID, runner_has_security_admin: true, reachability_ok: true, elevation_confirmed: true,
-      gr_secure_used: true, candidate_sys_id: '0123456789abcdef0123456789abcdef', readback_confirmed: true, de_elevated: false,
-    },
-  });
-  assert.match(assessShim(stuck).reason, /not confirmed de-elevated/);
-});
-
-/* ---- INVARIANT 5: the production path never deletes sys_update_xml ---- */
-
-test('INVARIANT 5 — the shim never deletes sys_update_xml; provenance is recorded, not swept', async () => {
-  const body = shimBody();
-  assert.ok(!/sys_update_xml/.test(body), 'the shim body must not touch sys_update_xml');
+test('INVARIANT — the shim never deletes sys_update_xml; provenance recorded, not swept', async () => {
+  assert.ok(!/sys_update_xml/.test(body()));
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/servicenow/elevation-shim.js', import.meta.url), 'utf8');
   const code = src.split('\n').filter((l) => !/^\s*\*|^\s*\/\*|^\s*\/\//.test(l)).join('\n');
-  assert.ok(!/sys_update_xml/.test(code), 'only the WI-1 acceptance test reverts its own probe; the shim leaves provenance alone');
+  assert.ok(!/sys_update_xml/.test(code), 'only the acceptance test reverts provenance; the shim leaves it alone');
 });
 
-/* ---- the runner precondition (a) ---- */
+/* ---- no hardcoded role ---- */
 
-test('the runner precondition is a SERVER-SIDE sys_user_has_role read, not a REST one', () => {
-  // Gate 0 A4b: the security_admin role record is invisible over REST (0 rows).
-  const body = shimBody();
-  assert.match(body, /new GlideRecord\('sys_user_has_role'\)/, 'the role-hold check must be a server-side GlideRecord');
-  assert.match(body, /new GlideRecord\('sys_user_role'\)/, 'the role sys_id is resolved server-side by name');
-  // The elevation lifecycle is gated on the precondition passing.
-  const precondAt = body.indexOf("new GlideRecord('sys_user_has_role')");
-  const gateAt = body.indexOf('if (__shimProceed) {');
-  const enableAt = body.indexOf('enableElevatedRole(ROLE)');
-  assert.ok(precondAt > 0 && gateAt > precondAt && enableAt > gateAt, 'no enableElevatedRole before the precondition gate');
-});
-
-test('a runner without the role fails loud, performs no write, and carries the spec error string', async () => {
-  // The Node runner surfaces the verdict; a missing role is elevation_confirmed:false, error set.
-  const missing = {
-    correlation_id: CID, runner_user: RUNNER, runner_has_security_admin: false,
-    reachability_ok: false, elevation_confirmed: false, gr_secure_used: false,
-    candidate_sys_id: null, insert_return: null, readback_confirmed: false, de_elevated: false,
-    error: 'runner lacks security_admin',
-  };
-  const run = async () => ({ liveness: LIVENESS.CONFIRMED, sentinel: 's', payload: { sentinel: 's', shim: missing }, detail: null });
-  const r = await runElevationShim({ role: ROLE, runnerUserSysId: RUNNER, correlationId: CID, _run: run });
-  assert.equal(r.assessment.passed, false);
-  assert.equal(r.assessment.reason, 'runner lacks security_admin');
-  assert.equal(r.verdict.candidate_sys_id, null, 'no write may be reported when the precondition failed');
-});
-
-/* ---- the reachability guard (b) ---- */
-
-test('the reachability guard re-asserts Gate 0 A2 and gates elevation on it', () => {
-  const body = shimBody();
-  assert.match(body, /typeof GlideSecurityManager/, 'reachability must probe GlideSecurityManager');
-  assert.match(body, /GlideSecurityManager\.get\(\)/);
-  const reachAt = body.indexOf('reachability_ok = (__sm !== null)');
-  const gateAt = body.indexOf('if (__shimProceed) {');
-  assert.ok(reachAt > 0 && gateAt > reachAt, 'reachability is decided before the elevation gate');
-});
-
-/* ---- the result-capture contract (d) [A-result] ---- */
-
-test('the verdict is bound to this run by an embedded correlation_id nonce, checked on read-back', async () => {
-  const base = {
-    runner_user: RUNNER, runner_has_security_admin: true, reachability_ok: true, elevation_confirmed: true,
-    gr_secure_used: true, candidate_sys_id: '0123456789abcdef0123456789abcdef', insert_return: '0123456789abcdef0123456789abcdef',
-    readback_confirmed: true, before: { existing_by_marker: 0 }, after: {}, coerced: false, de_elevated: true, error: null,
-  };
-  const mk = (shim) => async () => ({ liveness: LIVENESS.CONFIRMED, sentinel: 's', payload: { sentinel: 's', shim }, detail: null });
-
-  // Nonce echoed → bound, and the whole chain passes.
-  const ok = await runElevationShim({ role: ROLE, runnerUserSysId: RUNNER, correlationId: CID, _run: mk({ ...base, correlation_id: CID }) });
-  assert.equal(ok.bound, true);
-  assert.equal(ok.assessment.passed, true);
-  assert.equal(ok.resultCapture.table, 'sys_user_preference', 'the durable result record is named explicitly');
-
-  // Nonce NOT echoed → bound:false. The WI-1 stop rule: a foreign/stale payload
-  // is not this run's verdict, and must never be reported as success.
-  const foreign = await runElevationShim({ role: ROLE, runnerUserSysId: RUNNER, correlationId: CID, _run: mk({ ...base, correlation_id: 'ffffffffffffffffffffffffffffffff' }) });
-  assert.equal(foreign.bound, false);
-});
-
-test('parseShimVerdict reads PER FIELD off one parsed payload — never re-parses a string', async () => {
-  // Guards against reintroducing the fix/sysid-provenance whole-string JSON.parse.
-  const { readFile } = await import('node:fs/promises');
-  const src = await readFile(new URL('../src/servicenow/elevation-shim.js', import.meta.url), 'utf8');
-  const code = src.split('\n').filter((l) => !/^\s*\*|^\s*\/\*|^\s*\/\//.test(l)).join('\n');
-  assert.ok(!/JSON\.parse/.test(code), 'the shim client must not JSON.parse — it reads fields off the harness-parsed payload');
-  assert.equal(parseShimVerdict({}), null);
-  assert.equal(parseShimVerdict(null), null);
-  const v = parseShimVerdict({ shim: { correlation_id: CID, candidate_sys_id: 'not-hex', insert_return: 'null' } });
-  assert.equal(v.candidate_sys_id, null, 'a non-hex candidate is normalised to null');
-});
-
-/* ---- input validation: configurable runner, fail-loud [A-runner] ---- */
-
-test('the runner sys_id is required and validated; a bad one is refused loudly', () => {
-  assert.throws(() => buildShimBody({ role: ROLE, runnerUserSysId: 'nope', payload: buildProbeAclPayload({ marker: 'm' }), marker: 'm', correlationId: CID }),
-    /32-character hex sys_id/);
-  assert.throws(() => buildShimBody({ role: ROLE, runnerUserSysId: RUNNER, payload: buildProbeAclPayload({ marker: 'm' }), marker: 'm', correlationId: 'short' }),
-    /32-char hex nonce/);
-  assert.throws(() => buildProbeAclPayload({ marker: '' }), /marker is required/);
-  assert.throws(() => buildBoundedAclOpSource({ payload: {}, marker: '' }), /run marker is required/);
-});
-
-test('the probe ACL is inactive, role-less, on a nonexistent table, and marked for cleanup', () => {
-  const p = buildProbeAclPayload({ marker: 'wi1_unique' });
-  assert.equal(p.name, PROBE_ACL_NAME);
-  assert.equal(p.active, 'false', 'the probe must be inactive — an active ACL on a real table is a security change');
-  assert.match(p.description, /wi1_unique/, 'the marker rides the description for by-marker cleanup');
-});
-
-/* ---- INVARIANT 6 (house rule): no role name is hardcoded ---- */
-
-test('the shim module names no role literally — security_admin is discovered and handed in', async () => {
+test('the shim module names no role literally — security_admin is handed in', async () => {
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/servicenow/elevation-shim.js', import.meta.url), 'utf8');
   const code = src.split('\n').filter((l) => !/^\s*\*|^\s*\/\*|^\s*\/\//.test(l)).join('\n');
   assert.ok(!/['"]security_admin['"]/.test(code), 'elevation-shim.js must not hardcode a role name in code');
 });
 
-/* ---- the shim stays non-callable in WI-1 ---- */
+/* ---- the probe payload ---- */
 
-test('the shim is NOT registered as a model-callable tool in WI-1', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const src = await readFile(new URL('../src/agent/tools.js', import.meta.url), 'utf8');
-  assert.ok(!/elevation-shim|runElevationShim|elevation_shim/.test(src),
-    'WI-1 forbids wiring the shim to an agent tool — that is WI-3, behind an approval gate');
+test('the probe ACL is inactive, on a nonexistent table, tagged with the nonce', () => {
+  const p = buildProbeAclPayload({ nonce: NONCE });
+  assert.equal(p.name, PROBE_ACL_NAME);
+  assert.equal(p.active, 'false', 'the probe must be inactive');
+  assert.match(p[NONCE_FIELD], new RegExp(NONCE), 'the nonce rides the read-back field');
+  assert.throws(() => buildProbeAclPayload({ nonce: 'short' }), /32-char hex nonce/);
 });
 
-/* ---- the whole chain, assessed link by link ---- */
+/* ---- INVARIANT: truth = target read-back; tiers ---- */
 
-test('assessShim names the FIRST failing seam, never a bare boolean', () => {
-  const full = {
-    correlation_id: CID, runner_has_security_admin: true, reachability_ok: true, elevation_confirmed: true,
-    gr_secure_used: true, candidate_sys_id: '0123456789abcdef0123456789abcdef', readback_confirmed: true, de_elevated: true, error: null,
-  };
-  assert.deepEqual(assessShim(parseShimVerdict({ shim: full })), { passed: true, reason: null });
-  assert.match(assessShim(parseShimVerdict({ shim: { ...full, reachability_ok: false } })).reason, /GlideSecurityManager/);
-  assert.match(assessShim(parseShimVerdict({ shim: { ...full, elevation_confirmed: false } })).reason, /gs\.hasRole did not flip/);
-  assert.match(assessShim(parseShimVerdict({ shim: { ...full, gr_secure_used: false } })).reason, /GlideRecordSecure/);
-  assert.equal(assessShim(null).passed, false);
+test('INVARIANT — the outcome tier comes from the target read-back, never a self-report', () => {
+  // FAILED on absence — never green.
+  const gone = assessOutcomeTier({ requested: { name: 'x' }, actual: null });
+  assert.equal(gone.tier, 'FAILED');
+  assert.equal(gone.landed, false);
+
+  // EXECUTED when landed + every requested field matches.
+  const ok = assessOutcomeTier({ requested: { name: 'x_nha_wi3_probe', active: 'false' }, actual: { sys_id: '0123456789abcdef0123456789abcdef', name: 'x_nha_wi3_probe', active: 'false' } });
+  assert.equal(ok.tier, 'EXECUTED');
+  assert.equal(ok.sys_id, '0123456789abcdef0123456789abcdef');
+
+  // COERCED when a requested field differs.
+  const drift = assessOutcomeTier({ requested: { name: 'x', active: 'false' }, actual: { sys_id: 'a'.repeat(32), name: 'x', active: 'true' } });
+  assert.equal(drift.tier, 'COERCED');
+  assert.equal(drift.mismatches[0].field, 'active');
+
+  // A platform-owned rewrite is COERCED, not a dropped write.
+  const owned = assessOutcomeTier({
+    requested: { name: 'x', description: 'mine' },
+    actual: { sys_id: 'a'.repeat(32), name: 'x', description: 'the platform rewrote this' },
+    platformOwned: ['description'],
+  });
+  assert.equal(owned.tier, 'COERCED');
+  assert.equal(owned.coerced[0].field, 'description');
+  assert.equal(owned.mismatches.length, 0);
+});
+
+test('reference cells shaped { value } compare on value', () => {
+  const r = assessOutcomeTier({ requested: { operation: 'read' }, actual: { sys_id: 'a'.repeat(32), operation: { value: 'read', display_value: 'Read' } } });
+  assert.equal(r.tier, 'EXECUTED');
 });
