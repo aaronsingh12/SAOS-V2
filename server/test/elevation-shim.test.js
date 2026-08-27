@@ -189,3 +189,60 @@ test('the compared scope carries per-field requested/actual, and equals the veri
   ]);
   assert.deepEqual(r.unverified, []);
 });
+
+/* ---- WI-5: the UPDATE forward path carries every create invariant ---- */
+
+function updateBody(overrides = {}) {
+  return buildElevatedWriteBody({
+    role: 'security_admin', runnerUserSysId: RUNNER, table: 'sys_security_acl',
+    operation: 'update', payload: overrides.payload ?? { active: 'true' }, sysId: overrides.sysId ?? 'b'.repeat(32),
+  });
+}
+
+test('WI-5 — update is GlideRecordSecure ONLY, fetches by sys_id, and never falls back to plain GlideRecord', () => {
+  const b = updateBody();
+  assert.match(b, /new GlideRecordSecure\(TARGET_TABLE\)/);
+  assert.match(b, /w\.get\(SYS_ID\)/, 'the record is fetched by sys_id before writing');
+  assert.match(b, /w\.update\(\)/);
+  assert.ok(!/new GlideRecord\([^)]*\)[\s\S]{0,200}\.update\(\)/.test(b), 'no plain GlideRecord update on the gated path');
+});
+
+test('WI-5 — update asserts gs.hasRole before the write and de-elevates in finally', () => {
+  const b = updateBody();
+  const assertAt = b.indexOf('gs.hasRole(ROLE) === true');
+  const writeAt = b.indexOf('w.get(SYS_ID)');
+  assert.ok(assertAt > 0 && writeAt > assertAt, 'the update must come AFTER the gs.hasRole assertion');
+  assert.match(b, /\} finally \{[\s\S]*disableElevatedRole\(ROLE\)/);
+  assert.ok(!/getUser\(\)\.hasRole/.test(b));
+});
+
+test('WI-5 — update requires a valid target sys_id, and rejects delete/other operations', () => {
+  assert.throws(() => buildElevatedWriteBody({ role: 'security_admin', runnerUserSysId: RUNNER, table: 'sys_security_acl', operation: 'update', payload: { active: 'true' }, sysId: 'nope' }), /32-character hex sys_id/);
+  assert.throws(() => buildElevatedWriteBody({ role: 'security_admin', runnerUserSysId: RUNNER, table: 'sys_security_acl', operation: 'delete', payload: {}, sysId: 'b'.repeat(32) }), /create and update only/);
+});
+
+test('WI-5 — the update body is dispatchable through the ES3 liveness linter', () => {
+  assert.equal(validateScriptSyntax(updateBody()).ok, true);
+});
+
+test('WI-5 — an update whose asserted field is outside the projection cannot render EXECUTED', () => {
+  // Coercion is likelier on update; the projection-superset guard is what stops
+  // an unverified field from reading green.
+  const r = assessOutcomeTier({
+    requested: { active: 'true', condition: 'x=1' },
+    actual: { sys_id: 'b'.repeat(32), active: 'true' },  // condition not fetched
+    comparedFields: ['sys_id', 'sys_mod_count', 'active'],
+  });
+  assert.notEqual(r.tier, 'EXECUTED');
+  assert.deepEqual(r.unverified, ['condition']);
+});
+
+test('WI-5 — an update coercion (actual != requested) renders COERCED, never EXECUTED', () => {
+  const r = assessOutcomeTier({
+    requested: { active: 'true' },
+    actual: { sys_id: 'b'.repeat(32), active: 'false' },  // platform kept it false
+    comparedFields: ['sys_id', 'sys_mod_count', 'active'],
+  });
+  assert.equal(r.tier, 'COERCED');
+  assert.equal(r.mismatches[0].field, 'active');
+});

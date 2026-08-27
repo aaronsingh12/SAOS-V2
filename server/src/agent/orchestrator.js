@@ -397,6 +397,25 @@ function awaitApproval(state, approvalId, nonce) {
  * un-elevated revert on any failure path.
  *
  * Returns true when it fully handled the call (result + audit pushed).
+ *
+ * FLAG #3 — GUARD-SUPERSET AUDIT. Routing around the normal permission gate must
+ * ADD protection, never remove it. Every guard the ordinary mutation path applies:
+ *   - confabulated-sys_id block (checkWriteTarget), known-drop/user-rejected
+ *     (checkBeforeGate), plan-time trap (planTimeTrapCheck): run BEFORE this
+ *     interception in the loop, so a gated op still passes all three. NOT skipped.
+ *   - approval + 32-byte nonce + awaitApproval: PRESENT here (own enriched card).
+ *   - mutatingCallCount increment: PRESENT (at the call site).
+ *   - recordToolEvent, appendMutation (ledger), recordRejection on deny: PRESENT.
+ *   - verifyMutation: replaced by the read-back TIER, which is a cross-transport
+ *     verification — stronger, not weaker.
+ *   - recordDrops: N/A — the REST silent-drop registry; COERCED/mismatches carry
+ *     the equivalent for the elevated path.
+ *   - appendImpersonatedMutation: N/A — elevation is not impersonation.
+ *   - captureAfterTool: N/A — the elevated write runs in a background job, not the
+ *     REST transport window; its sys_update_xml is recorded provenance, not swept.
+ *   - emit tool_use: N/A — the elevation bubble is its own render (WI-4).
+ *   - recordVerificationFailure: N/A — it early-returns for anything but
+ *     verify_flow_live (memory/facts.js).
  * ------------------------------------------------------------------ */
 async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq, state, emit, results, autoApprove }) {
   let runner;

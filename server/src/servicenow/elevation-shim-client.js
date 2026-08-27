@@ -28,10 +28,11 @@ import { log } from '../logging.js';
  * and STOPS. It does not attempt to undo — rollback of a gated op is itself
  * gated (WI-1) and is a separate WI.
  *
- * FORWARD CREATE ONLY (WI-3 scope). The classifier gates create/update/delete so
- * all three route through the gate; the elevated WRITE is implemented for
- * create. update/delete reach the gate and, if approved, return a structured
- * fail-closed "not implemented in WI-3" — never an un-elevated fallback.
+ * FORWARD create + update (WI-5). The classifier gates create/update/delete so
+ * all three route through the gate; the elevated WRITE is implemented for create
+ * AND update. delete reaches the gate and, if approved, returns a structured
+ * fail-closed "not implemented" — rollback of a gated op is itself gated and is a
+ * separate WI. Never an un-elevated fallback.
  */
 
 /** operation names the classifier speaks; describeWrite emits 'insert' for a create. */
@@ -140,34 +141,50 @@ export function buildTaggedCreatePayload({ requested, nonce, nonceField = NONCE_
 
 /**
  * Execute one approved gated write and tier it off the target read-back.
- * create only in WI-3; update/delete return a fail-closed "not implemented".
- * NEVER reverts on failure.
+ *
+ * FORWARD create + update (WI-5). Delete returns a fail-closed "not implemented"
+ * — rollback of a gated op is itself gated and is a separate WI. NEVER reverts on
+ * failure, whatever the tier.
+ *
+ *   create — tag the payload with the nonce in the read-back field, dispatch,
+ *            read the target back by nonce.
+ *   update — dispatch a GlideRecordSecure.get(sys_id) → setValue → update, read
+ *            the target back BY SYS_ID (the sys_id is already known; no tag),
+ *            using a sys_mod_count increment as the "job ran" signal so a coerced
+ *            field reads back as COERCED rather than timing out as FAILED.
  */
 export async function executeGatedWrite({
   descriptor, runnerUserSysId, requiredRole, nonce, platformOwned = [NONCE_FIELD],
   emit = () => {}, _dispatch = dispatchElevatedWrite,
 } = {}) {
   const op = deriveElevationOp(descriptor);
-  if (op?.operation !== 'create') {
-    return {
-      wrote: false, elevated_path: true,
-      outcome: { tier: 'FAILED', landed: false, sys_id: null, mismatches: [], coerced: [], detail: `elevated ${op?.operation ?? 'op'} is not implemented in WI-3 (forward create only); no un-elevated fallback` },
-      not_implemented: true,
-    };
+
+  if (op?.operation === 'create') {
+    const payload = buildTaggedCreatePayload({ requested: descriptor.requested, nonce });
+    const r = await _dispatch({
+      role: requiredRole, runnerUserSysId, table: op.table, operation: 'create', payload, nonce,
+      name: payload.name ?? null, platformOwned, emit,
+    });
+    return { wrote: r.outcome?.landed === true, elevated_path: true, ingestionTier: 'elevated-path', outcome: r.outcome, actual: r.actual ?? null, job: r.job, dispatched: r.dispatched };
   }
-  const payload = buildTaggedCreatePayload({ requested: descriptor.requested, nonce });
-  const r = await _dispatch({
-    role: requiredRole, runnerUserSysId, table: op.table, payload, nonce,
-    name: payload.name ?? null, platformOwned, emit,
-  });
+
+  if (op?.operation === 'update') {
+    if (!/^[0-9a-f]{32}$/i.test(String(descriptor.sys_id || ''))) {
+      // Fail-closed: an update with no target sys_id has nothing to elevate onto.
+      return { wrote: false, elevated_path: true, outcome: { tier: 'FAILED', landed: false, sys_id: null, mismatches: [], coerced: [], detail: 'update has no target sys_id — nothing to update, no write attempted' }, not_implemented: false };
+    }
+    const r = await _dispatch({
+      role: requiredRole, runnerUserSysId, table: op.table, operation: 'update',
+      payload: descriptor.requested || {}, sysId: descriptor.sys_id, nonce, platformOwned, emit,
+    });
+    return { wrote: r.outcome?.landed === true, elevated_path: true, ingestionTier: 'elevated-path', outcome: r.outcome, actual: r.actual ?? null, job: r.job, dispatched: r.dispatched };
+  }
+
+  // delete — rollback is a separate WI. Fail-closed, no un-elevated fallback.
   return {
-    wrote: r.outcome?.landed === true,
-    elevated_path: true,
-    ingestionTier: 'elevated-path',
-    outcome: r.outcome,
-    actual: r.actual ?? null,
-    job: r.job,
-    dispatched: r.dispatched,
+    wrote: false, elevated_path: true,
+    outcome: { tier: 'FAILED', landed: false, sys_id: null, mismatches: [], coerced: [], detail: `elevated ${op?.operation ?? 'op'} is not implemented (forward create + update only; delete/rollback is a separate WI)` },
+    not_implemented: true,
   };
 }
 

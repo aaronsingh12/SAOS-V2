@@ -87,17 +87,41 @@ export function buildProbeAclPayload({ nonce }) {
  * is the caller's target read-back. A body that cannot confirm elevation simply
  * does not write — it never falls back to a plain GlideRecord.
  */
-export function buildElevatedWriteBody({ role, runnerUserSysId, table: tableName, payload }) {
+export function buildElevatedWriteBody({ role, runnerUserSysId, table: tableName, operation = 'create', payload, sysId = null }) {
   const roleName = assertRoleName(role);
   const runner = assertSysId(runnerUserSysId, 'the runner user sys_id');
   const tbl = assertIdentifier(tableName, 'table');
   if (!payload || typeof payload !== 'object') throw new Error('An elevated write needs a payload object.');
+  if (operation !== 'create' && operation !== 'update') {
+    throw new Error(`buildElevatedWriteBody supports create and update only, got ${JSON.stringify(operation)} (delete/rollback is a separate WI).`);
+  }
+  const targetSysId = operation === 'update' ? assertSysId(sysId, 'the update target sys_id') : null;
+
+  // The gated mutation — GlideRecordSecure ONLY, whichever operation. For update
+  // the record is FETCHED by sys_id first; if it does not read back the write is
+  // simply not attempted (never a plain-GlideRecord fallback). The write's return
+  // (insert()/update()) is DISCARDED — it lies (WI-1); truth is the read-back.
+  const writeLines = operation === 'create'
+    ? [
+      '        var w = new GlideRecordSecure(TARGET_TABLE);',
+      '        w.initialize();',
+      '        for (var k in REC) { if (REC.hasOwnProperty(k)) { w.setValue(k, REC[k]); } }',
+      '        w.insert(); // return DISCARDED — truth is the target read-back',
+    ]
+    : [
+      '        var w = new GlideRecordSecure(TARGET_TABLE);',
+      '        if (w.get(SYS_ID)) {',
+      '          for (var k in REC) { if (REC.hasOwnProperty(k)) { w.setValue(k, REC[k]); } }',
+      '          w.update(); // return DISCARDED — truth is the read-back by sys_id',
+      '        }',
+    ];
 
   return [
     `var ROLE = ${jsLiteral(roleName)};`,
     `var RUNNER = ${jsLiteral(runner)};`,
     `var TARGET_TABLE = ${jsLiteral(tbl)};`,
     `var REC = ${jsLiteral(payload)};`,
+    `var SYS_ID = ${jsLiteral(targetSysId)};`,
     'try {',
     '  // (a) runner precondition — server-side (Gate 0 H6: role record is 0 rows over REST).',
     "  var roleGr = new GlideRecord('sys_user_role');",
@@ -123,10 +147,7 @@ export function buildElevatedWriteBody({ role, runnerUserSysId, table: tableName
     '      // so an un-elevated write must never be attempted (WI-1).',
     '      if (gs.hasRole(ROLE) === true) {',
     '        // (d) the gated mutation. GlideRecordSecure ONLY.',
-    '        var w = new GlideRecordSecure(TARGET_TABLE);',
-    '        w.initialize();',
-    '        for (var k in REC) { if (REC.hasOwnProperty(k)) { w.setValue(k, REC[k]); } }',
-    '        w.insert(); // return DISCARDED — it lies; truth is the target read-back',
+    ...writeLines,
     '      }',
     '    } finally {',
     '      // (g) de-elevate on every path.',
@@ -228,14 +249,15 @@ export function assessOutcomeTier({ requested, actual, comparedFields = null, pl
 /**
  * Dispatch one elevated write and read the outcome off the TARGET record.
  *
- * Creates the one-shot `sysauto_script` job (the proven trigger path), polls the
- * target table by nonce over REST, and cleans up the JOB only. It does NOT
+ * Creates the one-shot `sysauto_script` job (the proven trigger path), reads the
+ * target back over REST (by nonce for create; by sys_id, gated on a sys_mod_count
+ * increment, for update), and cleans up the JOB only. It does NOT
  * create a `sys_user_preference` sink, does NOT delete `sys_update_xml` the write
  * leaves (provenance), and does NOT delete the target (forward write; the
  * acceptance test reverts through the elevated channel).
  */
 export async function dispatchElevatedWrite({
-  role, runnerUserSysId, table: tableName, payload, nonce,
+  role, runnerUserSysId, table: tableName, operation = 'create', payload, nonce, sysId = null,
   name = null, platformOwned = [], nonceField = NONCE_FIELD,
   timeoutMs = DEFAULT_TIMEOUT_MS, pollMs = DEFAULT_POLL_MS, emit = () => {},
 } = {}) {
@@ -243,8 +265,9 @@ export async function dispatchElevatedWrite({
   const runner = assertSysId(runnerUserSysId, 'the runner user sys_id');
   const tbl = assertIdentifier(tableName, 'table');
   if (!/^[0-9a-f]{32}$/.test(String(nonce || ''))) throw new Error('dispatchElevatedWrite needs a 32-char hex nonce.');
+  const targetSysId = operation === 'update' ? assertSysId(sysId, 'the update target sys_id') : null;
 
-  const body = buildElevatedWriteBody({ role: roleName, runnerUserSysId: runner, table: tbl, payload });
+  const body = buildElevatedWriteBody({ role: roleName, runnerUserSysId: runner, table: tbl, operation, payload, sysId: targetSysId });
 
   // The known silent-non-execution class, caught before the job is created.
   const validation = validateScriptSyntax(body);
@@ -256,13 +279,22 @@ export async function dispatchElevatedWrite({
     };
   }
 
+  // For an update, the "job ran" signal is a sys_mod_count INCREMENT (the field
+  // value is a separate question — that is the tier). Captured before dispatch so
+  // a coerced update reads back as COERCED rather than timing out as FAILED.
+  let beforeMod = -1;
+  if (operation === 'update') {
+    const beforeRows = await table.query(tbl, { query: `sys_id=${targetSysId}`, fields: 'sys_mod_count', limit: 1, display: 'false' }).catch(() => []);
+    beforeMod = Number(beforeRows[0]?.sys_mod_count ?? -1);
+  }
+
   const jobId = crypto.randomUUID().replace(/-/g, '');
   let created = false;
   try {
-    emit({ type: 'elev_job_creating', job: jobId, table: tbl });
+    emit({ type: 'elev_job_creating', job: jobId, table: tbl, operation });
     await table.create('sysauto_script', {
       sys_id: jobId,
-      name: `NHA elevated write — ${tbl}`.slice(0, 60),
+      name: `NHA elevated ${operation} — ${tbl}`.slice(0, 60),
       active: 'true',
       run_type: 'once',
       run_start: utcStamp(Date.now() - JOB_START_BACKDATE_MS),
@@ -271,18 +303,26 @@ export async function dispatchElevatedWrite({
     created = true;
     emit({ type: 'elev_job_created', job: jobId });
 
-    const projection = fieldsForComparison(payload, nonceField);
+    // The projection MUST be a superset of every asserted field (WI-4 guard).
+    const projection = operation === 'update'
+      ? [...new Set(['sys_id', 'sys_mod_count', ...Object.keys(payload)])]
+      : fieldsForComparison(payload, nonceField);
     let actual = null;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await sleep(pollMs);
-      const rows = await readTargetByNonce({ table: tbl, nonce, name, nonceField, fields: projection.join(',') });
-      if (rows.length) { actual = rows[0]; break; }
+      if (operation === 'update') {
+        const rows = await table.query(tbl, { query: `sys_id=${targetSysId}`, fields: projection.join(','), limit: 1, display: 'false' }).catch(() => []);
+        if (rows.length && Number(rows[0].sys_mod_count) > beforeMod) { actual = rows[0]; break; }
+      } else {
+        const rows = await readTargetByNonce({ table: tbl, nonce, name, nonceField, fields: projection.join(',') });
+        if (rows.length) { actual = rows[0]; break; }
+      }
       emit({ type: 'elev_waiting', remainingMs: Math.max(0, deadline - Date.now()) });
     }
 
     const outcome = assessOutcomeTier({ requested: payload, actual, comparedFields: projection, platformOwned });
-    return { dispatched: true, job: jobId, nonce, outcome, actual, validation };
+    return { dispatched: true, job: jobId, nonce, operation, outcome, actual, validation };
   } finally {
     if (created) {
       await table.remove('sysauto_script', jobId).catch(() => {});

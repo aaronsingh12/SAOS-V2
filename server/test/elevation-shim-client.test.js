@@ -195,11 +195,35 @@ test('an ungated op returns gated:false and the caller uses the normal path (no 
   assert.equal(spy.calls.length, 0);
 });
 
-test('a gated UPDATE/DELETE reaches the gate but the elevated write is fail-closed not-implemented in WI-3', async () => {
+test('WI-5 — a gated UPDATE is now FORWARD-executed (create + update), tiered off the read-back', async () => {
+  const calls = [];
+  const dispatch = async (args) => { calls.push(args); return { outcome: { tier: 'EXECUTED', landed: true, sys_id: args.sysId }, actual: { sys_id: args.sysId } }; };
+  const r = await executeGatedWrite({
+    descriptor: { table: 'sys_security_acl', operation: 'update', requested: { active: 'true' }, sys_id: 'b'.repeat(32) },
+    runnerUserSysId: RUNNER, requiredRole: 'security_admin', nonce: 'a'.repeat(32), _dispatch: dispatch,
+  });
+  assert.equal(r.wrote, true);
+  assert.equal(r.not_implemented, undefined);
+  assert.equal(calls[0].operation, 'update');
+  assert.equal(calls[0].sysId, 'b'.repeat(32), 'the update targets the descriptor sys_id');
+  assert.equal(r.ingestionTier, 'elevated-path');
+});
+
+test('WI-5 — an update with no target sys_id fails closed (nothing to update)', async () => {
+  const r = await executeGatedWrite({
+    descriptor: { table: 'sys_security_acl', operation: 'update', requested: { active: 'true' }, sys_id: null },
+    runnerUserSysId: RUNNER, requiredRole: 'security_admin', nonce: 'a'.repeat(32),
+    _dispatch: async () => { throw new Error('must not dispatch without a target'); },
+  });
+  assert.equal(r.wrote, false);
+  assert.match(r.outcome.detail, /no target sys_id/);
+});
+
+test('WI-5 — DELETE still fails closed (rollback deferred to a separate WI)', async () => {
   const r = await executeGatedWrite({ descriptor: { table: 'sys_security_acl', operation: 'delete', requested: {}, sys_id: 'a'.repeat(32) }, runnerUserSysId: RUNNER, requiredRole: 'security_admin', nonce: 'a'.repeat(32) });
   assert.equal(r.wrote, false);
   assert.equal(r.not_implemented, true);
-  assert.match(r.outcome.detail, /forward create only/);
+  assert.match(r.outcome.detail, /delete\/rollback is a separate WI/);
 });
 
 /* ------------------------------------------------------------------ *
@@ -246,4 +270,67 @@ test('WIRING — the shim client is the ONLY importer of the shim executor in th
   // The orchestrator reaches elevation only through the client, never the raw shim.
   assert.ok(!/from '\.\.\/servicenow\/elevation-shim\.js'/.test(orch), 'the orchestrator must not import the raw shim executor directly');
   assert.match(orch, /from '\.\.\/servicenow\/elevation-shim-client\.js'/, 'the orchestrator reaches elevation only through the client');
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-5 flag #1 — fail-closed precedes approval, for CREATE and UPDATE
+ * ------------------------------------------------------------------ */
+
+const ACL_UPDATE = { table: 'sys_security_acl', operation: 'update', requested: { active: 'true' }, sys_id: 'b'.repeat(32) };
+
+test('FLAG #1 — a gated op that fails the eligibility read refuses BEFORE any approval (create AND update)', async () => {
+  for (const descriptor of [ACL_CREATE, ACL_UPDATE]) {
+    let approvalAsked = false;
+    const spy = dispatchSpy({ tier: 'EXECUTED', landed: true });
+    const r = await runGatedWrite({
+      descriptor, runnerUserSysId: RUNNER,
+      requestApproval: async () => { approvalAsked = true; return { approved: true }; },
+      _preDecision: async () => { throw new Error('eligibility read timed out'); },
+      _dispatch: spy,
+    });
+    assert.equal(r.refused, true, `${descriptor.operation} must refuse`);
+    assert.equal(r.decision, 'blocked_read_failed');
+    assert.equal(approvalAsked, false, `${descriptor.operation}: no approval card may be emitted for an op that fails-closed`);
+    assert.equal(spy.calls.length, 0);
+  }
+});
+
+test('FLAG #1 (ordering, source) — runGatedWrite refuses on a non-elevate plan before calling requestApproval', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/servicenow/elevation-shim-client.js', import.meta.url), 'utf8');
+  // The refusal branch returns before requestApproval is ever referenced.
+  const refuseAt = src.indexOf("decision !== 'elevate'");
+  const approvalAt = src.indexOf('const decision = await requestApproval');
+  assert.ok(refuseAt > 0 && approvalAt > refuseAt, 'the non-elevate refusal must precede the approval call');
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-5 flag #3 — the elevation path is a guard-superset, not a bypass
+ * ------------------------------------------------------------------ */
+
+test('FLAG #3 — the pre-gate guards run BEFORE the elevation interception (not skipped)', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/agent/orchestrator.js', import.meta.url), 'utf8');
+  const confab = src.indexOf('checkWriteTarget({ sessionId, sysId: guardDescriptor.sys_id');
+  const drop = src.indexOf('checkBeforeGate({');
+  const planTime = src.indexOf('planTimeTrapCheck(guardDescriptor)');
+  const intercept = src.indexOf('isGatedDescriptor(guardDescriptor)');
+  const permGate = src.indexOf('Permission gate — the heart');
+  assert.ok(confab > 0 && drop > confab && planTime > drop, 'confabulation -> drop/reject -> plan-time run in order');
+  assert.ok(intercept > planTime, 'the elevation interception is AFTER the pre-gate guards, so none are skipped');
+  assert.ok(permGate > intercept, 'the interception precedes the normal permission gate');
+});
+
+test('FLAG #3 — handleGatedElevation applies the gate guards it must (approval, audit, ledger, rejection)', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/agent/orchestrator.js', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('async function handleGatedElevation'), src.indexOf('async function handleGatedElevation') + 6000);
+  assert.match(fn, /awaitApproval\(state, approvalId, nonce\)/, 'own approval + nonce');
+  assert.match(fn, /crypto\.randomBytes\(32\)/, '32-byte approval nonce, like the normal gate');
+  assert.match(fn, /recordToolEvent\(/, 'tool_events audit');
+  assert.match(fn, /appendMutation\(/, 'mutation ledger');
+  assert.match(fn, /recordRejection\(/, 'a denied gated op is remembered for the turn, like the normal gate');
+  assert.match(fn, /registerElevatedWrite\(/, 'sys_id provenance, elevated-path');
+  // The audit comment enumerates the justified-absent guards.
+  assert.match(src, /GUARD-SUPERSET AUDIT/, 'the guard audit is documented in code');
 });
