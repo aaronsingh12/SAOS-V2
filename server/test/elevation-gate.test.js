@@ -70,6 +70,35 @@ test('INVARIANT — sys_security_acl delete classifies as requiring security_adm
   assert.ok(gatedTables().includes('sys_security_acl'));
 });
 
+/* ------------------------------------------------------------------ *
+ * INVARIANT (WI-ACL-1 / Gate A A1) — the ROLE-LINK table is gated
+ * ------------------------------------------------------------------ */
+
+test('INVARIANT — sys_security_acl_role create/update/delete are gated on security_admin', () => {
+  // Gate A A1b measured this SERVER-SIDE: the governing ACLs for
+  // sys_security_acl_role create/write/delete each require security_admin with
+  // admin_overrides=0. Ungated, a role-link write takes the un-elevated path,
+  // is denied, silently no-ops, and leaves a role-less ACL — which is EMPTY, and
+  // an empty ACL denies everyone. This entry is the lockout guard.
+  for (const op of ['create', 'update', 'delete']) {
+    const c = classifyRequiredRole({ table: 'sys_security_acl_role', operation: op });
+    assert.equal(c.gated, true, `${op} on the role-link table must be gated`);
+    assert.equal(c.required_role, 'security_admin');
+    assert.equal(c.tier, 'EXECUTED');
+    assert.match(c.provenance, /Gate A A1b/, 'the entry carries the probe that measured it');
+    assert.match(c.provenance, /server-side/i, 'and records that REST cannot see this role (D-2)');
+  }
+  assert.ok(gatedTables().includes('sys_security_acl_role'));
+});
+
+test('the two gated tables carry DISTINCT provenance — neither inherits the other\'s measurement', () => {
+  const acl = classifyRequiredRole({ table: 'sys_security_acl', operation: 'create' }).provenance;
+  const link = classifyRequiredRole({ table: 'sys_security_acl_role', operation: 'create' }).provenance;
+  assert.notEqual(acl, link);
+  assert.match(acl, /Gate 0 \+ WI-1/);
+  assert.match(link, /Gate A A1b/);
+});
+
 test('an ungated operation returns none, with no role invented', () => {
   const c = classifyRequiredRole({ table: 'incident', operation: 'update' });
   assert.equal(c.gated, false);
