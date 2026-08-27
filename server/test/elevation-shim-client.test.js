@@ -324,7 +324,18 @@ test('FLAG #3 — the pre-gate guards run BEFORE the elevation interception (not
 test('FLAG #3 — handleGatedElevation applies the gate guards it must (approval, audit, ledger, rejection)', async () => {
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/agent/orchestrator.js', import.meta.url), 'utf8');
-  const fn = src.slice(src.indexOf('async function handleGatedElevation'), src.indexOf('async function handleGatedElevation') + 6000);
+  /*
+   * Sliced to the END OF THE FUNCTION, not to a fixed byte count. A magic 6000
+   * meant the assertions silently stopped covering the tail of the function as
+   * it grew — WI-ACL-1's spec-refusal branch pushed `appendMutation` and
+   * `registerElevatedWrite` past the cut, so a guard that was still present
+   * reported as missing. Worse is the other direction: had a guard actually been
+   * DELETED from the tail, the same window would have hidden it.
+   */
+  const start = src.indexOf('async function handleGatedElevation');
+  const after = src.indexOf('\n * A6 — the stalled turn', start);
+  assert.ok(start > 0 && after > start, 'the function and its following section marker are both present');
+  const fn = src.slice(start, after);
   assert.match(fn, /awaitApproval\(state, approvalId, nonce\)/, 'own approval + nonce');
   assert.match(fn, /crypto\.randomBytes\(32\)/, '32-byte approval nonce, like the normal gate');
   assert.match(fn, /recordToolEvent\(/, 'tool_events audit');

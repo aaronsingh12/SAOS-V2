@@ -828,7 +828,20 @@ test('the hard block\'s SURFACE is exactly the tools that take a caller-supplied
     })
     .map((t) => t.name)
     .sort();
-  assert.deepEqual(fromInput, ['delete_record', 'update_record'],
+  /*
+   * WI-ACL-1 added `update_acl` and `delete_acl`, and the question this test
+   * exists to force was asked: IS a hard block right for them? Yes, and more
+   * clearly than for the generic pair.
+   *
+   * Both take an ACL sys_id the caller supplies, and the confabulation failure
+   * here is not "nothing happens". A well-formed 32-hex string the model invented
+   * either names no ACL — in which case the write is refused, harmlessly — or it
+   * names a DIFFERENT, REAL ACL, and the update rewrites the access rules of
+   * whatever rule it happened to hit, or the delete removes it. An ACL sys_id
+   * must come from an acl_report read, which is exactly what the provenance
+   * check enforces.
+   */
+  assert.deepEqual(fromInput, ['delete_acl', 'delete_record', 'update_acl', 'update_record'],
     'the set of tools inside the confabulation hard block changed — is a hard block right for the new one?');
 });
 

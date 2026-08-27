@@ -3,8 +3,9 @@ import { table } from './client.js';
 import { preDecision } from './elevation-gate.js';
 import { classifyRequiredRole } from './required-role-classifier.js';
 import {
-  mintNonce, NONCE_FIELD, dispatchElevatedWrite, assessOutcomeTier,
+  mintNonce, NONCE_FIELD, dispatchElevatedWrite, dispatchAclUnit, assessOutcomeTier,
 } from './elevation-shim.js';
+import { prepareAclUnit } from './acl-spec.js';
 import { log } from '../logging.js';
 
 /**
@@ -28,11 +29,24 @@ import { log } from '../logging.js';
  * and STOPS. It does not attempt to undo — rollback of a gated op is itself
  * gated (WI-1) and is a separate WI.
  *
- * FORWARD create + update (WI-5). The classifier gates create/update/delete so
- * all three route through the gate; the elevated WRITE is implemented for create
- * AND update. delete reaches the gate and, if approved, returns a structured
- * fail-closed "not implemented" — rollback of a gated op is itself gated and is a
- * separate WI. Never an un-elevated fallback.
+ * FORWARD create + update (WI-5), and ACL delete (WI-ACL-1). The classifier gates
+ * create/update/delete so all three route through the gate.
+ *
+ *   - For a plain single-record gated write, create and update are implemented
+ *     and delete still returns a structured fail-closed "not implemented":
+ *     generic rollback of a gated op is its own WI.
+ *   - For an ACL (a descriptor carrying `acl_spec`), all three are implemented,
+ *     as an ATOMIC UNIT over `sys_security_acl` + `sys_security_acl_role`. Delete
+ *     is not an exception carved out here — it is a first-class ACL operation,
+ *     and it has to be, because the only safe response to a half-authored ACL is
+ *     removing it through this same elevated channel (an un-elevated delete
+ *     silently no-ops — WI-1).
+ *
+ * Never an un-elevated fallback, on any path.
+ *
+ * WI-ACL-1 adds one step to the ORDER, and its position is load-bearing: the ACL
+ * SPEC is validated against the instance BETWEEN the eligibility plan and the
+ * approval card. See `runGatedWrite`.
  */
 
 /** operation names the classifier speaks; describeWrite emits 'insert' for a create. */
@@ -113,8 +127,8 @@ export async function planElevation({ descriptor, runnerUserSysId, emit, timeout
  * Names the op, target, the role it will elevate, that it WILL elevate, and the
  * eligibility verdict.
  */
-export function buildElevationApprovalPayload({ plan, descriptor }) {
-  return {
+export function buildElevationApprovalPayload({ plan, descriptor, aclUnit = null }) {
+  const payload = {
     kind: 'role_elevation',
     high_risk: true,
     op: plan.op,
@@ -126,6 +140,30 @@ export function buildElevationApprovalPayload({ plan, descriptor }) {
       : null,
     note: `This will elevate ${plan.requiredRole} and author a ${plan.op?.operation} on ${plan.op?.table} through the secure API. Approving authorises the elevation.`,
   };
+
+  /*
+   * WI-ACL-1 — an ACL card must show the RULE, not the row.
+   *
+   * `sys_security_acl` field values do not tell a human what they are agreeing
+   * to: the role requirement is not even on this table, and `operation` can be a
+   * bare sys_id. So the card carries the resolved summary — which object, which
+   * operation, which roles BY NAME, whether it will be active, and what the
+   * conditions are — because "approve a write to sys_security_acl" is not
+   * informed consent to "deny everyone without itil read access to incident".
+   */
+  if (aclUnit) {
+    payload.acl = {
+      unit: 'acl_and_role_links',
+      atomic: true,
+      ...aclUnit.summary,
+      role_links: aclUnit.roleSysIds.length,
+      note: aclUnit.operation === 'delete'
+        ? 'This DELETES the ACL and every role link on it, through the elevated channel. Access that this rule granted will stop being granted.'
+        : `This authors the ACL and its ${aclUnit.roleSysIds.length} role link(s) as ONE atomic unit — if the role links do not land, the ACL is rolled back rather than left role-less (a role-less ACL with no other condition is empty, and an empty ACL denies everyone).`,
+    };
+    payload.note = `${payload.note} ${payload.acl.note}`;
+  }
+  return payload;
 }
 
 /**
@@ -155,9 +193,29 @@ export function buildTaggedCreatePayload({ requested, nonce, nonceField = NONCE_
  */
 export async function executeGatedWrite({
   descriptor, runnerUserSysId, requiredRole, nonce, platformOwned = [NONCE_FIELD],
-  emit = () => {}, _dispatch = dispatchElevatedWrite,
+  aclUnit = null, emit = () => {}, _dispatch = dispatchElevatedWrite, _dispatchAclUnit = dispatchAclUnit,
 } = {}) {
   const op = deriveElevationOp(descriptor);
+
+  /*
+   * WI-ACL-1 — an ACL goes through the ATOMIC UNIT path, never the single-record
+   * one. Everything it needs was resolved and validated before approval, so this
+   * is dispatch only: no decisions are taken here.
+   */
+  if (aclUnit) {
+    const r = await _dispatchAclUnit({
+      role: requiredRole, runnerUserSysId, operation: aclUnit.operation,
+      payload: aclUnit.payload, roleSysIds: aclUnit.roleSysIds, sysId: aclUnit.sysId, nonce,
+      beforeModCount: aclUnit.beforeModCount, beforeRoleSysIds: aclUnit.beforeRoleSysIds,
+      conditionSources: aclUnit.conditionSources, platformOwned, emit,
+    });
+    return {
+      wrote: r.outcome?.tier === 'EXECUTED',
+      elevated_path: true, ingestionTier: 'elevated-path',
+      outcome: r.outcome, actual: r.actual ?? null, job: r.job, dispatched: r.dispatched,
+      aclUnit,
+    };
+  }
 
   if (op?.operation === 'create') {
     const payload = buildTaggedCreatePayload({ requested: descriptor.requested, nonce });
@@ -200,6 +258,7 @@ export async function executeGatedWrite({
 export async function runGatedWrite({
   descriptor, runnerUserSysId, requestApproval, emit = () => {},
   _preDecision = preDecision, _dispatch = dispatchElevatedWrite,
+  _prepareAclUnit = prepareAclUnit, _dispatchAclUnit = dispatchAclUnit,
 } = {}) {
   const plan = await planElevation({ descriptor, runnerUserSysId, emit, _preDecision });
 
@@ -219,7 +278,40 @@ export async function runGatedWrite({
     throw new Error('runGatedWrite needs a requestApproval callback: a gated write may not proceed without an approval decision.');
   }
   const nonce = mintNonce();
-  const approvalPayload = buildElevationApprovalPayload({ plan, descriptor });
+
+  /*
+   * WI-ACL-1 — SPEC VALIDATION, and its position in this function is the point.
+   *
+   * It sits AFTER the eligibility plan and BEFORE `requestApproval`. An ACL spec
+   * that would author an empty or invalid rule, name an unresolvable role, sit on
+   * a scoped table, or change nothing at all is refused HERE — so no human is
+   * ever shown a card for a write that was already going to be refused. Spending
+   * an approval on a decision that was never real is the WI-3 lesson, and this is
+   * the same lesson one layer in.
+   *
+   * It is also the last point at which refusing is free. After approval, refusing
+   * means an approved operation that did nothing, which reads to a user exactly
+   * like a silent failure.
+   */
+  let aclUnit = null;
+  if (descriptor?.acl_spec) {
+    const prep = await _prepareAclUnit({
+      operation: plan.op.operation, spec: descriptor.acl_spec, sysId: descriptor.sys_id ?? null, nonce, emit,
+    }).catch((err) => ({ ok: false, refusal: { reason: 'spec_check_failed', message: `The ACL specification could not be checked against the instance (${err.message}), so it is refused rather than authored unverified.`, detail: null } }));
+
+    if (!prep.ok) {
+      return {
+        gated: true, decision: 'refused_spec', plan,
+        approved: false, wrote: false, elevated: false,
+        specRefusal: prep.refusal,
+        outcome: { tier: 'FAILED', landed: false, detail: prep.refusal.message },
+        refused: true,
+      };
+    }
+    aclUnit = prep.unit;
+  }
+
+  const approvalPayload = buildElevationApprovalPayload({ plan, descriptor, aclUnit });
   const decision = await requestApproval(approvalPayload);
 
   if (!decision || decision.approved !== true) {
@@ -234,7 +326,7 @@ export async function runGatedWrite({
 
   // Approved — and only now — the shim runs once.
   const exec = await executeGatedWrite({
-    descriptor, runnerUserSysId, requiredRole: plan.requiredRole, nonce, emit, _dispatch,
+    descriptor, runnerUserSysId, requiredRole: plan.requiredRole, nonce, aclUnit, emit, _dispatch, _dispatchAclUnit,
   });
   return {
     gated: true, decision: 'elevate', plan, approvalPayload,
@@ -243,5 +335,6 @@ export async function runGatedWrite({
     wrote: exec.wrote, outcome: exec.outcome, actual: exec.actual ?? null,
     ingestionTier: exec.ingestionTier ?? null, job: exec.job ?? null,
     not_implemented: exec.not_implemented === true,
+    aclUnit: exec.aclUnit ?? null,
   };
 }

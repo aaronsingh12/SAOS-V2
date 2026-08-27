@@ -455,6 +455,42 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
 
   const r = await runGatedWrite({ descriptor, runnerUserSysId: runner, requestApproval, emit });
 
+  /*
+   * WI-ACL-1 — refused on the SPEC, before any approval card.
+   *
+   * Kept as its own branch, ahead of the generic refusal, because the two say
+   * completely different things to a user. The eligibility refusal below means
+   * "you are not allowed to do this". This one means "what you asked for would
+   * break the thing you are trying to protect" — an empty ACL that denies
+   * everyone, a role that does not exist, a condition on a field that does not
+   * either. Collapsing them into one message would leave the user unable to tell
+   * a permissions problem from a request that needs rewriting.
+   *
+   * The refusal text is passed through verbatim: it was written to be actionable
+   * (it names the rule, the reason, and what to do instead), and rewording it
+   * here would lose that.
+   */
+  if (r.decision === 'refused_spec') {
+    const msg = `Refused before approval: ${r.specRefusal.message}`;
+    log.warn('gate', `ACL spec refused (${r.specRefusal.reason}) — no approval requested, nothing elevated`);
+    results.push({ id: call.id, name: call.name, output: msg, isError: true });
+    recordToolEvent(sessionId, {
+      kind: 'tool_call', name: call.name, payload: call.input, result: msg,
+      resultStatus: `elev_refused_spec:${r.specRefusal.reason}`, mutating: true, approval: null,
+    });
+    emit({
+      type: 'tool_blocked', id: call.id, name: call.name, input: call.input,
+      reason: `acl_spec_${r.specRefusal.reason}`, message: msg,
+      elevation: {
+        tier: null, state: 'REFUSED_SPEC', required_role: r.plan.requiredRole, elevation_occurred: false,
+        target: { table: descriptor.table, sys_id: descriptor.sys_id ?? null },
+        spec_refusal: { reason: r.specRefusal.reason, detail: r.specRefusal.detail ?? null },
+        reason: r.specRefusal.message,
+      },
+    });
+    return true;
+  }
+
   // Refused before approval — ineligible or eligibility-read-failed (fail-closed).
   if (r.refused) {
     const why = r.decision === 'blocked_read_failed'
@@ -506,6 +542,10 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
       tier, op: r.plan.op, required_role: r.plan.requiredRole,
       elevated: r.elevated === true, ingestion_tier: r.ingestionTier || 'elevated-path',
       target: r.outcome, not_implemented: r.not_implemented || undefined,
+      // WI-ACL-1 — the model must see BOTH halves, or it will report an ACL as
+      // created on the strength of the row alone and never mention that the role
+      // requirement it asked for is missing.
+      acl: r.aclUnit ? { unit: 'acl_and_role_links', ...r.aclUnit.summary, roles_outcome: r.outcome?.roles ?? null, role_less: r.outcome?.role_less === true } : undefined,
     },
   }, null, 1);
   results.push({ id: call.id, name: call.name, output, isError });
@@ -546,6 +586,18 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
       unverified: r.outcome?.unverified ?? [],
       detail: r.outcome?.detail ?? null,
       not_implemented: r.not_implemented === true,
+      // WI-ACL-1 — the role half, so the renderer can refuse green on a rule
+      // whose row landed but whose role requirement did not.
+      acl: r.aclUnit
+        ? {
+          operation: r.aclUnit.operation,
+          name: r.aclUnit.summary?.name ?? null,
+          roles_expected: r.aclUnit.summary?.roles ?? [],
+          roles: r.outcome?.roles ?? null,
+          role_less: r.outcome?.role_less === true,
+          conditions: r.aclUnit.summary?.conditions ?? [],
+        }
+        : null,
     },
   });
   return true;

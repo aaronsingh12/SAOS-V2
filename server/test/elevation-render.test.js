@@ -63,7 +63,20 @@ test('INVARIANT (hostile) — a non-EXECUTED tier carrying a truthy sys_id and a
 test('INVARIANT (source) — green: true appears exactly once in the outcome, inside the EXECUTED branch', () => {
   const greens = outcomeSrc.match(/green:\s*true/g) || [];
   assert.equal(greens.length, 1, 'green must be settable from exactly one place');
-  assert.match(outcomeSrc, /tier === 'EXECUTED'[\s\S]{0,400}green:\s*true/, 'the one green:true must be in the EXECUTED branch');
+  /*
+   * Positional, not a fixed-width window. The invariant is "the single green:true
+   * lies inside the EXECUTED branch" — which is a statement about ORDER, and
+   * asserting it as "within N characters of the tier check" made it a statement
+   * about branch length instead. WI-ACL-1 added the role-link guard to that
+   * branch (green now also requires the role half to have been read and matched)
+   * and the old 400-char window failed on a change that made the branch STRICTER.
+   * A test that breaks when a guard is added is measuring the wrong thing.
+   */
+  const executedAt = outcomeSrc.indexOf("tier === 'EXECUTED'");
+  const coercedAt = outcomeSrc.indexOf("tier === 'COERCED'");
+  const greenAt = outcomeSrc.indexOf('green: true');
+  assert.ok(executedAt > 0 && coercedAt > executedAt, 'the EXECUTED branch precedes the COERCED branch');
+  assert.ok(greenAt > executedAt && greenAt < coercedAt, 'the one green:true must sit inside the EXECUTED branch');
   // The decision never consults a status/sys_id/approval soft signal.
   const decisionRegion = outcomeSrc;
   assert.ok(!/green:\s*(http|status|sys_id|isError|approved)/.test(decisionRegion));
