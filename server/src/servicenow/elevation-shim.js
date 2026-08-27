@@ -215,10 +215,9 @@ export function buildAclUnitBody({
   if (operation !== 'delete' && (!payload || typeof payload !== 'object')) {
     throw new Error('An ACL unit write needs a payload object.');
   }
-  if (operation !== 'create') assertSysId(sysId, 'the target ACL sys_id');
-  if (operation === 'create' && !/^[0-9a-f]{32}$/.test(String(nonce || ''))) {
-    throw new Error('buildAclUnitBody needs a 32-char hex nonce to find the created ACL server-side.');
-  }
+  // Every operation, create included, addresses the ACL by sys_id. For create it
+  // is PRE-ASSIGNED by the caller — see the note on the create branch below.
+  assertSysId(sysId, operation === 'create' ? 'the pre-assigned ACL sys_id' : 'the target ACL sys_id');
   for (const r of roleSysIds) assertSysId(r, 'a role sys_id for the ACL role link');
 
   const head = [
@@ -271,17 +270,27 @@ export function buildAclUnitBody({
   let work;
   if (operation === 'create') {
     work = [
-      '        // (d1) the ACL record.',
+      '        // (d1) the ACL record, at a sys_id the CALLER chose.',
+      '        //',
+      '        // MEASURED, and the reason this is not a nonce search. The business',
+      '        // rule "Update ACL Description on Role Change" (sys_security_acl_role,',
+      '        // after insert) regenerates the PARENT ACL\'s description from its',
+      '        // roles. So writing the role link — the act that COMPLETES this unit —',
+      '        // overwrites `description`, and any correlation marker hidden there is',
+      '        // destroyed by the write succeeding. A create that worked perfectly',
+      '        // then reads back as "not found" and reports FAILED.',
+      '        //',
+      '        // A pre-assigned sys_id cannot be rewritten by a business rule, so',
+      '        // correlation no longer depends on a field the platform owns.',
       '        var w = new GlideRecordSecure(ACL_TABLE);',
       '        w.initialize();',
+      '        w.setNewGuidValue(ACL_ID);',
       '        for (var k in REC) { if (REC.hasOwnProperty(k)) { w.setValue(k, REC[k]); } }',
       '        w.insert(); // return DISCARDED — it lies (WI-1)',
       '',
-      '        // (d2) find what landed, by the nonce carried in description.',
+      '        // (d2) confirm the row exists at that sys_id before linking to it.',
       '        var f = new GlideRecord(ACL_TABLE);',
-      "        f.addQuery('description', 'CONTAINS', NONCE);",
-      '        f.query();',
-      "        var newId = f.next() ? f.getUniqueValue() : '';",
+      "        var newId = f.get(ACL_ID) ? ACL_ID : '';",
       '',
       '        // (d3) the role links, in the SAME elevated execution.',
       '        if (newId) { addLinks(newId, ROLE_IDS); }',
@@ -631,7 +640,11 @@ export async function dispatchElevatedWrite({
  * alone as provenance. What differs is the success signal, because an ACL's
  * truth lives in two tables:
  *
- *   create — poll for the ACL by nonce, then read its role links.
+ *   create — poll for the ACL AT ITS PRE-ASSIGNED SYS_ID, then read its role
+ *            links. Not by a nonce in `description`: the business rule "Update
+ *            ACL Description on Role Change" rewrites that field when the role
+ *            link lands, so the marker is destroyed by the unit completing and a
+ *            perfect write reports FAILED. Measured live.
  *   update — poll for EITHER a `sys_mod_count` increment on the ACL OR a change
  *            in its link set. Both are needed: a roles-only update never touches
  *            the ACL row, so `sys_mod_count` alone would time out as FAILED on a
@@ -670,6 +683,7 @@ export async function dispatchAclUnit({
     ? [...new Set(['sys_id', nonceField, ...Object.keys(payload)])]
     : [...new Set(['sys_id', 'sys_mod_count', ...Object.keys(payload)])];
   const beforeLinkKey = [...beforeRoleSysIds].map(String).sort().join(',');
+  const aclSysId = sysId;
 
   const jobId = crypto.randomUUID().replace(/-/g, '');
   let created = false;
@@ -694,10 +708,17 @@ export async function dispatchAclUnit({
       await sleep(pollMs);
 
       if (operation === 'create') {
-        const rows = await readTargetByNonce({ table: ACL_TABLE, nonce, name: payload.name ?? null, nonceField, fields: projection.join(',') });
+        /*
+         * BY SYS_ID, not by nonce. The nonce lived in `description`, and the
+         * "Update ACL Description on Role Change" business rule rewrites that
+         * field when the role link is written — so the marker is destroyed by
+         * the unit COMPLETING. Measured: nonce present after the ACL insert,
+         * gone after the role link. A sys_id the caller assigned survives.
+         */
+        const rows = await table.query(ACL_TABLE, { query: `sys_id=${aclSysId}`, fields: projection.join(','), limit: 1, display: 'false' }).catch(() => []);
         if (rows.length) {
           actual = rows[0];
-          actualRoleSysIds = await linksFor(String(actual.sys_id));
+          actualRoleSysIds = await linksFor(aclSysId);
           break;
         }
       } else if (operation === 'update') {

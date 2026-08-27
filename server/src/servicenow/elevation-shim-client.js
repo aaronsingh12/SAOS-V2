@@ -156,7 +156,15 @@ export function buildElevationApprovalPayload({ plan, descriptor, aclUnit = null
       unit: 'acl_and_role_links',
       atomic: true,
       ...aclUnit.summary,
-      role_links: aclUnit.roleSysIds.length,
+      // For a delete the links that matter are the ones that EXIST, not the ones
+      // being authored (there are none). A card that said "role_links: 0" while
+      // deleting a rule that requires itil would understate what is being removed.
+      role_links: aclUnit.operation === 'delete' ? aclUnit.beforeRoleSysIds.length : aclUnit.roleSysIds.length,
+      // Plan-time warnings: things the platform is KNOWN to do to this write that
+      // the requester did not ask for. Shown before approval, in the same spirit
+      // as planTimeTrapCheck — a human should not learn about a guaranteed
+      // coercion from the amber badge afterwards.
+      warnings: aclUnit.warnings ?? [],
       note: aclUnit.operation === 'delete'
         ? 'This DELETES the ACL and every role link on it, through the elevated channel. Access that this rule granted will stop being granted.'
         : `This authors the ACL and its ${aclUnit.roleSysIds.length} role link(s) as ONE atomic unit — if the role links do not land, the ACL is rolled back rather than left role-less (a role-less ACL with no other condition is empty, and an empty ACL denies everyone).`,

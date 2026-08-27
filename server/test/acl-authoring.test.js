@@ -223,7 +223,7 @@ test('INVARIANT — identity fields (name, operation, type) are create-only; an 
 
 test('INVARIANT — a create whose role links do not all land ROLLS BACK the ACL in the same execution', () => {
   const body = buildAclUnitBody({
-    role: ROLE, runnerUserSysId: RUNNER, operation: 'create', nonce: 'd'.repeat(32),
+    role: ROLE, runnerUserSysId: RUNNER, operation: 'create', sysId: ACL_SYS_ID,
     payload: { name: 'incident', operation: 'read', sys_scope: 'global', description: 'x' },
     roleSysIds: [ITIL],
   });
@@ -234,6 +234,58 @@ test('INVARIANT — a create whose role links do not all land ROLLS BACK the ACL
   assert.ok(linkCheck > 0 && rollback > linkCheck, 'the ACL is deleted when the links are incomplete');
   assert.ok(rollback < deelevate, 'and the rollback runs while the role is still held — after de-elevation it could not delete anything');
   assert.match(body, /dropLinks\(newId\)/, 'partial links are cleaned up too, not left orphaned');
+});
+
+test('INVARIANT — a create is correlated by PRE-ASSIGNED SYS_ID, never by a nonce in description', () => {
+  /*
+   * MEASURED LIVE, and it cost a false FAILED on a perfect write.
+   *
+   * The business rule "Update ACL Description on Role Change"
+   * (sys_security_acl_role, after insert) regenerates the PARENT ACL's
+   * description from its roles. Writing the role link is the step that COMPLETES
+   * the atomic unit — so the correlation marker is destroyed by the write
+   * SUCCEEDING. Probe: description held the nonce after the ACL insert and read
+   * "Allow read for records in u_nha_aclproof, for users with role itil." after
+   * the role link. nonce_survived: false.
+   *
+   * A sys_id is not a field a business rule can rewrite. `setNewGuidValue` was
+   * measured as honoured, so the caller assigns the sys_id and reads back by it.
+   */
+  const body = buildAclUnitBody({
+    role: ROLE, runnerUserSysId: RUNNER, operation: 'create', sysId: ACL_SYS_ID,
+    payload: { name: 'incident', description: 'mine' }, roleSysIds: [ITIL],
+  });
+  assert.match(body, /w\.setNewGuidValue\(ACL_ID\)/, 'the create assigns the sys_id the caller chose');
+  assert.ok(!/addQuery\('description', 'CONTAINS', NONCE\)/.test(body), 'the create must not look itself up by a description marker');
+  assert.match(body, /Update ACL Description on Role Change/, 'the source records the measurement that forced this');
+
+  // A create without a pre-assigned sys_id is a caller bug, not a silent fallback.
+  assert.throws(
+    () => buildAclUnitBody({ role: ROLE, runnerUserSysId: RUNNER, operation: 'create', payload: { name: 'incident' }, roleSysIds: [] }),
+    /pre-assigned ACL sys_id/,
+  );
+});
+
+test('INVARIANT — a requested description on a roled/active ACL is WARNED about before approval', async () => {
+  // The platform will overwrite it. A human should learn that from the card, not
+  // from an amber badge after they approved.
+  const prep = await prepareAclUnit({
+    operation: 'create', nonce: ACL_SYS_ID,
+    spec: { table: 'incident', operation: 'read', roles: ['itil'], description: 'mine', active: true },
+    _resolve: async () => ({
+      ok: true,
+      resolved: {
+        spec: { name: 'incident', operation: 'read', roles: ['itil'], active: true, decision_type: 'allow' },
+        payload: { name: 'incident', description: 'mine' },
+        roleSysIds: [ITIL], roleNames: ['itil'], scope: { sys_scope: 'global' }, conditionSources: ['roles'],
+      },
+    }),
+  });
+  assert.equal(prep.ok, true);
+  assert.equal(prep.unit.sysId, ACL_SYS_ID, 'the correlation token is spent as the sys_id');
+  assert.equal(prep.unit.warnings.length, 1);
+  assert.match(prep.unit.warnings[0], /GENERATES the description/);
+  assert.match(prep.unit.warnings[0], /COERCED/, 'and it says what the tier will be, so amber is expected rather than alarming');
 });
 
 test('INVARIANT — an update whose role links fail restores BOTH the fields and the previous roles', () => {
@@ -259,7 +311,7 @@ test('INVARIANT — a delete removes the role links FIRST, then the ACL', () => 
 
 test('INVARIANT — every write in the ACL unit uses GlideRecordSecure, on BOTH tables', () => {
   for (const [operation, extra] of [
-    ['create', { nonce: 'd'.repeat(32), payload: { name: 'incident' } }],
+    ['create', { sysId: ACL_SYS_ID, payload: { name: 'incident' } }],
     ['update', { sysId: ACL_SYS_ID, payload: { active: 'true' } }],
     ['delete', { sysId: ACL_SYS_ID, payload: {} }],
   ]) {

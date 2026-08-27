@@ -681,18 +681,43 @@ export async function prepareAclUnit({
     const r = await _resolve(spec, { emit, timeoutMs });
     if (!r.ok) return r;
     const payload = { ...r.resolved.payload };
-    // The nonce goes in the read-back field, appended so a description the user
-    // asked for is preserved rather than replaced.
-    const existing = payload[nonceField] ? `${payload[nonceField]} ` : '';
-    payload[nonceField] = `${existing}[nha-elev:${nonce}]`;
+
+    /*
+     * THE CORRELATION TOKEN IS THE SYS_ID, and this is a measured correction.
+     *
+     * It used to be a nonce appended to `description`, which is how every other
+     * gated create in this codebase finds what it just wrote. For an ACL that is
+     * broken by construction: the business rule "Update ACL Description on Role
+     * Change" (sys_security_acl_role, after insert) regenerates the parent ACL's
+     * description from its roles. Writing the role link — the step that COMPLETES
+     * the atomic unit — therefore erases the marker, and a create that worked
+     * perfectly reads back as absent and reports FAILED. Measured live: the nonce
+     * was present after the ACL insert and gone after the role link.
+     *
+     * So the nonce is spent as the ACL's sys_id instead (it is already 32 hex
+     * from the CSPRNG, which is exactly a sys_id) and the write assigns it with
+     * `setNewGuidValue` — measured as honoured. A sys_id is not a field a
+     * business rule can rewrite, so correlation no longer depends on the platform
+     * leaving something alone.
+     */
+    const warnings = [];
+    if (payload.description && (r.resolved.spec.roles.length || r.resolved.spec.active)) {
+      warnings.push(
+        'The platform GENERATES the description of an ACL that is active or has roles ("Automatic Description" / '
+        + '"Update ACL Description on Role Change"), so the description requested here will very likely be replaced. '
+        + 'The write will report COERCED on that field — the rule itself is unaffected.',
+      );
+    }
+
     return {
       ok: true,
       unit: {
-        operation: 'create', sysId: null, payload,
+        operation: 'create', sysId: nonce, payload,
         roleSysIds: r.resolved.roleSysIds,
         conditionSources: r.resolved.conditionSources,
         beforeModCount: -1, beforeRoleSysIds: [],
-        summary: { name: r.resolved.spec.name, operation: r.resolved.spec.operation, roles: r.resolved.roleNames, active: r.resolved.spec.active, decision_type: r.resolved.spec.decision_type, scope: r.resolved.scope.sys_scope, conditions: r.resolved.conditionSources },
+        warnings,
+        summary: { name: r.resolved.spec.name, operation: r.resolved.spec.operation, roles: r.resolved.roleNames, active: r.resolved.spec.active, decision_type: r.resolved.spec.decision_type, scope: r.resolved.scope.sys_scope, conditions: r.resolved.conditionSources, warnings },
       },
     };
   }
