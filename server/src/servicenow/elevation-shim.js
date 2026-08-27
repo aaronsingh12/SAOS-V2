@@ -205,7 +205,7 @@ export const ACL_TABLE = 'sys_security_acl';
  * renderer has.
  */
 export function buildAclUnitBody({
-  role, runnerUserSysId, operation = 'create', payload, roleSysIds = [], sysId = null, nonce,
+  role, runnerUserSysId, operation = 'create', payload, roleSysIds = [], sysId = null, nonce, scopeSysId = null,
 }) {
   const roleName = assertRoleName(role);
   const runner = assertSysId(runnerUserSysId, 'the runner user sys_id');
@@ -357,6 +357,27 @@ export function buildAclUnitBody({
 
   return [
     ...head,
+    `var SCOPE = ${jsLiteral(scopeSysId)};`,
+    '',
+    '// (s) THE SCOPE CONTEXT, captured BEFORE anything else can throw.',
+    '//',
+    '// Gate S: a record stamps into whatever application is current AT INSERT.',
+    '// `gs.setCurrentApplicationId()` is the only lever — the `sys_scope` FIELD is',
+    '// inert, at insert and at update alike. So authoring into the target\'s scope',
+    '// means switching the execution\'s current application around the write.',
+    '//',
+    '// This runs on a POOLED scheduler worker, and Gate 4 already measured that',
+    '// pool carrying state something else left behind. A switch that outlived this',
+    '// execution would silently stamp whatever ran next into the wrong',
+    '// application — a failure nobody would see until an unrelated artifact turned',
+    '// up owned by an app that never asked for it. So the previous value is',
+    '// captured here, ahead of every other statement, and restored in the',
+    '// outermost `finally` below: not inside the elevation block, not inside the',
+    '// work, but on EVERY path out of this script including a throw before the',
+    '// switch ever happened.',
+    'var BEFORE_APP = null;',
+    'try { BEFORE_APP = String(gs.getCurrentApplicationId()); } catch (e) { BEFORE_APP = null; }',
+    '',
     'try {',
     '  // (a) runner precondition — server-side (Gate 0 H6: role record is 0 rows over REST).',
     "  var roleGr = new GlideRecord('sys_user_role');",
@@ -381,6 +402,8 @@ export function buildAclUnitBody({
     '      // (c) ASSERT the true seam before writing. A denied write is silent,',
     '      // so an un-elevated write must never be attempted (WI-1).',
     '      if (gs.hasRole(ROLE) === true) {',
+    '        // (s2) into the target\'s application, immediately before the write.',
+    '        if (SCOPE !== null) { gs.setCurrentApplicationId(SCOPE); }',
     ...work,
     '      }',
     '    } finally {',
@@ -391,6 +414,13 @@ export function buildAclUnitBody({
     '} catch (e) {',
     '  // Swallowed on purpose: the job reports nothing, and a self-report would',
     '  // be the thing we refuse to trust. Truth is the caller reading both tables.',
+    '} finally {',
+    '  // (s3) THE RESTORE. Outermost, unconditional, and last.',
+    '  //',
+    '  // Reached whether the write succeeded, was refused, or threw before the',
+    '  // switch was even attempted. Restoring to a value that is already current',
+    '  // is harmless; NOT restoring after a throw is the pooled-worker leak.',
+    '  try { if (BEFORE_APP !== null) { gs.setCurrentApplicationId(BEFORE_APP); } } catch (e2) { /* nothing left to do */ }',
     '}',
   ].join('\n');
 }
@@ -655,10 +685,11 @@ export async function dispatchElevatedWrite({
  */
 export async function dispatchAclUnit({
   role, runnerUserSysId, operation = 'create', payload = {}, roleSysIds = [], sysId = null, nonce,
+  scopeSysId = null,
   beforeModCount = -1, beforeRoleSysIds = [], conditionSources = [], platformOwned = [],
   nonceField = NONCE_FIELD, timeoutMs = DEFAULT_TIMEOUT_MS, pollMs = DEFAULT_POLL_MS, emit = () => {},
 } = {}) {
-  const body = buildAclUnitBody({ role, runnerUserSysId, operation, payload, roleSysIds, sysId, nonce });
+  const body = buildAclUnitBody({ role, runnerUserSysId, operation, payload, roleSysIds, sysId, nonce, scopeSysId });
 
   // The known silent-non-execution class, caught before the job is created.
   const validation = validateScriptSyntax(body);

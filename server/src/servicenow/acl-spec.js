@@ -51,8 +51,23 @@ export const DECISION_TYPES = { allow: 'Allow If', deny: 'Deny Unless' };
 /** The one ACL type WI-ACL-1 proves live. Others are schema-shaped but unproven. */
 export const PROVEN_ACL_TYPE = 'record';
 
-/** `sys_scope` this version can author into. Gate A B: the shim is global-only. */
-export const AUTHORABLE_SCOPE = 'global';
+/**
+ * The platform's own identifier for the global scope.
+ *
+ * This is a PLATFORM CONSTANT, not a policy choice, and the distinction matters
+ * because WI-ACL-2's first stop rule is "any hardcoded scope in the authoring
+ * path is a defect". `sys_scope` holds either a 32-hex application sys_id or the
+ * literal string `global` — measured on this instance — so a reader has to be
+ * able to name the second case. What is forbidden is hardcoding WHICH
+ * APPLICATION an ACL is authored into; that is always derived from the target.
+ *
+ * WI-ACL-1 had `AUTHORABLE_SCOPE = 'global'` here and refused every scoped
+ * target. Gate S removed the reason for that: `gs.setCurrentApplicationId()` is
+ * callable inside the write's execution and the ACL stamps into whatever scope
+ * is current at insert. So there is no longer an authorable scope — there is the
+ * target's scope, and the writer honours it.
+ */
+export const GLOBAL_SCOPE = 'global';
 
 /**
  * A refusal that names its reason code, so callers render distinct honest states
@@ -214,6 +229,9 @@ export function normalizeAclSpec(spec = {}, { requireConditions = true } = {}) {
     active: bool(spec.active, true),
     admin_overrides: bool(spec.admin_overrides, false),
     description: str(spec.description) || null,
+    // The application to author INTO. null means "derive it from the target",
+    // which is the ordinary path — see the SCOPE block in resolveAclSpec.
+    scope: str(spec.scope) || null,
   };
   normalized.name = composeAclName(normalized);
 
@@ -265,6 +283,9 @@ export function mergeAclSpec({ current, patch }) {
     active: has('active') ? patch.active : current.active,
     admin_overrides: has('admin_overrides') ? patch.admin_overrides : current.admin_overrides,
     description: has('description') ? patch.description : current.description,
+    // An update authors into the ACL's EXISTING scope unless the caller names
+    // one; naming a different one is what R4 refuses.
+    scope: has('scope') ? patch.scope : current.scope,
   };
   // requireConditions runs on the MERGED result — the whole point of merging first.
   return normalizeAclSpec(merged, { requireConditions: true });
@@ -280,7 +301,7 @@ export function mergeAclSpec({ current, patch }) {
  * Gate A B1 omitted it and rendered a clean EXECUTED while landing in a scope
  * nobody chose. Asserting it is what keeps the scope honest.
  */
-export function composeAclPayload(spec, { operationSysId, typeSysId, securityAttributeSysId = null, forUpdate = false }) {
+export function composeAclPayload(spec, { operationSysId, typeSysId, securityAttributeSysId = null, forUpdate = false, scopeSysId }) {
   /*
    * `operation` and `type` are REFERENCES (to sys_security_operation /
    * sys_security_type), and their keys are NOT always 32-hex: measured on this
@@ -293,7 +314,11 @@ export function composeAclPayload(spec, { operationSysId, typeSysId, securityAtt
     decision_type: spec.decision_type,
     active: spec.active ? 'true' : 'false',
     admin_overrides: spec.admin_overrides ? 'true' : 'false',
-    sys_scope: AUTHORABLE_SCOPE,
+    // ASSERTED as the scope we INTEND, so the WI-4 projection guard compares it
+    // and renders COERCED — never green — if the instance stamps another one.
+    // WI-ACL-1 asserted the constant 'global' here; asserting the intended scope
+    // is what makes the guard meaningful now that the intent can vary.
+    sys_scope: scopeSysId,
   };
   /*
    * IDENTITY FIELDS ARE CREATE-ONLY. `name`, `operation` and `type` are what make
@@ -384,6 +409,141 @@ export async function resolveRoleNames(roleNames, { emit, timeoutMs, _run = runC
   return res.payload.roles;
 }
 
+/* ------------------------------------------------------------------ *
+ * SCOPE — derive, honour, and enforce the docs' five restrictions
+ *
+ * Gate S B2 is the reason this section exists in this shape: the platform
+ * enforces NONE of these on the scripted path. All five forbidden operations
+ * were attempted against a live instance and all five were simply ALLOWED — no
+ * error, and not even a silent coercion. They are authoring-time (UI/Studio)
+ * restrictions. So NHA is the sole enforcer, and each rule below is a
+ * deterministic refusal that runs before the approval card. There is nothing to
+ * fall back on if one of them is missing.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Resolve a scope the caller NAMED (`x_2196302_nwforge`, or `global`) to the
+ * value `sys_scope` actually holds. Returns null when it does not resolve —
+ * which is a refusal, never a fallback to global.
+ */
+export async function resolveScopeRef(ref, { _query = table.query } = {}) {
+  const name = str(ref);
+  if (!name) return null;
+  if (name.toLowerCase() === GLOBAL_SCOPE) return { sys_id: GLOBAL_SCOPE, scope: GLOBAL_SCOPE, name: 'Global' };
+  const rows = await _query('sys_scope', {
+    query: `scope=${name}^ORsys_id=${name}`, fields: 'sys_id,scope,name', limit: 2, display: 'false',
+  });
+  if (rows.length !== 1) return null;
+  return { sys_id: String(rows[0].sys_id), scope: String(rows[0].scope ?? ''), name: String(rows[0].name ?? '') };
+}
+
+/**
+ * Does `tableName` carry at least one COLUMN owned by `scopeSysId`?
+ *
+ * This is R1's second branch — the docs allow an ACL on a table in another scope
+ * when that table has a field in the ACL's scope, which is how a scoped app that
+ * extends a global table owns rules on it. Gate S found a live example
+ * (`cmdb_software_instance`, ACL in CMDB Workspace, table global), which is why
+ * R1 cannot be simplified to same-scope-only.
+ *
+ * The `sys_db_object` cross-check is load-bearing, not defensive. Gate S measured
+ * `x_2196302_nwforge` owning 73 scoped dictionary columns of which ZERO belonged
+ * to a table that exists in `sys_db_object` — they were all on `var__m_*`
+ * flow-variable pseudo-tables. Counting those would have "found" a legal target
+ * that cannot be written to.
+ */
+export async function tableHasFieldInScope(tableName, scopeSysId, { _query = table.query } = {}) {
+  const cols = await _query('sys_dictionary', {
+    query: `name=${tableName}^sys_scope=${scopeSysId}^elementISNOTEMPTY`,
+    fields: 'name,element,sys_scope', limit: 5, display: 'false',
+  });
+  if (!cols.length) return { has: false, fields: [] };
+  const real = await _query('sys_db_object', { query: `name=${tableName}`, fields: 'name', limit: 1, display: 'false' });
+  if (!real.length) return { has: false, fields: [], note: 'the columns belong to a pseudo-table with no sys_db_object row' };
+  return { has: true, fields: cols.map((c) => String(c.element)) };
+}
+
+/**
+ * R1–R5, in the order the docs make them meaningful: R1 establishes whether the
+ * pairing is legal at all, R3/R5 constrain the object's SHAPE, R2/R4 constrain
+ * what may ride along with a cross-scope pairing.
+ *
+ * Returns null when every rule passes, or a `{ reason, message, detail }`.
+ */
+export function checkScopeRules({ aclScope, objectScope, table: tableName, field, script, roles = [], fieldInScope = null }) {
+  const sameScope = String(aclScope) === String(objectScope);
+
+  // R1 — same-scope object, or a table with >=1 field in the ACL's scope.
+  if (!sameScope && !(fieldInScope && fieldInScope.has)) {
+    return {
+      reason: 'cross_scope_object',
+      message: `Refusing to author an ACL in ${aclScope === GLOBAL_SCOPE ? 'the global scope' : `scope ${aclScope}`} on `
+        + `${tableName}, which belongs to ${objectScope === GLOBAL_SCOPE ? 'the global scope' : `scope ${objectScope}`}. `
+        + 'ServiceNow allows an ACL only on an object in its own scope, or on a table carrying at least one field in that '
+        + `scope — and ${tableName} carries none. ${fieldInScope?.note ? `(${fieldInScope.note}) ` : ''}`
+        + 'The platform will NOT stop this: it was measured accepting exactly this write. Author the rule in the '
+        + "target's own scope instead.",
+      detail: { rule: 'R1', acl_scope: aclScope, object_scope: objectScope, table: tableName },
+    };
+  }
+
+  // R3 — a wildcard TABLE rule is global-only.
+  if (tableName === '*' && String(aclScope) !== GLOBAL_SCOPE) {
+    return {
+      reason: 'wildcard_table_scoped',
+      message: `Refusing a wildcard-table ACL ("*") in scope ${aclScope}. ServiceNow permits table wildcards only in the `
+        + 'global scope — a scoped app cannot write a rule that applies to every table on the instance. The platform '
+        + 'was measured allowing this write, so this refusal is the only thing preventing it.',
+      detail: { rule: 'R3', acl_scope: aclScope },
+    };
+  }
+
+  // R5 — a wildcard FIELD rule is same-scope only.
+  if (field === '*' && !sameScope) {
+    return {
+      reason: 'wildcard_field_cross_scope',
+      message: `Refusing a wildcard-field ACL ("${tableName}.*") authored in scope ${aclScope} against a table in `
+        + `${objectScope}. ServiceNow permits field wildcards only on same-scope tables: a rule over EVERY field of a `
+        + "table another application owns reaches past what the field-in-scope allowance was for. Name the field, or "
+        + "author in the table's own scope.",
+      detail: { rule: 'R5', acl_scope: aclScope, object_scope: objectScope },
+    };
+  }
+
+  // R2 — a different-scope table may not carry a script condition.
+  if (!sameScope && str(script)) {
+    return {
+      reason: 'cross_scope_script',
+      message: `Refusing a script condition on an ACL authored in ${aclScope} against ${tableName}, which belongs to `
+        + `${objectScope}. ServiceNow does not allow a script on a cross-scope table rule — a script runs with the `
+        + "authoring app's reach against another application's data. Measured: the platform stores such a script "
+        + 'verbatim rather than rejecting it, so nothing else will catch this. Use a data condition, or author the rule '
+        + "in the table's own scope.",
+      detail: { rule: 'R2', acl_scope: aclScope, object_scope: objectScope },
+    };
+  }
+
+  // R4 — role links must be written in the ACL's own scope.
+  //
+  // The writer satisfies this BY CONSTRUCTION: it switches the current
+  // application to the ACL's scope and authors the record and its links inside
+  // that one execution. The rule survives as a check because the update path can
+  // be handed an ACL that already lives in one scope while the caller asked to
+  // author in another — and Gate S measured the platform happily linking a role
+  // across that boundary.
+  if (roles.length && String(aclScope) !== String(objectScope) && !(fieldInScope && fieldInScope.has)) {
+    return {
+      reason: 'cross_scope_role_link',
+      message: `Refusing to attach role(s) ${roles.join(', ')} to an ACL in scope ${aclScope} that governs an object in `
+        + `${objectScope}. A role link must be written in the ACL's own application. The platform was measured allowing `
+        + 'this, so the refusal is ours.',
+      detail: { rule: 'R4', acl_scope: aclScope, object_scope: objectScope, roles },
+    };
+  }
+
+  return null;
+}
+
 /** The target object's scope, read off `sys_db_object`. Never inferred from the name. */
 export async function readTargetScope(tableName, { _query = table.query } = {}) {
   const rows = await _query('sys_db_object', {
@@ -405,6 +565,8 @@ export async function resolveAclSpec(spec, {
   emit, timeoutMs,
   _resolveRoles = resolveRoleNames,
   _readScope = readTargetScope,
+  _resolveScope = resolveScopeRef,
+  _fieldInScope = tableHasFieldInScope,
   _query = table.query,
   _schemaFor = getSchema,
 } = {}) {
@@ -434,8 +596,22 @@ export async function resolveAclSpec(spec, {
     );
   }
 
-  // SCOPE — read, never inferred. Gate A B: the shim authors in global scope and
-  // silently rewrites anything else, so a non-global target has no honest path.
+  /*
+   * SCOPE — DERIVED from the target, never hardcoded, then HONOURED.
+   *
+   * WI-ACL-1 refused every non-global target here, because Gate A had measured
+   * the writer silently rewriting a requested scope to global. Gate S found the
+   * actual lever (`gs.setCurrentApplicationId`, applied at insert), so the
+   * honest behaviour is no longer "refuse everything scoped" — it is "author in
+   * the scope the object lives in".
+   *
+   * The ACL's scope DEFAULTS to the target's own scope, which satisfies the
+   * docs' primary rule for every ordinary request without the caller thinking
+   * about scope at all. An explicit `scope` is accepted for the one legitimate
+   * cross-scope shape the docs allow (a scoped app owning a rule on a global
+   * table it has extended) — and it is exactly what makes R1–R5 reachable
+   * rather than vacuous.
+   */
   let scope;
   try {
     scope = await _readScope(normalized.table, { _query });
@@ -450,16 +626,33 @@ export async function resolveAclSpec(spec, {
       { table: normalized.table },
     );
   }
-  if (scope.sys_scope !== AUTHORABLE_SCOPE) {
-    return refuse(
-      'scoped_target',
-      `${normalized.table} belongs to a scoped application, not global. This version authors ACLs in GLOBAL scope only — `
-      + 'measured in Gate A: the elevated write silently rewrites a requested scope to global, so authoring here would '
-      + `put a global ACL on a scoped table rather than the scoped ACL you asked for. Refusing instead of quietly `
-      + 'globalising it. Scoped-app authoring needs its own gate.',
-      { table: normalized.table, sys_scope: scope.sys_scope, authorable: AUTHORABLE_SCOPE },
-    );
+
+  // The ACL's scope: what the caller named, else the target's own.
+  let aclScope = scope.sys_scope;
+  if (normalized.scope) {
+    const resolvedScope = await _resolveScope(normalized.scope, { _query });
+    if (!resolvedScope) {
+      return refuse(
+        'unknown_scope',
+        `No application scope "${normalized.scope}" exists on this instance. An ACL cannot be authored into a scope that `
+        + 'does not resolve, and defaulting to global instead would put the rule somewhere nobody asked for.',
+        { scope: normalized.scope },
+      );
+    }
+    aclScope = resolvedScope.sys_id;
   }
+
+  // R1's second branch needs a live read, so it is resolved before the rules run.
+  let fieldInScope = null;
+  if (String(aclScope) !== String(scope.sys_scope)) {
+    fieldInScope = await _fieldInScope(normalized.table, aclScope, { _query }).catch(() => ({ has: false, fields: [], note: 'the field-in-scope check could not be read' }));
+  }
+
+  const ruleBreak = checkScopeRules({
+    aclScope, objectScope: scope.sys_scope, table: normalized.table, field: normalized.field,
+    script: normalized.script, roles: normalized.roles, fieldInScope,
+  });
+  if (ruleBreak) return refuse(ruleBreak.reason, ruleBreak.message, ruleBreak.detail);
 
   // OPERATION + TYPE references, resolved live off their reference tables.
   const [opRows, typeRows] = await Promise.all([
@@ -539,7 +732,11 @@ export async function resolveAclSpec(spec, {
         operationSysId: String(opRows[0].sys_id),
         typeSysId: String(typeRows[0].sys_id),
         securityAttributeSysId,
+        scopeSysId: aclScope,
       }),
+      aclScope,
+      objectScope: scope.sys_scope,
+      fieldInScope,
       roleSysIds,
       roleNames: normalized.roles,
       roleTransport: roleResolution.transport,
@@ -611,6 +808,9 @@ export async function readAclCurrent(sysId, { emit, timeoutMs, _query = table.qu
     },
     current: {
       decision_type: String(r.decision_type || 'allow'),
+      // The scope this ACL ALREADY lives in. An update authors back into it
+      // unless the caller names another — and naming another is what R4 catches.
+      scope: String(r.sys_scope ?? ''),
       type: typeRows.length ? String(typeRows[0].name) : refKey(r.type),
       table: dot < 0 ? String(r.name || '') : String(r.name).slice(0, dot),
       field: dot < 0 ? null : String(r.name).slice(dot + 1),
@@ -672,7 +872,10 @@ export async function prepareAclUnit({
       unit: {
         operation: 'delete', sysId, payload: {}, roleSysIds: [], conditionSources: [],
         beforeModCount: current.sys_mod_count, beforeRoleSysIds: current.roleSysIds,
-        summary: { name: current.current.table + (current.current.field ? `.${current.current.field}` : ''), operation: current.current.operation, roles: current.current.roles, active: current.current.active },
+        // Delete runs in the ACL's OWN scope: removing a scoped record from a
+        // global context is the same cross-scope write R4 refuses on the way in.
+        scopeSysId: current.current.scope || GLOBAL_SCOPE,
+        summary: { scope: current.current.scope || GLOBAL_SCOPE, name: current.current.table + (current.current.field ? `.${current.current.field}` : ''), operation: current.current.operation, roles: current.current.roles, active: current.current.active },
       },
     };
   }
@@ -716,8 +919,17 @@ export async function prepareAclUnit({
         roleSysIds: r.resolved.roleSysIds,
         conditionSources: r.resolved.conditionSources,
         beforeModCount: -1, beforeRoleSysIds: [],
+        // The application the write switches into before inserting. Derived, in
+        // resolveAclSpec, from the target object — never a constant.
+        scopeSysId: r.resolved.aclScope,
         warnings,
-        summary: { name: r.resolved.spec.name, operation: r.resolved.spec.operation, roles: r.resolved.roleNames, active: r.resolved.spec.active, decision_type: r.resolved.spec.decision_type, scope: r.resolved.scope.sys_scope, conditions: r.resolved.conditionSources, warnings },
+        summary: {
+          name: r.resolved.spec.name, operation: r.resolved.spec.operation, roles: r.resolved.roleNames,
+          active: r.resolved.spec.active, decision_type: r.resolved.spec.decision_type,
+          scope: r.resolved.aclScope, object_scope: r.resolved.objectScope,
+          cross_scope: String(r.resolved.aclScope) !== String(r.resolved.objectScope),
+          conditions: r.resolved.conditionSources, warnings,
+        },
       },
     };
   }
@@ -769,9 +981,11 @@ export async function prepareAclUnit({
       roleSysIds: r.resolved.roleSysIds,
       conditionSources: r.resolved.conditionSources,
       beforeModCount: current.sys_mod_count, beforeRoleSysIds: current.roleSysIds,
+      scopeSysId: r.resolved.aclScope,
       summary: {
         name: merged.name, operation: merged.operation, roles: r.resolved.roleNames, active: merged.active,
-        decision_type: merged.decision_type, scope: r.resolved.scope.sys_scope,
+        decision_type: merged.decision_type, scope: r.resolved.aclScope, object_scope: r.resolved.objectScope,
+        cross_scope: String(r.resolved.aclScope) !== String(r.resolved.objectScope),
         conditions: r.resolved.conditionSources,
         changed_fields: changedFields,
         roles_changed: wantRoles !== haveRoles,

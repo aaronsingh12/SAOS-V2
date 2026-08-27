@@ -214,6 +214,7 @@ export async function executeGatedWrite({
     const r = await _dispatchAclUnit({
       role: requiredRole, runnerUserSysId, operation: aclUnit.operation,
       payload: aclUnit.payload, roleSysIds: aclUnit.roleSysIds, sysId: aclUnit.sysId, nonce,
+      scopeSysId: aclUnit.scopeSysId ?? null,
       beforeModCount: aclUnit.beforeModCount, beforeRoleSysIds: aclUnit.beforeRoleSysIds,
       conditionSources: aclUnit.conditionSources, platformOwned, emit,
     });

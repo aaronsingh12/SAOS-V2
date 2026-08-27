@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import {
   normalizeAclSpec, assertSpecNotEmpty, isTriviallyTrueScript, composeAclName,
   composeAclPayload, mergeAclSpec, specConditionSources, resolveAclSpec,
-  prepareAclUnit, buildRoleResolveSource, AclSpecError, AUTHORABLE_SCOPE, PROVEN_ACL_TYPE,
+  prepareAclUnit, buildRoleResolveSource, AclSpecError, GLOBAL_SCOPE, PROVEN_ACL_TYPE,
 } from '../src/servicenow/acl-spec.js';
 import {
   buildAclUnitBody, assessAclUnitTier, aclUnitDeleteOutcome, ACL_ROLE_TABLE, ACL_TABLE,
@@ -145,20 +145,32 @@ test('INVARIANT — an update that changes nothing is refused, so the "did it ru
  * INVARIANT — a scoped target is REFUSED, never silently globalised
  * ------------------------------------------------------------------ */
 
-test('INVARIANT — an ACL on a scoped-application table is refused, not authored into global', async () => {
+test('INVARIANT (WI-ACL-2) — a scoped target is now HONOURED, not refused, and not globalised', async () => {
+  /*
+   * BEHAVIOUR CHANGE, deliberate and measured. WI-ACL-1 refused every non-global
+   * target here (`scoped_target`) because Gate A had measured the writer silently
+   * rewriting a requested scope to global — refusing was the only honest option
+   * when the scope could not be held.
+   *
+   * Gate S found the lever (`gs.setCurrentApplicationId`, applied at insert), so
+   * the refusal no longer describes a real limit. The honest behaviour is to
+   * author IN the target's scope. What must never come back is the third option:
+   * accepting a scoped target and quietly landing it in global.
+   */
+  const SCOPED = '5595c78a34514f1ab3927067bf6e0c12';
   const r = await resolveAclSpec(
     { table: 'x_tepv_ts_dms_dealer', operation: 'read', roles: ['itil'] },
     {
-      _readScope: async () => ({ found: true, table: 'x_tepv_ts_dms_dealer', sys_scope: '5595c78a34514f1ab3927067bf6e0c12' }),
+      _readScope: async () => ({ found: true, table: 'x_tepv_ts_dms_dealer', sys_scope: SCOPED }),
       _query: async () => [{ sys_id: 'read', name: 'read' }],
       _resolveRoles: async () => ({ resolved: [{ name: 'itil', sys_id: ITIL, found: true }], transport: 'server-side' }),
       _schemaFor: async () => ({ fields: [] }),
     },
   );
-  assert.equal(r.ok, false);
-  assert.equal(r.refusal.reason, 'scoped_target');
-  assert.match(r.refusal.message, /GLOBAL scope only/);
-  assert.match(r.refusal.message, /silently rewrites/, 'the refusal names the measured reason, not a policy preference');
+  assert.equal(r.ok, true, 'a scoped target is authorable now');
+  assert.equal(r.resolved.aclScope, SCOPED, "the ACL is authored in the TARGET's own scope");
+  assert.equal(r.resolved.payload.sys_scope, SCOPED, 'and that scope is the asserted field');
+  assert.notEqual(r.resolved.payload.sys_scope, GLOBAL_SCOPE, 'never silently globalised');
 });
 
 test('INVARIANT — a target table that does not exist is refused (fail-closed), never assumed global', async () => {
@@ -188,10 +200,13 @@ test('INVARIANT — a wildcard-table ACL is refused outright', () => {
 
 test('INVARIANT — every ACL payload asserts sys_scope, so a silent rewrite renders COERCED not green', () => {
   const spec = normalizeAclSpec({ table: 'incident', operation: 'read', roles: ['itil'] });
-  const create = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record' });
-  const update = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', forUpdate: true });
-  assert.equal(create.sys_scope, AUTHORABLE_SCOPE, 'create asserts scope');
-  assert.equal(update.sys_scope, AUTHORABLE_SCOPE, 'update asserts scope too');
+  const create = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', scopeSysId: GLOBAL_SCOPE });
+  const update = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', forUpdate: true, scopeSysId: GLOBAL_SCOPE });
+  assert.equal(create.sys_scope, GLOBAL_SCOPE, 'create asserts scope');
+  assert.equal(update.sys_scope, GLOBAL_SCOPE, 'update asserts scope too');
+  // WI-ACL-2: and the asserted value follows the DERIVED scope, not a constant.
+  const scoped = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', scopeSysId: 'c44f3c6c37c24793be9f8b759c7818e4' });
+  assert.equal(scoped.sys_scope, 'c44f3c6c37c24793be9f8b759c7818e4');
 
   /*
    * Gate A B measured this exactly: B1 omitted sys_scope and rendered a clean
@@ -211,7 +226,7 @@ test('INVARIANT — every ACL payload asserts sys_scope, so a silent rewrite ren
 
 test('INVARIANT — identity fields (name, operation, type) are create-only; an update cannot repoint an ACL', () => {
   const spec = normalizeAclSpec({ table: 'incident', operation: 'read', roles: ['itil'] });
-  const update = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', forUpdate: true });
+  const update = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', forUpdate: true, scopeSysId: GLOBAL_SCOPE });
   for (const f of ['name', 'operation', 'type']) {
     assert.ok(!(f in update), `${f} must never be in an update payload — repointing an ACL is a delete plus a create`);
   }
@@ -673,12 +688,12 @@ test('INVARIANT — more than one security attribute is refused, never truncated
 
 test('INVARIANT — clearing an optional field on update writes "", so the clear lands and is compared', () => {
   const spec = normalizeAclSpec({ table: 'incident', operation: 'read', roles: ['itil'] });
-  const update = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', forUpdate: true });
+  const update = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', forUpdate: true, scopeSysId: GLOBAL_SCOPE });
   // Not merely absent — present and empty, so the projection covers it and the
   // read-back proves the old value is gone.
   assert.equal(update.condition, '');
   assert.equal(update.script, '');
-  const create = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record' });
+  const create = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', scopeSysId: GLOBAL_SCOPE });
   assert.ok(!('condition' in create), 'on create, an unset field is left to the platform default');
 });
 

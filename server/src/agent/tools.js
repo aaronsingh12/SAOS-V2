@@ -86,7 +86,7 @@ function unreachableAclWrite(toolName) {
  */
 function aclDescriptorSummary(input = {}) {
   const summary = {};
-  for (const k of ['table', 'field', 'operation', 'decision_type', 'data_condition', 'script', 'applies_to', 'description']) {
+  for (const k of ['table', 'field', 'operation', 'decision_type', 'data_condition', 'script', 'applies_to', 'description', 'scope']) {
     if (input[k] !== undefined && input[k] !== null && input[k] !== '') summary[k] = String(input[k]);
   }
   for (const k of ['active', 'admin_overrides']) {
@@ -856,8 +856,10 @@ export const TOOLS = [
       + 'The rule is refused BEFORE you are asked to approve it if it would be empty (no role, security attribute, condition '
       + 'or script — the platform denies by default on those, so it would lock people out rather than error), if a role or '
       + 'security attribute does not exist, if the script is trivially true, if a condition names a field the table does not '
-      + 'have (the platform silently drops such a clause, making the rule WIDER than it reads), or if the target table belongs '
-      + 'to a scoped application (this authors in global scope only). '
+      + 'have (the platform silently drops such a clause, making the rule WIDER than it reads), or if it would break one of '
+      + "ServiceNow's scope restrictions. "
+      + "The rule is authored in the TARGET TABLE'S OWN application scope, derived automatically — a scoped table gets a "
+      + 'scoped rule, a global table a global one. '
       + 'Call acl_report on the table first: an ACL is evaluated alongside every other matching rule, so you need to know what '
       + 'is already there before adding one.',
     mutating: true,
@@ -877,6 +879,14 @@ export const TOOLS = [
         active: { type: 'boolean', description: 'Default true. An inactive ACL is stored but never evaluated.' },
         admin_overrides: { type: 'boolean', description: 'Default false. When true, admin bypasses this rule.' },
         description: { type: 'string', description: 'Why this rule exists. Worth writing — the platform generates one otherwise.' },
+        scope: {
+          type: 'string',
+          description:
+            'Rarely needed. The application scope to author the rule INTO, e.g. "global" or an app scope name. '
+            + "OMIT IT and the rule is authored in the target table's own scope, which is what ServiceNow requires "
+            + 'and what you almost always want. Naming a different scope is legal only when the target table carries '
+            + 'a field in that scope; anything else is refused.',
+        },
       },
       required: ['table', 'operation'],
     },
@@ -914,6 +924,14 @@ export const TOOLS = [
         active: { type: 'boolean' },
         admin_overrides: { type: 'boolean' },
         description: { type: 'string' },
+        scope: {
+          type: 'string',
+          description:
+            'Rarely needed. The application scope to author the rule INTO, e.g. "global" or an app scope name. '
+            + "OMIT IT and the rule is authored in the target table's own scope, which is what ServiceNow requires "
+            + 'and what you almost always want. Naming a different scope is legal only when the target table carries '
+            + 'a field in that scope; anything else is refused.',
+        },
       },
       required: ['sys_id'],
     },
