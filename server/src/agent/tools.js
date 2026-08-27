@@ -51,6 +51,53 @@ export function assertCreatableTable(t) {
 }
 
 /**
+ * WI-ACL-1 — the ACL write tools' `execute` must be UNREACHABLE, and must say so.
+ *
+ * `create_acl` / `update_acl` / `delete_acl` never execute: the orchestrator
+ * intercepts their gated descriptor and routes the whole call through the
+ * elevation pipeline before `executeTool` is reached. Leaving `execute` as a
+ * REST write "just in case" would be the worst possible fallback — un-elevated
+ * writes to `sys_security_acl` are denied SILENTLY (WI-1), so the tool would
+ * report success while changing nothing, and a user would believe access had
+ * been altered when it had not.
+ *
+ * So it throws. If the interception is ever removed, reordered, or the
+ * classifier entry is dropped, this is a loud failure at the exact moment the
+ * guarantee breaks — not a quiet no-op discovered later by someone who trusted
+ * a green tick.
+ */
+function unreachableAclWrite(toolName) {
+  return Object.assign(new Error(
+    `${toolName} reached the ordinary tool path, which must never happen. ACL writes are only valid through the `
+    + 'elevation gate (classifier -> eligibility -> spec validation -> approval -> elevated atomic write -> read-back). '
+    + 'An un-elevated write to sys_security_acl is DENIED SILENTLY, so nothing was attempted rather than something '
+    + 'appearing to work. This is a wiring defect in the orchestrator, not a problem with the request.'
+  ), { status: 500, detail: { tool: toolName, reason: 'acl-write-bypassed-elevation-gate' } });
+}
+
+/**
+ * The human-readable half of an ACL descriptor.
+ *
+ * `descriptor.requested` is what the pre-gate guards and the audit ledger see,
+ * so it holds the REQUEST in the user's terms (roles by name, the table, the
+ * operation) rather than `sys_security_acl` column values — which at this point
+ * do not exist yet, and which would not tell a reader what the rule does even
+ * once they did. The resolved column payload is built later, after validation.
+ */
+function aclDescriptorSummary(input = {}) {
+  const summary = {};
+  for (const k of ['table', 'field', 'operation', 'decision_type', 'data_condition', 'script', 'applies_to', 'description']) {
+    if (input[k] !== undefined && input[k] !== null && input[k] !== '') summary[k] = String(input[k]);
+  }
+  for (const k of ['active', 'admin_overrides']) {
+    if (input[k] !== undefined && input[k] !== null) summary[k] = String(input[k]);
+  }
+  if (Array.isArray(input.roles)) summary.roles = input.roles.join(', ');
+  if (Array.isArray(input.security_attributes) && input.security_attributes.length) summary.security_attributes = input.security_attributes.join(', ');
+  return summary;
+}
+
+/**
  * Tool registry — the agent's hands.
  * `mutating: true` tools are intercepted by the approval gate unless the user
  * has enabled auto-approve (same idea as Claude Code's permission prompts).
@@ -779,6 +826,128 @@ export const TOOLS = [
       required: ['table'],
     },
     execute: async ({ table: t }) => explainAclReport(await aclReport(t)),
+  },
+
+  /* ---------------------------------------------------------------- *
+   * WI-ACL-1 — ACL AUTHORING. Model-callable, but never model-executed.
+   *
+   * These three tools are the ONLY ACL write verbs, and none of them writes
+   * anything. Their `execute` is unreachable: `describeWrite` produces a
+   * `(sys_security_acl, create|update|delete)` descriptor, `isGatedDescriptor`
+   * classifies it as gated, and `handleGatedElevation` intercepts the call
+   * before `executeTool` is ever reached (orchestrator.js). The actual write
+   * happens inside one elevated execution, as an atomic ACL + role-link unit,
+   * after a human approves a card that names the rule in plain language.
+   *
+   * So the model can ASK for an ACL. It cannot author one, cannot elevate,
+   * cannot reach the shim, and cannot fall back to `create_record` — that route
+   * produces the same gated descriptor and lands in the same gate.
+   *
+   * The `execute` bodies exist only to make that unreachability LOUD rather
+   * than implicit: if the interception is ever removed or reordered, these
+   * throw instead of quietly performing an un-elevated write that would
+   * silently no-op and leave the user believing access had changed.
+   * ---------------------------------------------------------------- */
+  {
+    name: 'create_acl',
+    description:
+      'Author a NEW access control rule (ACL) on a GLOBAL table, together with the roles it requires, as one all-or-nothing '
+      + 'elevated change. Requires user approval and elevates security_admin. '
+      + 'The rule is refused BEFORE you are asked to approve it if it would be empty (no role, security attribute, condition '
+      + 'or script — the platform denies by default on those, so it would lock people out rather than error), if a role or '
+      + 'security attribute does not exist, if the script is trivially true, if a condition names a field the table does not '
+      + 'have (the platform silently drops such a clause, making the rule WIDER than it reads), or if the target table belongs '
+      + 'to a scoped application (this authors in global scope only). '
+      + 'Call acl_report on the table first: an ACL is evaluated alongside every other matching rule, so you need to know what '
+      + 'is already there before adding one.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string', description: 'The table the rule governs, e.g. incident. Must be a global-scope table. Wildcards are refused.' },
+        field: { type: 'string', description: 'Optional. A field name for a field-level ACL, or "*" for every field. Omit for a record-level ACL.' },
+        operation: { type: 'string', description: 'read, write, create, delete, or any operation the instance defines (sys_security_operation).' },
+        decision_type: { type: 'string', description: '"allow" (Allow If — the default) or "deny" (Deny Unless).' },
+        type: { type: 'string', description: 'ACL type. Only "record" is proven live here; anything else is refused.' },
+        roles: { type: 'array', items: { type: 'string' }, description: 'Role NAMES this rule requires, e.g. ["itil"]. Resolved server-side; an unknown role is refused.' },
+        security_attributes: { type: 'array', items: { type: 'string' }, description: 'Security attribute name. This table holds ONE; asking for more is refused rather than truncated.' },
+        data_condition: { type: 'string', description: 'Encoded query the record must match, e.g. "state=1^assigned_toISNOTEMPTY". Fields are checked against the real schema.' },
+        script: { type: 'string', description: 'ACL script. A trivially-true script is refused — it looks like a condition and constrains nothing.' },
+        applies_to: { type: 'string', description: 'Optional case-sensitive record pre-filter (the Applies-to condition).' },
+        active: { type: 'boolean', description: 'Default true. An inactive ACL is stored but never evaluated.' },
+        admin_overrides: { type: 'boolean', description: 'Default false. When true, admin bypasses this rule.' },
+        description: { type: 'string', description: 'Why this rule exists. Worth writing — the platform generates one otherwise.' },
+      },
+      required: ['table', 'operation'],
+    },
+    execute: () => { throw unreachableAclWrite('create_acl'); },
+    describeWrite: (input) => ({
+      table: 'sys_security_acl',
+      operation: 'insert',
+      requested: aclDescriptorSummary(input),
+      sys_id: null,
+      acl_spec: input,
+    }),
+  },
+  {
+    name: 'update_acl',
+    description:
+      'Change an existing ACL by sys_id — its condition, script, roles, active flag, decision type, applies-to filter or '
+      + 'description — together with its role links, as one all-or-nothing elevated change. Requires user approval and elevates '
+      + 'security_admin. '
+      + 'The patch is merged onto the rule AS IT IS ON THE INSTANCE and the RESULT is validated, so a change that would leave '
+      + 'the ACL empty (for example clearing its roles when the role was its only condition) is refused before you are asked to '
+      + 'approve it — an empty ACL denies everyone it matches. A patch that changes nothing is also refused. '
+      + 'It cannot repoint an ACL at a different table, field or operation: that is a different rule, and it is a delete plus a '
+      + 'create. Read the ACL with acl_report first and use the sys_id that read returns.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sys_id: { type: 'string', description: 'sys_id of the ACL to change, from acl_report.' },
+        roles: { type: 'array', items: { type: 'string' }, description: 'The COMPLETE role list this rule should require afterwards — it replaces the current set, it does not add to it.' },
+        security_attributes: { type: 'array', items: { type: 'string' } },
+        data_condition: { type: 'string', description: 'Encoded query. Pass "" to clear it.' },
+        script: { type: 'string', description: 'ACL script. Pass "" to clear it.' },
+        applies_to: { type: 'string' },
+        decision_type: { type: 'string', description: '"allow" or "deny".' },
+        active: { type: 'boolean' },
+        admin_overrides: { type: 'boolean' },
+        description: { type: 'string' },
+      },
+      required: ['sys_id'],
+    },
+    execute: () => { throw unreachableAclWrite('update_acl'); },
+    describeWrite: (input) => ({
+      table: 'sys_security_acl',
+      operation: 'update',
+      requested: aclDescriptorSummary(input),
+      sys_id: input?.sys_id ?? null,
+      acl_spec: input,
+    }),
+  },
+  {
+    name: 'delete_acl',
+    description:
+      'Delete an ACL and every role link on it, through the elevated channel. Destructive — confirm with the user in '
+      + 'conversation first, then call it; approval and elevation follow. '
+      + 'This is the ONLY correct way to remove an ACL: delete_record on sys_security_acl runs un-elevated, is denied, and '
+      + 'SILENTLY DOES NOTHING while appearing to succeed. Deleting a rule removes whatever access it granted, so read it with '
+      + 'acl_report first and tell the user what it does before removing it.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: { sys_id: { type: 'string', description: 'sys_id of the ACL to delete, from acl_report.' } },
+      required: ['sys_id'],
+    },
+    execute: () => { throw unreachableAclWrite('delete_acl'); },
+    describeWrite: (input) => ({
+      table: 'sys_security_acl',
+      operation: 'delete',
+      requested: {},
+      sys_id: input?.sys_id ?? null,
+      acl_spec: input,
+    }),
   },
   {
     name: 'recall_memory',
