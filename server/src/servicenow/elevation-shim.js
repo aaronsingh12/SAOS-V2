@@ -161,6 +161,297 @@ export function buildElevatedWriteBody({ role, runnerUserSysId, table: tableName
   ].join('\n');
 }
 
+/* ------------------------------------------------------------------ *
+ * WI-ACL-1 — the ATOMIC ACL UNIT (ACL record + its role links)
+ * ------------------------------------------------------------------ */
+
+/** The role-link table. Gated on `security_admin` since Gate A A1b. */
+export const ACL_ROLE_TABLE = 'sys_security_acl_role';
+export const ACL_TABLE = 'sys_security_acl';
+
+/**
+ * The elevated body for an ACL authored AS ONE UNIT: the `sys_security_acl`
+ * record and every `sys_security_acl_role` link, all-or-nothing.
+ *
+ * ── Why atomicity is the whole point here ────────────────────────────────
+ *
+ * An ACL's role requirement does not live on the ACL. It is a row in
+ * `sys_security_acl_role`. So "create the ACL, then link the role" is two
+ * writes, and the gap between them is a real, reachable state: an ACL with no
+ * role. If the spec named no other condition, that ACL is EMPTY — and an empty
+ * ACL does not fail, it saves and DENIES EVERYONE it matches.
+ *
+ * A partial success here is therefore not a partial success. It is a lockout.
+ * That is why the failure path is not "report and stop" (the shim's usual, and
+ * correct, discipline for a single record) but ROLL BACK IN THE SAME ELEVATED
+ * EXECUTION: the only moment this process is able to delete that ACL is while it
+ * still holds the role, and `security_admin` is gone the instant the execution
+ * ends (Phase 0 probe 0.4). Leaving the rollback to a later call would mean
+ * leaving a deny-everyone ACL in place for as long as that call took to arrive —
+ * or forever, if it never did.
+ *
+ * ── What is carried forward from WI-1/WI-3/WI-5, unchanged ───────────────
+ *   - `GlideRecordSecure` ONLY, for every write, on both tables (a plain
+ *     GlideRecord insert persists un-elevated — WI-1 B1a — and would make the
+ *     elevation decorative);
+ *   - `gs.hasRole` asserted true immediately before any write; false writes nothing;
+ *   - insert()/update() return values DISCARDED — they lie (WI-1);
+ *   - de-elevate in `finally`, on every path;
+ *   - NO sink: this body reports nothing. Truth is the caller's read-back of
+ *     BOTH tables. A self-report is the thing we refuse to trust.
+ *
+ * The rollback's own success is likewise not self-reported — the caller reads the
+ * ACL back and a surviving role-less ACL is rendered as the loudest failure the
+ * renderer has.
+ */
+export function buildAclUnitBody({
+  role, runnerUserSysId, operation = 'create', payload, roleSysIds = [], sysId = null, nonce,
+}) {
+  const roleName = assertRoleName(role);
+  const runner = assertSysId(runnerUserSysId, 'the runner user sys_id');
+  if (operation !== 'create' && operation !== 'update' && operation !== 'delete') {
+    throw new Error(`buildAclUnitBody supports create, update and delete, got ${JSON.stringify(operation)}.`);
+  }
+  if (operation !== 'delete' && (!payload || typeof payload !== 'object')) {
+    throw new Error('An ACL unit write needs a payload object.');
+  }
+  if (operation !== 'create') assertSysId(sysId, 'the target ACL sys_id');
+  if (operation === 'create' && !/^[0-9a-f]{32}$/.test(String(nonce || ''))) {
+    throw new Error('buildAclUnitBody needs a 32-char hex nonce to find the created ACL server-side.');
+  }
+  for (const r of roleSysIds) assertSysId(r, 'a role sys_id for the ACL role link');
+
+  const head = [
+    `var ROLE = ${jsLiteral(roleName)};`,
+    `var RUNNER = ${jsLiteral(runner)};`,
+    `var ACL_TABLE = ${jsLiteral(ACL_TABLE)};`,
+    `var LINK_TABLE = ${jsLiteral(ACL_ROLE_TABLE)};`,
+    `var REC = ${jsLiteral(payload || {})};`,
+    `var ROLE_IDS = ${jsLiteral(roleSysIds)};`,
+    `var ACL_ID = ${jsLiteral(sysId)};`,
+    `var NONCE = ${jsLiteral(nonce || '')};`,
+    '',
+    '// Helpers, inlined: this body must stand alone on a scheduler worker.',
+    'function linkIdsFor(aclId) {',
+    '  var found = [];',
+    '  var q = new GlideRecord(LINK_TABLE);',
+    "  q.addQuery('sys_security_acl', aclId);",
+    '  q.query();',
+    "  while (q.next()) { found.push({ link: q.getUniqueValue(), role: String(q.getValue('sys_user_role')) }); }",
+    '  return found;',
+    '}',
+    'function dropLinks(aclId) {',
+    '  var ls = linkIdsFor(aclId);',
+    '  for (var i = 0; i < ls.length; i++) {',
+    '    var d = new GlideRecordSecure(LINK_TABLE);',
+    '    if (d.get(ls[i].link)) { d.deleteRecord(); }',
+    '  }',
+    '}',
+    'function addLinks(aclId, ids) {',
+    '  for (var i = 0; i < ids.length; i++) {',
+    '    var m = new GlideRecordSecure(LINK_TABLE);',
+    '    m.initialize();',
+    "    m.setValue('sys_security_acl', aclId);",
+    "    m.setValue('sys_user_role', ids[i]);",
+    '    m.insert(); // return DISCARDED — truth is the read-back',
+    '  }',
+    '}',
+    'function linksComplete(aclId, want) {',
+    '  var got = linkIdsFor(aclId);',
+    '  if (got.length !== want.length) { return false; }',
+    '  for (var i = 0; i < want.length; i++) {',
+    '    var hit = false;',
+    '    for (var j = 0; j < got.length; j++) { if (got[j].role === want[i]) { hit = true; } }',
+    '    if (!hit) { return false; }',
+    '  }',
+    '  return true;',
+    '}',
+  ];
+
+  let work;
+  if (operation === 'create') {
+    work = [
+      '        // (d1) the ACL record.',
+      '        var w = new GlideRecordSecure(ACL_TABLE);',
+      '        w.initialize();',
+      '        for (var k in REC) { if (REC.hasOwnProperty(k)) { w.setValue(k, REC[k]); } }',
+      '        w.insert(); // return DISCARDED — it lies (WI-1)',
+      '',
+      '        // (d2) find what landed, by the nonce carried in description.',
+      '        var f = new GlideRecord(ACL_TABLE);',
+      "        f.addQuery('description', 'CONTAINS', NONCE);",
+      '        f.query();',
+      "        var newId = f.next() ? f.getUniqueValue() : '';",
+      '',
+      '        // (d3) the role links, in the SAME elevated execution.',
+      '        if (newId) { addLinks(newId, ROLE_IDS); }',
+      '',
+      '        // (d4) ATOMICITY. Anything short of the whole unit is rolled back',
+      '        // HERE, while this execution still holds the role — a role-less ACL',
+      '        // is an EMPTY ACL, and an empty ACL denies everyone it matches.',
+      '        if (newId && !linksComplete(newId, ROLE_IDS)) {',
+      '          dropLinks(newId);',
+      '          var rb = new GlideRecordSecure(ACL_TABLE);',
+      '          if (rb.get(newId)) { rb.deleteRecord(); }',
+      '        }',
+    ];
+  } else if (operation === 'update') {
+    work = [
+      '        // (d1) capture the BEFORE state, so a failed link half can be undone.',
+      '        var before = new GlideRecord(ACL_TABLE);',
+      '        var haveBefore = before.get(ACL_ID);',
+      '        var beforeFields = {};',
+      '        if (haveBefore) { for (var bk in REC) { if (REC.hasOwnProperty(bk)) { beforeFields[bk] = String(before.getValue(bk) === null ? \'\' : before.getValue(bk)); } } }',
+      '        var beforeLinks = haveBefore ? linkIdsFor(ACL_ID) : [];',
+      '        var beforeRoleIds = [];',
+      '        for (var bi = 0; bi < beforeLinks.length; bi++) { beforeRoleIds.push(beforeLinks[bi].role); }',
+      '',
+      '        if (haveBefore) {',
+      '          // (d2) the ACL fields.',
+      '          var u = new GlideRecordSecure(ACL_TABLE);',
+      '          if (u.get(ACL_ID)) {',
+      '            for (var k2 in REC) { if (REC.hasOwnProperty(k2)) { u.setValue(k2, REC[k2]); } }',
+      '            u.update(); // return DISCARDED',
+      '          }',
+      '',
+      '          // (d3) reconcile the role links to exactly ROLE_IDS.',
+      '          dropLinks(ACL_ID);',
+      '          addLinks(ACL_ID, ROLE_IDS);',
+      '',
+      '          // (d4) ATOMICITY. If the links did not land as asked, put the ACL',
+      '          // back the way it was — fields AND links. An update that half-ran',
+      '          // can strip the role requirement off a live rule.',
+      '          if (!linksComplete(ACL_ID, ROLE_IDS)) {',
+      '            dropLinks(ACL_ID);',
+      '            addLinks(ACL_ID, beforeRoleIds);',
+      '            var rv = new GlideRecordSecure(ACL_TABLE);',
+      '            if (rv.get(ACL_ID)) {',
+      '              for (var k3 in beforeFields) { if (beforeFields.hasOwnProperty(k3)) { rv.setValue(k3, beforeFields[k3]); } }',
+      '              rv.update();',
+      '            }',
+      '          }',
+      '        }',
+    ];
+  } else {
+    work = [
+      '        // (d1) LINKS FIRST. A link outliving its ACL is an orphan row',
+      '        // pointing at nothing; the ACL outliving its links is a role-less,',
+      '        // deny-everyone rule. Both are worse than either delete alone, and',
+      '        // this order makes the dangerous window the harmless one.',
+      '        dropLinks(ACL_ID);',
+      '        if (linkIdsFor(ACL_ID).length === 0) {',
+      '          var dr = new GlideRecordSecure(ACL_TABLE);',
+      '          if (dr.get(ACL_ID)) { dr.deleteRecord(); }',
+      '        }',
+    ];
+  }
+
+  return [
+    ...head,
+    'try {',
+    '  // (a) runner precondition — server-side (Gate 0 H6: role record is 0 rows over REST).',
+    "  var roleGr = new GlideRecord('sys_user_role');",
+    "  roleGr.addQuery('name', ROLE);",
+    '  roleGr.query();',
+    '  var runnerHasRole = false;',
+    '  if (roleGr.next()) {',
+    '    var roleId = roleGr.getUniqueValue();',
+    "    var hasGr = new GlideRecord('sys_user_has_role');",
+    "    hasGr.addQuery('user', RUNNER);",
+    "    hasGr.addQuery('role', roleId);",
+    '    hasGr.query();',
+    '    runnerHasRole = (hasGr.next() ? true : false);',
+    '  }',
+    '',
+    '  // (b) reachability guard — re-assert Gate 0 A2.',
+    "  var reachable = (typeof GlideSecurityManager === 'function') && (GlideSecurityManager.get() !== null);",
+    '',
+    '  if (runnerHasRole && reachable) {',
+    '    GlideSecurityManager.get().enableElevatedRole(ROLE);',
+    '    try {',
+    '      // (c) ASSERT the true seam before writing. A denied write is silent,',
+    '      // so an un-elevated write must never be attempted (WI-1).',
+    '      if (gs.hasRole(ROLE) === true) {',
+    ...work,
+    '      }',
+    '    } finally {',
+    '      // (g) de-elevate on every path.',
+    '      GlideSecurityManager.get().disableElevatedRole(ROLE);',
+    '    }',
+    '  }',
+    '} catch (e) {',
+    '  // Swallowed on purpose: the job reports nothing, and a self-report would',
+    '  // be the thing we refuse to trust. Truth is the caller reading both tables.',
+    '}',
+  ].join('\n');
+}
+
+/**
+ * Tier an ACL UNIT from the read-back of BOTH tables.
+ *
+ * Green requires both halves. The field half reuses `assessOutcomeTier` (so the
+ * projection-superset guard and the platform-owned-field handling are the same
+ * code, not a second implementation that could drift). The role half is an exact
+ * SET comparison against the sys_ids that were requested — no name resolution at
+ * read-back time, because the sys_ids were already resolved and verified live
+ * during validation, and re-resolving names over REST would reintroduce the D-2
+ * blind spot at the last step.
+ *
+ * The distinct, loudest state: `role_less`. An ACL that landed, was asked for
+ * roles, has none, and carries no other condition is the deny-everyone lockout.
+ * It is reported as FAILED — not COERCED — because nothing about it succeeded,
+ * and because the rollback that should have prevented it did not run.
+ */
+export function assessAclUnitTier({
+  requested, actual, comparedFields = null, platformOwned = [],
+  expectedRoleSysIds = [], actualRoleSysIds = null, conditionSources = [],
+}) {
+  const fieldOutcome = assessOutcomeTier({ requested, actual, comparedFields, platformOwned });
+
+  const want = [...new Set(expectedRoleSysIds.map(String))];
+  const got = actualRoleSysIds === null ? null : [...new Set(actualRoleSysIds.map(String))];
+  const missing = got === null ? want : want.filter((r) => !got.includes(r));
+  const extra = got === null ? [] : got.filter((r) => !want.includes(r));
+  const rolesRead = got !== null;
+  const rolesOk = rolesRead && missing.length === 0 && extra.length === 0;
+
+  const roles = {
+    expected: want, actual: got, missing, extra, ok: rolesOk, read: rolesRead,
+    detail: !rolesRead
+      ? 'the role links were not read back, so the role requirement is NOT confirmed'
+      : (rolesOk
+        ? (want.length ? `all ${want.length} role link(s) present and no extras` : 'no roles requested, and none present')
+        : `role links do not match: ${missing.length} missing, ${extra.length} unexpected`),
+  };
+
+  if (!fieldOutcome.landed) {
+    return { ...fieldOutcome, roles, role_less: false, unit: 'acl' };
+  }
+
+  // The lockout state, named and separated from ordinary coercion.
+  const otherConditions = conditionSources.filter((s) => s !== 'roles');
+  const roleLess = want.length > 0 && rolesRead && got.length === 0;
+  if (roleLess && otherConditions.length === 0) {
+    return {
+      ...fieldOutcome,
+      tier: 'FAILED', roles, role_less: true, unit: 'acl',
+      detail: 'the ACL record landed but NONE of its role links did, and it carries no other condition — that is an '
+        + 'EMPTY ACL, which denies everyone it matches. The atomic rollback should have removed it and did not. '
+        + 'Delete this ACL on the instance before anything relies on it.',
+    };
+  }
+
+  if (!rolesOk) {
+    return {
+      ...fieldOutcome,
+      tier: 'COERCED', roles, role_less: roleLess, unit: 'acl',
+      detail: `${fieldOutcome.detail}; and the role requirement did not land as asked — ${roles.detail}`,
+    };
+  }
+
+  return { ...fieldOutcome, roles, role_less: false, unit: 'acl' };
+}
+
 /**
  * Read the nonce-tagged target back over the ordinary REST path. This is the
  * ONLY success signal. Un-elevated is fine — the table is REST-readable (H6),
@@ -330,4 +621,152 @@ export async function dispatchElevatedWrite({
       emit({ type: 'elev_job_cleanup', job: jobId, deleted: still == null });
     }
   }
+}
+
+/**
+ * Dispatch one ATOMIC ACL UNIT and tier it off a read-back of BOTH tables.
+ *
+ * Same transport and same discipline as `dispatchElevatedWrite` — one-shot
+ * `sysauto_script`, no sink, job cleaned up afterwards, `sys_update_xml` left
+ * alone as provenance. What differs is the success signal, because an ACL's
+ * truth lives in two tables:
+ *
+ *   create — poll for the ACL by nonce, then read its role links.
+ *   update — poll for EITHER a `sys_mod_count` increment on the ACL OR a change
+ *            in its link set. Both are needed: a roles-only update never touches
+ *            the ACL row, so `sys_mod_count` alone would time out as FAILED on a
+ *            write that in fact landed perfectly. The caller guarantees that
+ *            SOMETHING must change — a no-op update is refused before approval —
+ *            which is what makes either signal conclusive rather than ambiguous.
+ *   delete — poll for the ACL's ABSENCE, then check that no orphan links survive.
+ */
+export async function dispatchAclUnit({
+  role, runnerUserSysId, operation = 'create', payload = {}, roleSysIds = [], sysId = null, nonce,
+  beforeModCount = -1, beforeRoleSysIds = [], conditionSources = [], platformOwned = [],
+  nonceField = NONCE_FIELD, timeoutMs = DEFAULT_TIMEOUT_MS, pollMs = DEFAULT_POLL_MS, emit = () => {},
+} = {}) {
+  const body = buildAclUnitBody({ role, runnerUserSysId, operation, payload, roleSysIds, sysId, nonce });
+
+  // The known silent-non-execution class, caught before the job is created.
+  const validation = validateScriptSyntax(body);
+  if (!validation.ok) {
+    return {
+      dispatched: false, job: null, nonce, operation,
+      outcome: {
+        tier: 'FAILED', landed: false, sys_id: null, mismatches: [], coerced: [], unverified: [],
+        compared_fields: [], compared_detail: [], role_less: false, unit: 'acl',
+        roles: { expected: roleSysIds, actual: null, missing: roleSysIds, extra: [], ok: false, read: false, detail: 'not attempted' },
+        detail: `refused pre-dispatch: ${validation.errors.map((e) => e.message).join(' | ')}`,
+      },
+      validation,
+    };
+  }
+
+  const linksFor = (aclSysId) => table.query(ACL_ROLE_TABLE, {
+    query: `sys_security_acl=${aclSysId}`, fields: 'sys_id,sys_user_role', limit: 100, display: 'false',
+  }).then((rows) => rows.map((r) => String(r.sys_user_role)).filter(Boolean)).catch(() => null);
+
+  const projection = operation === 'create'
+    ? [...new Set(['sys_id', nonceField, ...Object.keys(payload)])]
+    : [...new Set(['sys_id', 'sys_mod_count', ...Object.keys(payload)])];
+  const beforeLinkKey = [...beforeRoleSysIds].map(String).sort().join(',');
+
+  const jobId = crypto.randomUUID().replace(/-/g, '');
+  let created = false;
+  try {
+    emit({ type: 'elev_job_creating', job: jobId, table: ACL_TABLE, operation, unit: 'acl' });
+    await table.create('sysauto_script', {
+      sys_id: jobId,
+      name: `NHA elevated ACL ${operation}`.slice(0, 60),
+      active: 'true',
+      run_type: 'once',
+      run_start: utcStamp(Date.now() - JOB_START_BACKDATE_MS),
+      script: body,
+    });
+    created = true;
+    emit({ type: 'elev_job_created', job: jobId });
+
+    let actual = null;
+    let actualRoleSysIds = null;
+    let aclGone = false;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(pollMs);
+
+      if (operation === 'create') {
+        const rows = await readTargetByNonce({ table: ACL_TABLE, nonce, name: payload.name ?? null, nonceField, fields: projection.join(',') });
+        if (rows.length) {
+          actual = rows[0];
+          actualRoleSysIds = await linksFor(String(actual.sys_id));
+          break;
+        }
+      } else if (operation === 'update') {
+        const rows = await table.query(ACL_TABLE, { query: `sys_id=${sysId}`, fields: projection.join(','), limit: 1, display: 'false' }).catch(() => []);
+        const links = await linksFor(sysId);
+        const linkKey = links === null ? null : [...links].map(String).sort().join(',');
+        const fieldsMoved = rows.length > 0 && Number(rows[0].sys_mod_count) > beforeModCount;
+        const linksMoved = linkKey !== null && linkKey !== beforeLinkKey;
+        if (fieldsMoved || linksMoved) { actual = rows[0] ?? null; actualRoleSysIds = links; break; }
+      } else {
+        const rows = await table.query(ACL_TABLE, { query: `sys_id=${sysId}`, fields: 'sys_id', limit: 1, display: 'false' }).catch(() => null);
+        if (rows !== null && rows.length === 0) {
+          aclGone = true;
+          actualRoleSysIds = await linksFor(sysId);
+          break;
+        }
+      }
+      emit({ type: 'elev_waiting', remainingMs: Math.max(0, deadline - Date.now()) });
+    }
+
+    if (operation === 'delete') {
+      const outcome = aclUnitDeleteOutcome({ sysId, aclGone, actualRoleSysIds });
+      return { dispatched: true, job: jobId, nonce, operation, outcome, actual: null, validation };
+    }
+
+    const outcome = assessAclUnitTier({
+      requested: payload, actual, comparedFields: projection, platformOwned,
+      expectedRoleSysIds: roleSysIds, actualRoleSysIds, conditionSources,
+    });
+    return { dispatched: true, job: jobId, nonce, operation, outcome, actual, validation };
+  } finally {
+    if (created) {
+      await table.remove('sysauto_script', jobId).catch(() => {});
+      const still = await table.get('sysauto_script', jobId, 'false').catch(() => null);
+      emit({ type: 'elev_job_cleanup', job: jobId, deleted: still == null });
+    }
+  }
+}
+
+/**
+ * Tier a DELETE. Absence is the success signal, so the tiers invert: an ACL that
+ * reads back is the failure. The middle state is real and worth its own tier —
+ * the ACL gone but its role links surviving leaves rows pointing at nothing.
+ */
+export function aclUnitDeleteOutcome({ sysId, aclGone, actualRoleSysIds }) {
+  const base = {
+    landed: aclGone, sys_id: sysId, mismatches: [], coerced: [], unverified: [],
+    compared_fields: [], compared_detail: [], unit: 'acl', role_less: false,
+  };
+  if (!aclGone) {
+    return {
+      ...base, tier: 'FAILED',
+      roles: { expected: [], actual: actualRoleSysIds, missing: [], extra: [], ok: false, read: actualRoleSysIds !== null, detail: 'the ACL was not removed' },
+      detail: 'the ACL is still present on the instance — the delete did not land',
+    };
+  }
+  const orphans = actualRoleSysIds === null ? null : actualRoleSysIds.length;
+  if (orphans) {
+    return {
+      ...base, tier: 'COERCED',
+      roles: { expected: [], actual: actualRoleSysIds, missing: [], extra: actualRoleSysIds, ok: false, read: true, detail: `${orphans} role link(s) outlived the ACL` },
+      detail: `the ACL was deleted, but ${orphans} sys_security_acl_role row(s) survive and now point at nothing — remove them`,
+    };
+  }
+  return {
+    ...base, tier: 'EXECUTED',
+    compared_fields: ['sys_id'],
+    compared_detail: [{ field: 'sys_id', requested: '(removed)', actual: '(absent)' }],
+    roles: { expected: [], actual: actualRoleSysIds ?? [], missing: [], extra: [], ok: true, read: actualRoleSysIds !== null, detail: 'no role links remain' },
+    detail: 'the ACL and every role link are gone, confirmed by read-back',
+  };
 }
