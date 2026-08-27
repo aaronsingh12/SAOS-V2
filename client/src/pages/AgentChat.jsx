@@ -198,6 +198,9 @@ export default function AgentChat() {
             // already knows about the fields this payload is about to set.
             push({
               kind: 'approval', approvalId: evt.approvalId, name: evt.name, input: evt.input,
+              // WI-IMP-2 — whose authority this card hands over, resolved before
+              // the card was shown rather than discovered after it was approved.
+              impersonationApproval: evt.impersonationApproval || null,
               decided: null, warning: evt.warning || null,
               // B6 — whose authority this card carries. Null unless impersonation
               // mode is active.
@@ -744,6 +747,32 @@ export default function AgentChat() {
                   {m.warning && (
                     <div style={{ color: 'var(--amber)', fontSize: 12, marginTop: 6 }}>
                       Heads up — {m.warning}
+                    </div>
+                  )}
+                  {/* WI-IMP-2 — this card hands authority to a PERSON. The chip
+                      above is null on a first start (mode is not active yet),
+                      which is exactly the card where "whose authority?" is being
+                      decided. An ADMINISTRATOR target gets the same red weight
+                      as a destructive action: measured, the elevated flag used
+                      to appear only as a boolean inside the JSON payload below,
+                      indistinguishable from impersonating any ordinary user. */}
+                  {m.impersonationApproval && (
+                    <div style={{
+                      border: `1px solid var(--${m.impersonationApproval.elevated ? 'red' : 'amber'})`,
+                      borderRadius: 6, padding: '6px 8px', marginTop: 6, fontSize: 12,
+                    }}>
+                      <div style={{ color: `var(--${m.impersonationApproval.elevated ? 'red' : 'amber'})`, fontWeight: 600 }}>
+                        {m.impersonationApproval.elevated
+                          ? `⚠ ELEVATED — ${m.impersonationApproval.target.user_name} holds the ADMIN role`
+                          : `Acts as ${m.impersonationApproval.target.user_name}`}
+                      </div>
+                      <div style={{ color: 'var(--muted)' }}>
+                        {m.impersonationApproval.target.display} · {m.impersonationApproval.target.sys_id}
+                      </div>
+                      {m.impersonationApproval.task && (
+                        <div style={{ color: 'var(--muted)' }}>for: {m.impersonationApproval.task}</div>
+                      )}
+                      <div style={{ color: 'var(--muted)', marginTop: 4 }}>{m.impersonationApproval.note}</div>
                     </div>
                   )}
                   {/* WI-4 — this card authorises ELEVATING a role. The human must

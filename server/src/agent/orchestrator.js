@@ -29,7 +29,7 @@ import { impersonationBoundaryLine, impFacts } from '../memory/impersonation-mod
 import { appendImpersonatedMutation } from '../memory/impersonation-audit.js';
 import { impersonationChip } from './impersonation-render.js';
 import { willExecuteImpersonated } from './impersonated-write.js';
-import { checkTaskBoundary } from './impersonation-ops.js';
+import { checkTaskBoundary, previewImpersonation } from './impersonation-ops.js';
 import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js';
 import { checkWriteTarget } from '../memory/provenance.js';
 import { businessRuleAbortPlaybook, dataVsConfigNote } from './playbooks.js';
@@ -56,6 +56,13 @@ import { registerElevatedWrite } from '../memory/provenance.js';
  * unresolved approval promises for turns currently in flight. A restart
  * legitimately abandons those — the tool never ran.
  */
+
+/**
+ * WI-IMP-2 — the two tools whose approval card must state WHO is being
+ * impersonated and whether that person holds admin. Both escalate: they decide
+ * whose authority every following instruction carries.
+ */
+const IMPERSONATION_GATED_TOOLS = new Set(['impersonation_start', 'impersonation_switch']);
 
 const live = new Map(); // sessionId -> { pending: Map<approvalId, resolver> }
 
@@ -1886,6 +1893,56 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           if (handled) { mutatingCallCount += 1; continue; }
         }
 
+        /*
+         * WI-IMP-2 — the IMPERSONATION PREFLIGHT, and its position is the fix.
+         *
+         * Eligibility used to run only inside the tool's `execute`, which is
+         * AFTER this gate. Measured front-door against an administrator: the
+         * card was shown, the human approved, and only then did the gate refuse
+         * `target_holds_admin_role`. So an approval was spent on a decision
+         * already destined to refuse — and, on the second attempt with
+         * `elevated_approval: true`, the card for "act as an ADMINISTRATOR" was
+         * visually identical to one for any ordinary user, because nothing had
+         * yet asked who the target was.
+         *
+         * Running it here fixes both: an ineligible target is refused with NO
+         * card, and an eligible one carries the resolved facts — who, whether
+         * they hold admin, and whether this is the elevated tier — onto the card
+         * as structured data the renderer can make loud.
+         *
+         * `execute` still re-runs the gate and stays authoritative. This is a
+         * preview for the human, never a clearance for the machine (A3).
+         */
+        let impersonationApproval = null;
+        if (tool.mutating && IMPERSONATION_GATED_TOOLS.has(call.name)) {
+          let pre;
+          try {
+            pre = await previewImpersonation({
+              user: call.input?.user, task: call.input?.task,
+              elevatedApproval: call.input?.elevated_approval === true,
+            });
+          } catch (err) {
+            // FAIL-CLOSED. An eligibility read that errors is not an eligible target.
+            pre = { ok: false, refusal: { status: 'refused', reason: 'eligibility_read_failed', message: `Impersonation eligibility could not be verified (${err.message}), so nothing was started (fail-closed).` } };
+          }
+          if (!pre.ok) {
+            const msg = `Refused before approval: ${pre.refusal.message}${pre.refusal.next ? ` ${pre.refusal.next}` : ''}`;
+            log.warn('gate', `${call.name} refused before approval — ${pre.refusal.reason}`);
+            results.push({ id: call.id, name: call.name, output: msg, isError: true });
+            recordToolEvent(sessionId, {
+              kind: 'tool_call', name: call.name, payload: call.input, result: msg,
+              resultStatus: `imp_refused:${pre.refusal.reason}`, mutating: true, approval: null,
+            });
+            emit({
+              type: 'tool_blocked', id: call.id, name: call.name, input: call.input,
+              reason: `impersonation_${pre.refusal.reason}`, message: msg,
+              impersonationApproval: { refused: true, reason: pre.refusal.reason, candidates: pre.refusal.candidates ?? null },
+            });
+            continue;   // no card, nothing started
+          }
+          impersonationApproval = pre.preview;
+        }
+
         // Permission gate — the heart of the platform's safety model.
         let approval = null;
         // WI-4 — the two facts the audit trail could not previously state.
@@ -1914,8 +1971,20 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             impersonation: impersonationChip(sessionId, {
               executesImpersonated: willExecuteImpersonated(sessionId, tool),
             }),
+            /*
+             * WI-IMP-2 — WHO this card hands authority to.
+             *
+             * `impersonation` above is the chip for the CURRENT mode, and it is
+             * null on a first start, because mode is not active yet. That is
+             * precisely the card where the question "whose authority?" is being
+             * decided, so it needs its own payload. Carries the resolved target,
+             * whether they hold admin, and whether this is the elevated tier —
+             * so the renderer can make an administrator target impossible to
+             * approve inattentively, which is the whole point of the flag.
+             */
+            impersonationApproval,
           });
-          log.warn('gate', `approval required: ${call.name} — waiting for the user`);
+          log.warn('gate', `approval required: ${call.name}${impersonationApproval?.elevated ? ' — ELEVATED (admin target)' : ''} — waiting for the user`);
           const decision = await awaitApproval(state, approvalId, nonce);
           approval = decision.approved ? 'approved' : 'rejected';
           approvedSource = decision.source;

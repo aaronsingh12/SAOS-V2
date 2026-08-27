@@ -98,8 +98,8 @@ async function resolveTarget(user) {
  * make an admin target impossible to approve *inattentively*; `executeTool`
  * still refuses anything without a user_click-attributed approval.
  */
-async function gateFor({ sysId, actor, elevatedApproval }) {
-  const eligibility = await evaluateEligibility({ sysId, adminSysId: actor.sys_id });
+async function gateFor({ sysId, actor, elevatedApproval, _evaluate = evaluateEligibility }) {
+  const eligibility = await _evaluate({ sysId, adminSysId: actor.sys_id });
 
   if (eligibility.verdict === VERDICT.DENY) {
     return {
@@ -138,6 +138,79 @@ function stateReport(sessionId, extra = {}) {
     mode: getMode(sessionId),
     facts: impFacts(sessionId),
     boundary: impersonationBoundaryLine(sessionId),
+  };
+}
+
+/**
+ * WI-IMP-2 — what the approval card must know BEFORE a human is asked.
+ *
+ * ── The ordering defect this exists to fix ───────────────────────────────
+ *
+ * Eligibility used to run entirely inside `execute`, which is AFTER the approval
+ * gate. Measured front-door on an administrator target: the card appeared, the
+ * human approved, and only then did the gate refuse `target_holds_admin_role`.
+ * The card could not have said the target was an admin, because nothing had
+ * asked yet.
+ *
+ * Two consequences, and neither is cosmetic:
+ *   1. An approval was spent on a decision that was already going to be refused
+ *      — the WI-3 lesson, and the WI-ACL-1 lesson one layer over.
+ *   2. Worse: the second round-trip, with `elevated_approval: true`, produced a
+ *      card visually IDENTICAL to impersonating any ordinary user. The one
+ *      signal distinguishing "act as an administrator" from "act as a
+ *      contractor" was a boolean inside a JSON payload, with the same weight as
+ *      the task string. The flag's stated purpose is to make an admin target
+ *      impossible to approve INATTENTIVELY, and rendered that way it could not
+ *      do that job.
+ *
+ * So the gate now runs twice: here, to inform the card and to refuse before it;
+ * and again inside `execute`, which stays authoritative. Re-running rather than
+ * passing the verdict forward is deliberate — this preview is for the human, not
+ * for the decision, and a preview that could be handed to `execute` as a
+ * clearance would be exactly the inherited-clearance hole A3 forbids. If the two
+ * ever disagree (a role revoked in between), `execute` refuses and the preview
+ * was merely optimistic.
+ *
+ * Costs one extra bounded execution per start/switch. For the operation that
+ * decides whose authority everything afterwards carries, that is worth paying.
+ */
+export async function previewImpersonation({ user, task, elevatedApproval, actorResolver, _evaluate } = {}) {
+  if (!String(task ?? '').trim() && task !== undefined) {
+    return { ok: false, refusal: { status: 'refused', reason: 'no_task', message: 'Describe what this impersonation is for.' } };
+  }
+  const actor = await actorVia(actorResolver)();
+  const target = await resolveTarget(user);
+  if (!target.ok) return { ok: false, refusal: target.refusal };
+
+  const gate = await gateFor({ sysId: target.sysId, actor, elevatedApproval, _evaluate });
+  if (!gate.ok) return { ok: false, refusal: gate.refusal };
+
+  const t = gate.eligibility.target;
+  return {
+    ok: true,
+    preview: {
+      kind: 'impersonation',
+      target: { sys_id: t.sys_id, user_name: t.user_name, display: t.display },
+      original: { sys_id: actor.sys_id, user_name: actor.user_name },
+      /*
+       * `elevated` is true only on the admin path, and it is what the renderer
+       * keys its high-risk block off. It is derived from the EVALUATED
+       * eligibility verdict, never from the caller's `elevated_approval` flag —
+       * a model that set the flag on a non-admin target must not be able to
+       * paint a scarier card, and one that omitted it on an admin target has
+       * already been refused above.
+       */
+      elevated: gate.elevated === true,
+      holds_admin: gate.elevated === true,
+      task: task ? String(task).trim() : null,
+      checks: gate.eligibility.checks ?? [],
+      note: gate.elevated
+        ? `${t.user_name} holds the ADMIN role. Approving this makes every following instruction carry an `
+          + 'administrator\'s authority, attributed to them on the instance — and the instance keeps no record of '
+          + 'who really asked.'
+        : `Everything done while this is active is recorded on the instance as ${t.user_name}'s work. The instance `
+          + 'keeps no record of the real initiator; NowHelpAssist\'s ledger is the only place that exists.',
+    },
   };
 }
 
