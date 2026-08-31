@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const APP_CONFIG = path.join(SERVER_ROOT, 'fluent-workspace', 'now.config.json');
+const APP_TEMPLATE = path.join(SERVER_ROOT, 'fluent-workspace', 'now.config.template.json');
 
 /*
  * The application identity contract, asserted against the file that is actually
@@ -22,20 +22,20 @@ const APP_CONFIG = path.join(SERVER_ROOT, 'fluent-workspace', 'now.config.json')
  *   scope SYS_ID  instance-local — must never be in source
  */
 
-const config = () => JSON.parse(fs.readFileSync(APP_CONFIG, 'utf8'));
+const config = () => JSON.parse(fs.readFileSync(APP_TEMPLATE, 'utf8'));
 
 /*
- * The COMMITTED config, not the working copy.
+ * The COMMITTED template, not the working copy.
  *
- * `withMaterializedConfig` writes the resolved scopeId into this file for the
- * seconds a build/install needs it and restores it in a `finally`. A test that
- * read the working tree would therefore fail whenever a deploy happened to be
- * in flight — which it did, the first time these ran. The invariant being
- * asserted is "no instance-local id is IN SOURCE", so read what git has.
+ * A1 moved the identity into a tracked template that no build writes, and
+ * gitignored the generated `now.config.json` — so the tracked tree cannot carry
+ * the pin at any instant. These still read the committed blob rather than the
+ * working tree, because that is the invariant that matters and because a
+ * working-tree read passes or fails on whether a deploy happens to be running.
  */
 function committedConfig() {
   try {
-    const out = execFileSync('git', ['show', 'HEAD:server/fluent-workspace/now.config.json'], {
+    const out = execFileSync('git', ['show', 'HEAD:server/fluent-workspace/now.config.template.json'], {
       cwd: path.resolve(SERVER_ROOT, '..'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     });
     return JSON.parse(out);
@@ -76,4 +76,20 @@ test('the retired scope name is gone from the committed identity', () => {
 test('the scope name fits the platform cap the SDK enforces', () => {
   // now-sdk init: "cannot be greater than 18 characters".
   assert.ok(config().scope.length <= 18, `${config().scope} is ${config().scope.length} characters`);
+});
+
+
+test('the GENERATED config is not tracked, so no commit timing can capture the pin', () => {
+  // A1. The earlier scheme wrote the scopeId into a tracked file and restored it
+  // in a `finally`; a commit landed inside that window and captured the pin.
+  // Untracked removes the window rather than narrowing it.
+  const tracked = execFileSync('git', ['ls-files', 'server/fluent-workspace/now.config.json'], {
+    cwd: path.resolve(SERVER_ROOT, '..'), encoding: 'utf8',
+  }).trim();
+  assert.equal(tracked, '', 'now.config.json is tracked — the materialised scopeId can be committed');
+});
+
+test('the tracked template is what the identity is read from, and it names no sys_id', () => {
+  const cfg = config();
+  assert.deepEqual(Object.keys(cfg).sort(), ['name', 'scope']);
 });

@@ -267,9 +267,9 @@ export async function assertAppBinding() {
   const bound = boundInstance();
   let cfg;
   try {
-    cfg = JSON.parse(await fsp.readFile(path.join(WORKSPACE, 'now.config.json'), 'utf8'));
+    cfg = await readAppIdentity();
   } catch (err) {
-    throw Object.assign(new Error(`The Fluent workspace has no readable now.config.json (${err.message}), so no application can be installed.`), { status: 409 });
+    throw Object.assign(new Error(`The Fluent workspace has no readable application identity (${err.message}), so nothing can be installed.`), { status: err.status ?? 409 });
   }
 
   const rows = await table.query('sys_scope', {
@@ -290,20 +290,28 @@ export async function assertAppBinding() {
       : '';
     throw Object.assign(new Error(
       `REFUSING TO INSTALL: the application "${cfg.scope}" does not exist on the bound instance ${bound.host}. `
-      + `The workspace is pinned to it by now.config.json (scopeId ${cfg.scopeId || 'unset'}), and a sys_id is only `
-      + `meaningful on the instance that minted it.${prefixNote} `
+      + `The workspace names it as its canonical identity, but no sys_scope row carries that name here.${prefixNote} `
       + 'Re-establishing this application on the bound instance is a deliberate action — a new scope name and a new '
       + 'app record — not something an install should do as a side effect.'
-    ), { status: 409, detail: { scope: cfg.scope, scopeId: cfg.scopeId ?? null, boundHost: bound.host, localVendorPrefix: localPrefix } });
+    ), { status: 409, detail: { scope: cfg.scope, boundHost: bound.host, localVendorPrefix: localPrefix } });
   }
 
+  /*
+   * The identity can no longer carry a stale pin — `readAppIdentity` refuses a
+   * tracked scopeId outright — so the drift worth checking is the per-instance
+   * CACHE. A cached id that no longer matches the instance means the app was
+   * deleted and recreated, or the cache was written under a different binding;
+   * either way an install would target a sys_app that is not the one the scope
+   * name resolves to now.
+   */
   const onInstance = rows[0].sys_id;
-  if (cfg.scopeId && cfg.scopeId !== onInstance) {
+  const cached = readInstanceState(bound.host).scopeIds?.[cfg.scope];
+  if (cached && cached !== onInstance) {
     throw Object.assign(new Error(
-      `REFUSING TO INSTALL: "${cfg.scope}" exists on ${bound.host} as ${onInstance}, but now.config.json pins `
-      + `scopeId ${cfg.scopeId}. That pin was minted on a different instance; installing against a stale app sys_id `
-      + 'is how artifacts land in the wrong application.'
-    ), { status: 409, detail: { scope: cfg.scope, pinned: cfg.scopeId, onInstance, boundHost: bound.host } });
+      `REFUSING TO INSTALL: "${cfg.scope}" resolves to ${onInstance} on ${bound.host}, but the cached scope id for `
+      + `this instance is ${cached}. Installing against a stale app sys_id is how artifacts land in the wrong `
+      + 'application. Re-resolve with resolveScopeId(scope, { refresh: true }).'
+    ), { status: 409, detail: { scope: cfg.scope, cached, onInstance, boundHost: bound.host } });
   }
 
   return { ok: true, scope: cfg.scope, scopeId: onInstance, host: bound.host };
@@ -314,6 +322,7 @@ export async function assertAppBinding() {
  * ------------------------------------------------------------------ */
 
 const APP_CONFIG = path.join(WORKSPACE, 'now.config.json');
+const APP_CONFIG_TEMPLATE = path.join(WORKSPACE, 'now.config.template.json');
 
 /**
  * THE DISTINCTION THAT GOVERNS THIS FILE.
@@ -332,9 +341,39 @@ const APP_CONFIG = path.join(WORKSPACE, 'now.config.json');
  * CLI needs it and never in source.
  */
 export async function readAppIdentity() {
-  const cfg = JSON.parse(await fsp.readFile(APP_CONFIG, 'utf8'));
-  if (!cfg.scope) throw Object.assign(new Error('now.config.json names no scope; the workspace has no application identity.'), { status: 409 });
+  /*
+   * A1 — the TEMPLATE is the tracked source of truth.
+   *
+   * Restoring `now.config.json` in a `finally` left a window in which a commit
+   * could capture the materialised pin, and one did. Fixing the working tree is
+   * not enough, because the failure is about TIMING, not content: any
+   * restore-based scheme has a window.
+   *
+   * So the generated config is gitignored and the identity lives in a tracked
+   * template that no build ever writes. The tracked tree cannot carry the pin at
+   * any instant, whatever a commit happens to coincide with.
+   */
+  const raw = await fsp.readFile(APP_CONFIG_TEMPLATE, 'utf8')
+    .catch(() => fsp.readFile(APP_CONFIG, 'utf8'));
+  const cfg = JSON.parse(raw);
+  if (!cfg.scope) throw Object.assign(new Error('The workspace identity names no scope; now.config.template.json is missing or malformed.'), { status: 409 });
+  if (cfg.scopeId) {
+    throw Object.assign(new Error(
+      'now.config.template.json carries a scopeId. A scope sys_id is instance-local and must never be tracked — '
+      + 'it is resolved live per instance and written only into the generated now.config.json.'
+    ), { status: 409 });
+  }
   return { scope: cfg.scope, name: cfg.name || cfg.scope };
+}
+
+/** The generated config, written from the template when absent (fresh clone). */
+export async function ensureWorkspaceConfig() {
+  const identity = await readAppIdentity();
+  const existing = await fsp.readFile(APP_CONFIG, 'utf8').then(JSON.parse).catch(() => null);
+  if (existing?.scope === identity.scope) return existing;
+  await fsp.writeFile(APP_CONFIG, `${JSON.stringify(identity, null, 4)}
+`, 'utf8');
+  return identity;
 }
 
 /**
@@ -383,13 +422,15 @@ export async function resolveScopeId(scopeName, { refresh = false } = {}) {
 export async function withMaterializedConfig(job) {
   const identity = await readAppIdentity();
   const { scopeId, source } = await resolveScopeId(identity.scope);
-  const committed = await fsp.readFile(APP_CONFIG, 'utf8');
   await fsp.writeFile(APP_CONFIG, `${JSON.stringify({ ...identity, scopeId }, null, 4)}
 `, 'utf8');
   try {
     return await job({ ...identity, scopeId, scopeIdSource: source });
   } finally {
-    await fsp.writeFile(APP_CONFIG, committed, 'utf8');
+    // The file is gitignored, so this is hygiene rather than the guarantee —
+    // the guarantee is that it is not tracked at all.
+    await fsp.writeFile(APP_CONFIG, `${JSON.stringify(identity, null, 4)}
+`, 'utf8').catch(() => {});
   }
 }
 
