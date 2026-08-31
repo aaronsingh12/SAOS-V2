@@ -33,6 +33,24 @@ const DEFAULTS = {
     // user is answering a question that was already decided for them.
     holdMutationsOnQuestion: true,
   },
+  /*
+   * E2 Tier 3 — the escalation the agent cannot grant itself.
+   *
+   * Irreversible schema operations (drop, rename, retype, narrow, truncate)
+   * create NO rollback context on any engine. They are refused by default and
+   * the refusal is not something the agent may argue its way past: this flag is
+   * written ONLY by the Settings route, and no entry in the agent tool catalogue
+   * can reach `saveSettings`. `no-settings-write-tool.test.js` asserts that,
+   * because the guarantee is the absence of a capability and an absence is
+   * exactly what nobody notices being added back.
+   *
+   * The flag alone is not authorisation. It only makes the gate ASKABLE; the
+   * operation still needs a pre-export, a typed confirmation phrase naming the
+   * target, and an acknowledged impact report.
+   */
+  dba: {
+    allowIrreversible: false,
+  },
 };
 
 let cache = null;
@@ -46,6 +64,7 @@ function load() {
       connection: { ...DEFAULTS.connection, ...(parsed.connection || {}) },
       llm: { ...DEFAULTS.llm, ...(parsed.llm || {}) },
       agent: { ...DEFAULTS.agent, ...(parsed.agent || {}) },
+      dba: { ...DEFAULTS.dba, ...(parsed.dba || {}) },
     };
   } catch {
     cache = JSON.parse(JSON.stringify(DEFAULTS));
@@ -76,6 +95,7 @@ export function _setSettingsForTests(patch) {
     connection: { ...DEFAULTS.connection, ...(patch.connection || {}) },
     llm: { ...DEFAULTS.llm, ...(patch.llm || {}) },
     agent: { ...DEFAULTS.agent, ...(patch.agent || {}) },
+    dba: { ...DEFAULTS.dba, ...(patch.dba || {}) },
   };
   return cache;
 }
@@ -145,6 +165,7 @@ export function saveSettings(patch) {
     connection: sanitizeConnection({ ...cur.connection, ...(patch.connection || {}) }),
     llm: { ...cur.llm, ...(patch.llm || {}) },
     agent: { ...cur.agent, ...(patch.agent || {}) },
+    dba: { ...cur.dba, ...(patch.dba || {}) },
   };
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(FILE, JSON.stringify(next, null, 2));
@@ -186,5 +207,6 @@ export function publicSettings() {
       embedModel: s.llm.embedModel,
     },
     agent: { autoApprove: s.agent.autoApprove, holdMutationsOnQuestion: s.agent.holdMutationsOnQuestion !== false },
+    dba: { allowIrreversible: s.dba?.allowIrreversible === true },
   };
 }

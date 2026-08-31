@@ -1,7 +1,12 @@
 // nowhelpassist-dba: x_2002152_nwforge_asset
 // Generated from a validated table spec by dba-authoring.js. Deterministic —
 // no model output reaches this file. Edit the spec, not this source.
-import { Table, BooleanColumn, IntegerColumn, ReferenceColumn, StringColumn, Acl } from '@servicenow/sdk/core'
+//
+// RECONCILED 2026-08-31: u_archived was dropped from the instance by the E2
+// Tier 3 acceptance (drop_column, gated and irreversible). The column is
+// removed here too, because a source that still declared it would silently
+// re-create it on the next install — the drop would look undone by accident.
+import { Table, IntegerColumn, ReferenceColumn, StringColumn, Acl } from '@servicenow/sdk/core'
 
 export const x_2002152_nwforge_asset = Table({
     $id: Now.ID["x_2002152_nwforge_asset_table"],
@@ -28,7 +33,6 @@ export const x_2002152_nwforge_asset = Table({
             },
         }),
         u_quantity: IntegerColumn({ label: "Quantity", default: 1 }),
-        u_archived: BooleanColumn({ label: "Archived" }),
     },
 })
 

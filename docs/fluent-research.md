@@ -5691,3 +5691,130 @@ command instead of the reason is trap #51 committed in our own code.
 | 117 | **An augment's named export is the BASE table's name** | `TS213 … with the name 'incident'` on a file that never mentions defining `incident` | The export name must match the table the block describes, and for an augment that is the table being augmented, not the application augmenting it |
 | 118 | **A diagnostic filter that hides the only useful line** | a failed install reported as "Command failed: node.exe index.js install" | The cause was in stdout and matched none of `ERROR\|error TS\|Build failed\|diagnostic`. A filter is a guess about which lines matter; when it guesses wrong it is worse than no filter, because it looks like the whole answer |
 | 119 | **An operation matrix with no additive entries** | adding a column is refused as "unclassified, treated as irreversible" | Additive is a third state: nothing is destroyed, and undoing it is a drop that cannot be rolled back. Model both halves, or the gate either blocks safe work or waves through the destructive undo |
+
+---
+
+## 45. E2 — data operations and the irreversible gate (DBA complete)
+
+The last DBA stage, and the only one that can destroy something. It is built
+around the single rule the earlier phases paid for twice:
+
+> **A result is never the answer. The read-back is the answer.**
+
+§36 established the first half — the Table API answers 2xx for a write whose
+fields it silently discarded. §44 established the converse — `now-sdk install`
+exited 1 on a deployment that had already succeeded. So every mutation here
+reads the instance back afterwards **on both paths**, and the read-back decides
+what is reported. Nothing is ever retried automatically: retrying a delete that
+actually succeeded is how one mistake becomes two.
+
+### Tier 1 — value changes, and the lookup that must refuse
+
+"Change the caller to John Smith" is two problems and the second is the
+dangerous one. `sys_user` has a display field (`name`) and a key field
+(`user_name`) that are different columns, so a contains-match finds several
+people and none of them may be the one meant.
+
+Measured on the bound instance:
+
+| input | outcome |
+|---|---|
+| `"a"` | **refused** — 10 candidates, best match `starts-with`, not exact. Candidates returned for disambiguation |
+| `"Zzzz Nobody"` | refused — nothing matches |
+| `not_a_column` | refused **before the write** — the Table API accepts unknown fields and discards them (trap #3) |
+| `"Abraham Lincoln"` | resolved `exact-display` → `a8f98bb0…`, written, read back `applied` |
+
+A wrong lookup in a report is a wrong sentence; in a write it is the wrong
+record, silently, and nothing downstream can tell. So ambiguity refuses and
+returns the candidates rather than taking the top hit — even with
+`confirm: true`, which was verified through the tool layer.
+
+Verification reuses `write-verify.js` rather than growing a second differ: that
+module already encodes journal fields never echoing, choice labels resolving,
+computed fields being ignored and unknown fields being absent.
+
+### Tier 2 — record delete, and a window that is not promised
+
+The preview reports what this instance can *actually* recover, read live:
+
+```
+state:         partial
+recordDelete:  captured-but-not-restorable
+windowDays:    null          <- deliberately absent
+dbEngine:      mysql
+plugins:       delete_recovery true, com.snc.undelete FALSE
+```
+
+`windowDays: null` is the point. The documented figure is 7 days; on this
+instance the restore plugin is off, so there is no window to promise and none is
+invented. Create → preview → delete → read-back verified on the scratch table,
+with the record confirmed absent afterwards.
+
+### Tier 3 — refused, and the escalation the agent cannot grant itself
+
+Every irreversible operation is refused by default. Verified:
+
+| attempt | result |
+|---|---|
+| `drop_column` with nothing supplied | refused; all four requirements unmet |
+| calling `executeIrreversible` directly | refused — the executor re-runs the gate; it cannot be bypassed |
+| a phrase naming `u_archived` instead of `<table>.u_archived` | refused |
+| `add_column` sent to the Tier 3 path | rejected as not belonging there |
+| escalation open, nothing else | **still refused** — the flag is not authorisation |
+
+The four requirements are: a **human escalation** in Settings, a **pre-export
+snapshot**, a **typed phrase naming the exact target**, and an **acknowledged
+impact report**.
+
+The escalation lives in `settings.dba.allowIrreversible`, written only by the
+Settings route. **No entry in the agent tool catalogue can reach `saveSettings`**
+— and that is asserted by a test rather than left as an intention, because the
+guarantee is the *absence* of a capability and an absence is exactly what nobody
+notices being added back. A second assertion refuses any tool whose name or
+input schema is settings- or escalation-shaped.
+
+The phrase names the target, so it cannot be pasted from a previous operation:
+`DROP COLUMN x_2002152_nwforge_asset.u_archived PERMANENTLY`.
+
+The snapshot is honest about what it is: it captures the table record, dictionary
+rows, choices and up to `max` data rows, says plainly when the data export was
+truncated, and states that it is **evidence of what existed and a source to
+re-create from by hand — not a restore mechanism**, because the platform provides
+none for a drop.
+
+With all four met, the drop executed and read back absent:
+
+> `x_2002152_nwforge_asset.u_archived` is gone. This cannot be undone — no
+> rollback context was created and none exists to create. The snapshot
+> `b32b5c05d2833d6b` is evidence of what was there, not a restore path.
+
+Only `drop_column` and `drop_table` are implemented. Renames, retypes,
+narrowings and truncates are correctly classified and correctly gated, and are
+deliberately **left to the platform UI** rather than performed behind a REST call
+whose effect NHA cannot verify. Saying so is better than a half-implementation
+that reports success it cannot substantiate.
+
+### The drift a real drop creates
+
+Dropping `u_archived` left the Fluent source still declaring it — so the next
+install would have silently re-added the column and the drop would have looked
+undone by accident. The generated source was reconciled in the same change, and
+instance and source now agree on four columns. **A destructive operation against
+an SDK-managed object is not finished until the source that describes it agrees.**
+
+### Cleanup
+
+Every probe record was removed and read back gone; the incident whose caller
+Tier 1 changed was restored to its original value; the escalation flag is
+persisted `false`. The only intentional residue is the dropped column, which was
+the acceptance.
+
+`npm test` — **1082 pass, 0 fail**. 31 DBA tools, 6 mutating.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 120 | **A destructive op against SDK-managed schema leaves the source lying** | a column is dropped, verified gone, and reappears at the next install | The Fluent source still declares it, so the next `install` re-creates it and the drop looks undone by accident. A drop is not finished until the source that describes the object agrees with the instance |
+| 121 | **An escalation flag the agent can reach is not an escalation** | a "human-only" override that some tool can write | The guarantee is the ABSENCE of a capability, and absences get restored by accident. Assert in a test that no tool can reach the setting — and that none takes a settings-shaped input — or the claim silently stops being true |
+| 122 | **A guard that fires on the correct text** | `/\breversible\b/` rejecting "NEVER describes the result as reversible" | Match the affirmative CLAIM (`is reversible`, `can be undone`), not the word. A guard that fails on the right answer teaches people to weaken the guard |

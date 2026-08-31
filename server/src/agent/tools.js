@@ -38,7 +38,17 @@ import {
   preflight as dbaPreflight,
 } from '../servicenow/dba-impact.js';
 import { appendMutation, mutationsForSession } from '../memory/ledger.js';
-import { createTable as dbaCreateTable } from '../servicenow/dba-authoring.js';
+import { createTable as dbaCreateTable, augmentTable as dbaAugmentTable } from '../servicenow/dba-authoring.js';
+import {
+  setFieldValue as dbaSetFieldValue,
+  deleteRecord as dbaDeleteRecord,
+  createRecord as dbaCreateRecord,
+  readRecord as dbaReadRecord,
+  destructiveGate as dbaDestructiveGate,
+  executeIrreversible as dbaExecuteIrreversible,
+  snapshotBeforeDestruction as dbaSnapshot,
+  deleteRecoveryStatement as dbaRecoveryStatement,
+} from '../servicenow/dba-data.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -1639,6 +1649,194 @@ export const TOOLS = [
       required: ['spec'],
     },
     execute: ({ spec }) => dbaCreateTable(spec || {}),
+  },
+
+  /* ── DBA Layer 4 — data operations and the irreversible gate. ───────────── */
+  {
+    name: 'dba_set_field_value',
+    description:
+      'Tier 1. Change ONE field on ONE record, resolving display values for reference fields — "change the caller to '
+      + 'John Smith" looks the name up in sys_user and writes the sys_id. If the name matches more than one record, or '
+      + 'the best match is not exact, it REFUSES and returns the candidates: a wrong lookup in a write is the wrong '
+      + 'record, silently. Previews by default and writes nothing; pass confirm:true to apply. '
+      + 'The instance is read back afterwards and the READ-BACK decides the result — a 2xx can hide a discarded write, '
+      + 'and an error can accompany a change that landed. Never retried automatically.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        sys_id: { type: 'string' },
+        field: { type: 'string' },
+        value: { type: 'string', description: 'A literal, a sys_id, or a display value to resolve.' },
+        confirm: { type: 'boolean', description: 'Default false — preview only.' },
+        why: { type: 'string', description: 'The reason, for the audit ledger. The instance never records intent.' },
+      },
+      required: ['table', 'sys_id', 'field', 'value'],
+    },
+    execute: (i, ctx) => dbaSetFieldValue(i, ctx || {}),
+  },
+  {
+    name: 'dba_delete_record',
+    description:
+      'Tier 2. Delete ONE record. Previews by default, showing the record and this instance LIVE recoverability — '
+      + 'which is three-state, not a boolean: deletes may be captured but not restorable when the Restore Deleted '
+      + 'Records plugin is off, and in that case no recovery window is promised. Reads the instance back afterwards to '
+      + 'establish what actually happened, on success and on failure alike. Never retries — retrying a delete that '
+      + 'succeeded is how one mistake becomes two.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        sys_id: { type: 'string' },
+        confirm: { type: 'boolean', description: 'Default false — preview only.' },
+        why: { type: 'string' },
+      },
+      required: ['table', 'sys_id'],
+    },
+    execute: (i, ctx) => dbaDeleteRecord(i, ctx || {}),
+  },
+  {
+    name: 'dba_create_record',
+    description:
+      'Create a record. A field that is not a column on the table is refused BEFORE the write rather than sent — the '
+      + 'Table API accepts unknown fields and discards them silently. Read back field by field.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, values: { type: 'object' }, why: { type: 'string' } },
+      required: ['table', 'values'],
+    },
+    execute: (i, ctx) => dbaCreateRecord(i, ctx || {}),
+  },
+  {
+    name: 'dba_read_record',
+    description: 'Read one record by sys_id, optionally a named subset of fields. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, sys_id: { type: 'string' }, fields: { type: 'string' } },
+      required: ['table', 'sys_id'],
+    },
+    execute: (i) => dbaReadRecord(i),
+  },
+  {
+    name: 'dba_recovery_status',
+    description:
+      'What this instance can actually recover from a record delete, read live: the database engine, the Delete '
+      + 'Recovery and Restore Deleted Records plugin states, and a three-state verdict. Call this before telling '
+      + 'anyone a delete can be undone. Read-only.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    execute: () => dbaRecoveryStatement(),
+  },
+  {
+    name: 'dba_snapshot',
+    description:
+      'Export an object and its data before a destructive operation, returning a snapshotId the Tier 3 gate requires. '
+      + 'Captures the table record, dictionary rows, choices and up to max data rows, and says plainly when the data '
+      + 'export was truncated. This is EVIDENCE of what existed and a source to re-create from by hand — it is not a '
+      + 'restore mechanism, and the platform provides none for a drop.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: { type: 'string' },
+        table: { type: 'string' },
+        field: { type: 'string' },
+        max: { type: 'number', description: 'Data-row ceiling. Default 5000.' },
+      },
+      required: ['operation', 'table'],
+    },
+    execute: (i) => dbaSnapshot(i),
+  },
+  {
+    name: 'dba_destructive_gate',
+    description:
+      'Tier 3. Ask what it would take to perform an irreversible schema operation (drop / rename / retype / narrow / '
+      + 'truncate). THE NORMAL ANSWER IS A REFUSAL, and that is the correct outcome: these create NO rollback context '
+      + 'on any database engine and nothing can undo them. Proceeding needs four things — a human escalation enabled '
+      + 'in Settings that NO TOOL CAN SET, a pre-export snapshotId, a typed confirmation phrase naming the exact '
+      + 'target, and an acknowledged impact report. Returns which are unmet. Read-only; it performs nothing.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: { type: 'string', description: 'drop_column, drop_table, rename_table, change_column_type, …' },
+        table: { type: 'string' },
+        field: { type: 'string' },
+        snapshot_id: { type: 'string' },
+        typed_confirmation: { type: 'string' },
+        impact_acknowledged: { type: 'boolean' },
+      },
+      required: ['operation', 'table'],
+    },
+    execute: ({ operation, table: t, field, snapshot_id, typed_confirmation, impact_acknowledged }) =>
+      dbaDestructiveGate({
+        operation,
+        table: t,
+        field: field || null,
+        snapshotId: snapshot_id || null,
+        typedConfirmation: typed_confirmation || null,
+        impactAcknowledged: impact_acknowledged === true,
+      }),
+  },
+  {
+    name: 'dba_execute_irreversible',
+    description:
+      'Tier 3. Perform an irreversible schema operation. Re-runs the full gate and refuses unless all four '
+      + 'requirements are met — it cannot be talked past. Only drop_column and drop_table are implemented; renames, '
+      + 'retypes, narrowings and truncates are correctly classified, correctly gated, and deliberately left to the '
+      + 'platform UI rather than done behind a REST call that cannot be verified. Reads back afterwards and NEVER '
+      + 'describes the result as reversible.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: { type: 'string' },
+        table: { type: 'string' },
+        field: { type: 'string' },
+        snapshot_id: { type: 'string' },
+        typed_confirmation: { type: 'string' },
+        impact_acknowledged: { type: 'boolean' },
+        why: { type: 'string' },
+      },
+      required: ['operation', 'table', 'snapshot_id', 'typed_confirmation', 'impact_acknowledged'],
+    },
+    execute: ({ operation, table: t, field, snapshot_id, typed_confirmation, impact_acknowledged, why }, ctx) =>
+      dbaExecuteIrreversible({
+        operation,
+        table: t,
+        field: field || null,
+        snapshotId: snapshot_id,
+        typedConfirmation: typed_confirmation,
+        impactAcknowledged: impact_acknowledged === true,
+        why,
+      }, ctx || {}),
+  },
+  {
+    name: 'dba_augment_table',
+    description:
+      'Add a column to an OUT-OF-SCOPE table (an OOTB table such as incident) through the SDK table-augments pattern '
+      + 'plus a cross-scope privilege. The base object is never edited: the column is owned by this application. '
+      + 'Additive only — mandatory and unique are forced off, because a mandatory column invalidates every row that '
+      + 'predates it. The column must carry this application scope prefix. Removing it later is drop_column and is '
+      + 'irreversible, so treat an augment as permanent.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        base_table: { type: 'string' },
+        fields: {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Each: {name (scope-prefixed), type, label, maxLength, reference, choices}.',
+        },
+      },
+      required: ['base_table', 'fields'],
+    },
+    execute: ({ base_table, fields }) => dbaAugmentTable({ baseTable: base_table, fields: fields || [] }),
   },
 ];
 
