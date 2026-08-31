@@ -335,6 +335,39 @@ export default function AgentChat() {
     catch (e) { toast.error(e.message); }
   };
 
+  /**
+   * Bulk chat delete.
+   *
+   * Behind the same confirmation dialog every other destructive action uses, and
+   * it names what SURVIVES as well as what goes — the audit trail is the thing
+   * a person will worry about, and the answer is reassuring, so say it.
+   *
+   * The server reports before/after counts and an `auditPreserved` verdict. If
+   * that ever comes back false the toast says so loudly rather than reporting a
+   * clean success, because the one failure that matters here is silent.
+   */
+  const removeAll = async () => {
+    const count = sessions?.length ?? 0;
+    if (!count) { toast.success('There are no chats to delete.'); return; }
+    const ok = await confirmDestructive({
+      action: 'Delete all chats',
+      subject: `${count} conversation${count === 1 ? '' : 's'}`,
+      detail: CONSEQUENCE.allSessions,
+      confirmLabel: 'Delete all chats',
+    });
+    if (!ok) return;
+    try {
+      const res = await api.del('/agent/sessions');
+      setSessionId(crypto.randomUUID());
+      refreshSessions();
+      if (res.auditPreserved === false) {
+        toast.error(`Deleted ${res.deleted} chat(s), but the audit trail changed — check the Audit page.`);
+      } else {
+        toast.success(`Deleted ${res.deleted} chat${res.deleted === 1 ? '' : 's'}. The audit trail is intact.`);
+      }
+    } catch (e) { toast.error(e.message); }
+  };
+
   const remove = async (s) => {
     const ok = await confirmDestructive({
       action: 'Delete chat',
@@ -374,6 +407,15 @@ export default function AgentChat() {
       <aside className="session-rail">
         <div className="rail-head">
           <button className="btn primary sm" onClick={newChat} disabled={running}>New chat</button>
+          <button
+            type="button"
+            className="btn ghost sm"
+            onClick={removeAll}
+            disabled={running || !(sessions?.length)}
+            title="Delete every conversation. The audit trail is not affected."
+          >
+            Delete chats
+          </button>
         </div>
 
         <form className="rail-search" onSubmit={runSearch}>

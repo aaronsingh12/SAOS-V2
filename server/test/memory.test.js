@@ -128,15 +128,27 @@ test('A-1: tool events are a separate audit trail, including rejected approvals'
   assert.deepEqual(events[0].payload, { table: 'incident' });
 });
 
-test('A-1: deleting a session takes its messages and events with it', () => {
+/*
+ * CHANGED, deliberately: this asserted `loadToolEvents(id).length === 0`.
+ *
+ * That encoded a bug. `tool_events` is the audit trail of what the agent DID to
+ * a live instance — its own schema comment says so — and it cascaded from
+ * `sessions`, so deleting a chat destroyed the evidence. Nothing exercised it
+ * while sessions were deleted one at a time; adding a "delete all chats" button
+ * would have made it a one-click audit wipe.
+ *
+ * Migration 14 removed the foreign key. A tool event whose session is gone is
+ * exactly right: the record outlives the conversation that produced it.
+ */
+test('A-1: deleting a session takes its transcript — but NOT its audit trail', () => {
   const id = 'sess-doomed';
   createSession({ id });
   appendMessage(id, { role: 'user', text: 'hello' });
   recordToolEvent(id, { kind: 'tool_call', name: 'x', resultStatus: 'ok', mutating: false });
   assert.equal(deleteSession(id).deleted, true);
   assert.equal(getSession(id), null);
-  assert.equal(loadHistory(id).length, 0);
-  assert.equal(loadToolEvents(id).length, 0);
+  assert.equal(loadHistory(id).length, 0, 'the transcript goes');
+  assert.equal(loadToolEvents(id).length, 1, 'the audit trail stays');
 });
 
 test('A-1: a corrupt message row does not sink the whole session', () => {

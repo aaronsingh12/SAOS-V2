@@ -502,6 +502,85 @@ const MIGRATIONS = [
 
   CREATE INDEX IF NOT EXISTS idx_imp_audit_status ON impersonation_audit(status);
   `,
+  // 14 — SPLIT THE AUDIT TRAIL FROM CONVERSATION HISTORY.
+  //
+  // `tool_events` says in its own schema comment that it "outlives compaction …
+  // but must never be rewritten", and `sysid_provenance` is the record of where
+  // a sys_id came from. Both are audit. Both nonetheless carried
+  // `ON DELETE CASCADE` on `sessions`, with `PRAGMA foreign_keys = ON` — so
+  // deleting a chat silently destroyed the evidence of what that chat DID to a
+  // ServiceNow instance.
+  //
+  // Nothing had exercised it: sessions were only ever deleted one at a time and
+  // rarely. Adding a "delete all chats" button would have turned a latent bug
+  // into a one-click audit wipe, which is why this ships with it rather than
+  // after it.
+  //
+  // SQLite cannot drop a constraint, so each table is rebuilt without the
+  // foreign key and its rows copied across. `session` stays as a plain column:
+  // an audit row keyed to a conversation that no longer exists is exactly what
+  // is wanted — the record outlives the chat that produced it.
+  //
+  // `mutation_ledger` was already safe (it carries `session` as a bare column
+  // with no FK) and is deliberately untouched here.
+  //
+  // THE COLUMN LIST BELOW IS THE CURRENT ONE, NOT MIGRATION 1'S. A rebuild-and-
+  // copy has to enumerate every column the table has by now, including the ones
+  // migrations 5 and 8 added by ALTER (`result`, `actor`, `instance`,
+  // `approved_source`, `approved_at`). The first draft of this migration copied
+  // migration 1's nine columns and would have silently dropped five columns of
+  // audit data — caught only because the scratch database in the test suite is
+  // built through the real migrations rather than from a hand-written replica.
+  `
+  PRAGMA foreign_keys = OFF;
+
+  CREATE TABLE tool_events_audit (
+    session         TEXT NOT NULL,
+    seq             INTEGER NOT NULL,
+    kind            TEXT NOT NULL,
+    name            TEXT,
+    payload         TEXT,
+    result          TEXT,
+    result_status   TEXT,
+    mutating        INTEGER NOT NULL DEFAULT 0,
+    approval        TEXT,
+    approved_source TEXT,
+    approved_at     TEXT,
+    instance        TEXT,
+    actor           TEXT,
+    ts              TEXT NOT NULL,
+    PRIMARY KEY (session, seq)
+  );
+  INSERT INTO tool_events_audit (session, seq, kind, name, payload, result, result_status, mutating, approval,
+                                 approved_source, approved_at, instance, actor, ts)
+    SELECT session, seq, kind, name, payload, result, result_status, mutating, approval,
+           approved_source, approved_at, instance, actor, ts FROM tool_events;
+  DROP TABLE tool_events;
+  ALTER TABLE tool_events_audit RENAME TO tool_events;
+  CREATE INDEX IF NOT EXISTS idx_tool_events_name ON tool_events(session, name);
+  CREATE INDEX IF NOT EXISTS idx_tool_events_ts   ON tool_events(ts DESC);
+
+  CREATE TABLE sysid_provenance_audit (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session    TEXT NOT NULL,
+    sys_id     TEXT NOT NULL,
+    table_name TEXT,
+    display_id TEXT,
+    source     TEXT NOT NULL,
+    event_seq  INTEGER NOT NULL DEFAULT -1,
+    row_count  INTEGER NOT NULL DEFAULT 1,
+    ts         TEXT NOT NULL,
+    UNIQUE (session, sys_id, source, event_seq)
+  );
+  INSERT INTO sysid_provenance_audit (id, session, sys_id, table_name, display_id, source, event_seq, row_count, ts)
+    SELECT id, session, sys_id, table_name, display_id, source, event_seq, row_count, ts FROM sysid_provenance;
+  DROP TABLE sysid_provenance;
+  ALTER TABLE sysid_provenance_audit RENAME TO sysid_provenance;
+  CREATE INDEX IF NOT EXISTS idx_sysid_prov_lookup  ON sysid_provenance(session, sys_id);
+  CREATE INDEX IF NOT EXISTS idx_sysid_prov_display ON sysid_provenance(session, display_id);
+
+  PRAGMA foreign_keys = ON;
+  `,
 ];
 
 /**

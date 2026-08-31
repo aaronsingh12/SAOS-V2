@@ -8,6 +8,7 @@ import {
   getSession,
   renameSession,
   deleteSession,
+  deleteAllSessions,
   loadMessages,
   loadToolEvents,
   loadDigests,
@@ -72,6 +73,23 @@ agentRouter.get('/sessions/:id/messages', (req, res) => {
 agentRouter.patch('/sessions/:id', (req, res, next) => {
   try { res.json(renameSession(req.params.id, req.body?.title)); }
   catch (err) { next(Object.assign(err, { status: 400 })); }
+});
+
+/*
+ * Bulk chat delete. Registered BEFORE '/sessions/:id' so that the literal path
+ * is not captured as an id — Express matches in declaration order, and
+ * `DELETE /sessions` would otherwise never reach here.
+ *
+ * Conversation history only. The audit trail is preserved by construction (see
+ * deleteAllSessions) and the response reports the before/after counts so the UI
+ * can state what survived rather than promise it.
+ */
+agentRouter.delete('/sessions', (_req, res) => {
+  const sessions = listSessions({ limit: 10_000 });
+  for (const s of sessions) clearWriteGuard(s.id);
+  const result = deleteAllSessions();
+  log.info('agent', `deleted ${result.deleted} chat session(s); audit preserved: ${result.auditPreserved}`);
+  res.json(result);
 });
 
 agentRouter.delete('/sessions/:id', (req, res) => {

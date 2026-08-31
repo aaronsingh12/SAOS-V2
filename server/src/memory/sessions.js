@@ -69,14 +69,77 @@ export function renameSession(id, title) {
   return getSession(id);
 }
 
+/*
+ * WHAT A CHAT DELETE REMOVES, AND WHAT IT MUST NOT.
+ *
+ * Conversation history only:
+ *   sessions, messages, digests   the conversation itself (FK cascade)
+ *   chunks + embeddings           its search index, keyed by (kind, session)
+ *   capture_state, impersonation_mode   per-session settings, meaningless without it
+ *
+ * NEVER:
+ *   mutation_ledger      what was changed on a ServiceNow instance
+ *   tool_events          what the agent DID, and who approved it
+ *   sysid_provenance     where a sys_id came from
+ *   facts, build_runs, impersonation_audit, capture_sets
+ *
+ * `tool_events` and `sysid_provenance` used to cascade from `sessions`, so
+ * deleting a chat destroyed the audit of what that chat did to a live instance —
+ * directly contradicting the comment in `tool_events`' own schema. Migration 14
+ * rebuilt both without the foreign key. They keep a `session` column, and a row
+ * whose session is gone is exactly right: the record outlives the conversation.
+ */
 export function deleteSession(id) {
-  // messages, tool_events and digests cascade; chunks are cleaned explicitly
-  // because they are keyed by (kind, session, ref) rather than by a FK, so that
-  // a fact chunk and a message chunk can share the table.
   const db = getDb();
+  // Chunks are keyed by (kind, session, ref) rather than by a FK, so that a fact
+  // chunk and a message chunk can share the table — they are cleaned explicitly.
   db.prepare('DELETE FROM chunks WHERE kind = ? AND session = ?').run('message', id);
   const res = db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
   return { deleted: res.changes > 0 };
+}
+
+/**
+ * Delete every conversation. The audit trail is untouched, by construction.
+ *
+ * Reported as counts taken BEFORE and AFTER, so the caller can state what
+ * happened rather than assume it — and so a regression that starts eating the
+ * ledger shows up as a number instead of as silence.
+ */
+export function deleteAllSessions() {
+  const db = getDb();
+  const count = (t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n;
+
+  const before = {
+    sessions: count('sessions'),
+    messages: count('messages'),
+    mutationLedger: count('mutation_ledger'),
+    toolEvents: count('tool_events'),
+    provenance: count('sysid_provenance'),
+    facts: count('facts'),
+  };
+
+  db.prepare("DELETE FROM chunks WHERE kind = 'message'").run();
+  const res = db.prepare('DELETE FROM sessions').run();
+
+  const after = {
+    sessions: count('sessions'),
+    messages: count('messages'),
+    mutationLedger: count('mutation_ledger'),
+    toolEvents: count('tool_events'),
+    provenance: count('sysid_provenance'),
+    facts: count('facts'),
+  };
+
+  return {
+    deleted: res.changes,
+    before,
+    after,
+    auditPreserved:
+      after.mutationLedger === before.mutationLedger
+      && after.toolEvents === before.toolEvents
+      && after.provenance === before.provenance
+      && after.facts === before.facts,
+  };
 }
 
 /** Next sequence number for a session's message log. */
