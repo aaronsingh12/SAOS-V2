@@ -31,6 +31,13 @@ import {
   listIndexes as dbaListIndexes,
   generateSchemaMap as dbaSchemaMap,
 } from '../servicenow/dba-schema.js';
+import {
+  analyzeImpact as dbaAnalyzeImpact,
+  classifyOperation as dbaClassifyOperation,
+  checkIntegrity as dbaCheckIntegrity,
+  preflight as dbaPreflight,
+} from '../servicenow/dba-impact.js';
+import { appendMutation, mutationsForSession } from '../memory/ledger.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -1474,6 +1481,123 @@ export const TOOLS = [
       required: ['table'],
     },
     execute: ({ table: t, depth }) => dbaSchemaMap(t, { depth: Math.min(Math.max(Number(depth) || 1, 0), 2) }),
+  },
+
+  /* ── DBA Layer 2 — Impact & Safety. Read-only; nothing here authorises a write. ── */
+  {
+    name: 'dba_analyze_impact',
+    description:
+      'Answer "if I change this, what breaks?" for a table or one field. There is NO out-of-the-box API for this — '
+      + 'the report is assembled by scanning the artifact tables (business rules, client scripts, UI policies, data '
+      + 'policies, ACLs, UI actions, forms, sections, lists, transform maps, relationships, notifications, reports, '
+      + 'templates, filters, child tables, inbound references), and it lists both what it scanned and what it CANNOT '
+      + 'see. Findings are ranked structural > high > medium > low. Measured: incident has 481 dependents. '
+      + 'Pass a field to also get field-level ACLs, form placements, dictionary overrides, choices and script '
+      + 'text-matches — and a warning if the field is inherited, since changing it there changes every sibling table.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        field: { type: 'string', description: 'Optional. Analyse one column instead of the whole table.' },
+      },
+      required: ['table'],
+    },
+    execute: ({ table: t, field }) => dbaAnalyzeImpact({ table: t, field: field || null }),
+  },
+  {
+    name: 'dba_classify_operation',
+    description:
+      'Is this operation reversible on THIS instance? Returns the rollback mechanism, the live recovery verdict, the '
+      + 'retention in days read from the instance, the required role and scope constraint. '
+      + 'For engine-dependent operations the flag reflects what the instance actually supports, not the documented '
+      + 'matrix, and any divergence is stated — record_delete is documented reversible but is "partial" here. '
+      + 'Drops, renames, re-types, narrowings and truncates create NO rollback context on any engine: never describe '
+      + 'them as reversible. An unrecognised operation is treated as irreversible.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { operation: { type: 'string', description: 'e.g. drop_column, rename_table, record_delete, background_script, drop_index' } },
+      required: ['operation'],
+    },
+    execute: ({ operation }) => dbaClassifyOperation(operation),
+  },
+  {
+    name: 'dba_check_integrity',
+    description:
+      'Read-only data diagnostics for a table: empty values in mandatory columns (mandatory is enforced on the form, '
+      + 'not in the database, so historic rows routinely violate it), duplicate values in unique columns, and '
+      + 'references pointing at records that no longer exist. Every check is BOUNDED by a sample — a "clean" verdict '
+      + 'means clean within that sample and is not a proof about the whole table.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, sample: { type: 'number', description: 'Rows to examine per check. Default 500.' } },
+      required: ['table'],
+    },
+    execute: ({ table: t, sample }) => dbaCheckIntegrity(t, { sample: Math.min(Math.max(Number(sample) || 500, 50), 2000) }),
+  },
+  {
+    name: 'dba_preflight',
+    description:
+      'The go/no-go gate for a proposed change: combines reversibility, impact and classification into blockers and '
+      + 'the confirmations required to proceed. Schema rules are applied only to schema operations — a record delete '
+      + 'is data and is not blocked by "this is a platform table". A "go" verdict means nothing in the preflight '
+      + 'blocks it; it does NOT mean safe. Read the impact report.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: { type: 'string' },
+        table: { type: 'string' },
+        field: { type: 'string' },
+        include_integrity: { type: 'boolean', description: 'Also run the bounded integrity checks. Slower.' },
+      },
+      required: ['operation'],
+    },
+    execute: ({ operation, table: t, field, include_integrity }) =>
+      dbaPreflight({ operation, table: t || null, field: field || null, includeIntegrity: Boolean(include_integrity) }),
+  },
+  {
+    name: 'dba_audit',
+    description:
+      'Append a DBA change to NowHelpAssist\'s own audit trail (the same mutation ledger every other write uses — '
+      + 'who, what, old, new, when, on which instance), or read back what this session recorded. The instance does '
+      + 'not record the intent behind a schema change, only its result, so this ledger is where the "why" lives.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['record', 'list'], description: 'Default list.' },
+        table: { type: 'string' },
+        sys_id: { type: 'string' },
+        operation: { type: 'string', description: 'What was done, e.g. add_column.' },
+        why: { type: 'string', description: 'The reason. This is the part the instance never keeps.' },
+        before: { type: 'object', description: 'Prior state, if known.' },
+        after: { type: 'object', description: 'New state.' },
+      },
+      required: [],
+    },
+    execute: ({ action, table: t, sys_id, operation, why, before, after }, { sessionId, turnSeq } = {}) => {
+      if (action !== 'record') {
+        return { session: sessionId, entries: mutationsForSession(sessionId, { limit: 100 }) };
+      }
+      const ok = appendMutation({
+        sessionId,
+        turnSeq: turnSeq ?? 0,
+        tool: `dba:${operation || 'change'}`,
+        descriptor: { table: t ?? null, sys_id: sys_id ?? null, requested: { operation, why, before, after } },
+        result: sys_id ? { sys_id } : null,
+        // Honest by construction: this tool records an assertion the caller
+        // made. It has verified nothing itself, and says so rather than
+        // borrowing the credibility of a real read-back.
+        verification: { status: 'unverified', by: 'dba_audit', note: 'Recorded as reported by the caller; no read-back was performed by this tool.' },
+        approval: null,
+      });
+      return ok
+        ? { recorded: true, session: sessionId, operation, table: t ?? null, why: why ?? null }
+        : { recorded: false, error: 'The audit entry could not be written to the local ledger.' };
+    },
   },
 ];
 

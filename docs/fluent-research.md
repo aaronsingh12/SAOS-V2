@@ -4971,3 +4971,140 @@ verdict functions. `npm test` — **999 pass, 0 fail**.
 | 100 | **`sys_relationship` is `apply_to`/`query_from`, singular** | a relationship query that returns every relationship on the instance | The plural reading is the natural one and it is wrong. An encoded query on an unknown field is DROPPED, not rejected (trap #2), so the wrong name widens the query to everything instead of narrowing it to nothing — which reads like a table with a great many relationships |
 | 101 | **A `sys_dictionary_override` value is inert without its `_override` flag** | a child table appears to make a field mandatory, and the form disagrees | Every attribute is a pair: `mandatory` and `mandatory_override`. Rows exist carrying values with every flag false. Report only flagged attributes; count the rest as inert |
 | 102 | **A graph walk that calls a scan per node** | a schema map at depth 1 that never returns | `getReferences` is instance-wide (3,999 rows for `sys_user`). An edge needs only the node's own outbound refs. Check what a traversal actually reads before letting it fan out — 24 targets turned one cheap question into 25 full scans |
+
+---
+
+## 40. Database Administration — Phase 2, Impact & Safety
+
+There is no out-of-the-box "what breaks if I change this?" API. Phase 2 builds
+one, and the shape of the build is dictated by that absence: the answer is only
+as good as the list of artifact tables scanned, so the registry is declarative,
+every finding names the column it matched on, and **every report states what it
+could not see**. A dependency report that lists its hits and stays quiet about
+its blind spots is the most dangerous artifact in this whole module, because it
+reads as exhaustive.
+
+This closes the read-only v1. Layers 1 and 2 ship with zero destructive
+capability, exactly as §2.2 requires.
+
+### Impact, measured on dev428633
+
+`incident`, table-level — **481 dependents**:
+
+| severity | what | count |
+|---|---|---|
+| structural | inbound reference fields | 79 |
+| high | ACLs 112, business rules 39, client scripts 24, UI policies 15, data policies 1 | 191 |
+| medium | form sections 44, UI actions 25, lists 20, forms 8, transform map 1 | 98 |
+| low | reports 72, notifications 24, filters 14, templates 3 | 113 |
+
+`incident.caller_id`, field-level — 29: 11 field ACLs, 10 form placements, 4
+client scripts, 2 UI policy actions, 1 business rule, 1 label.
+
+**Trap #17 is load-bearing here, not a footnote.** `nameSTARTSWITHincident`
+matches `incident_task`, `incident_task.state`, `incident_task.close_notes` — a
+naive prefix scan reported **155** ACLs for incident where the true figure is
+**112**. Every table-scoped match in this module is exact (`name=incident`) or
+exact-plus-dot (`nameSTARTSWITHincident.`), never a bare prefix.
+
+### The blind spots are published with every report
+
+Flow Designer is the big one and it is structural, not an oversight: a flow's
+trigger table is a gzip+base64 blob inside
+`sys_hub_trigger_instance_v2.trigger_inputs` (trap #11), not a queryable column,
+so flows cannot be matched by table with any query. Also declared: dynamically
+constructed table/field names, scoped artifacts this credential cannot read, and
+everything outside the instance. Field mode adds one more — text matches on a
+column name are heuristic, since the name can appear in a comment, an unrelated
+string, or as a dot-walk on another table.
+
+### The matrix is the default; the instance is the answer
+
+`classifyOperation('record_delete')` first returned `reversible: true` — which
+is what §1.5 says, and wrong here. The live verdict on this instance is
+`partial` (captured by Delete Recovery, not restorable without
+`com.snc.undelete`). The prose was correct while the flag was not, and any
+consumer reading the flag alone would have got the opposite of the truth: the
+two-state rounding the three-state verdict was built to prevent, reintroduced
+one layer up.
+
+Engine-dependent operations now overwrite the flag with what the instance
+supports and report the divergence explicitly:
+
+```
+reversible:          "partial"
+reversiblePerMatrix: true
+matrixDivergence:    "The rollback matrix says true, but this instance
+                      supports \"partial\". The instance wins."
+```
+
+Irreversible DDL is unaffected by any of this — no engine makes a drop
+recoverable, and the offline suite asserts that all eight of those operations
+say "CANNOT be undone … on any database engine" in words, carry a reason, and
+demand all three §2.4 confirmations.
+
+### A category error the acceptance run caught: schema rules applied to data
+
+`preflight({ operation: 'record_delete', table: 'incident' })` returned three
+blockers, one of which was *"incident is a platform table. Never edit an
+out-of-scope object directly…"*.
+
+That statement is about changing the table's SCHEMA. Applied to deleting a
+record it is a category error, and a load-bearing one: every useful table on a
+PDI is OOTB, so a preflight that raised it for data would block every record
+operation NHA will ever be asked to perform — and **a gate that always says no
+is a gate that gets bypassed**. The same applied to structural dependents:
+79 inbound reference fields matter enormously when the column is going away, but
+for one record delete the question is which rows point at that row, which is a
+per-record check belonging to Layer 4.
+
+Every operation now declares `acts_on: 'schema' | 'data' | 'platform'`, and the
+schema-only blockers are gated on it. Verified after the fix:
+
+| preflight | verdict | blockers | confirmations |
+|---|---|---|---|
+| `drop_column` on `incident.caller_id` (schema, OOTB) | no-go | 2 | 3 (impact-ack, snapshot, typed phrase) |
+| `drop_column` on a `u_` table (schema, custom) | no-go | 1 — irreversibility only | 3 |
+| `record_delete` on `incident` (data) | no-go | 1 — the partial-recovery divergence | 2 (preview, confirm) |
+
+The custom-table row is the one that proves the gate discriminates rather than
+just refusing everything.
+
+### checkIntegrity is bounded, and says so
+
+Mandatory-empty, unique-duplicate and orphaned-reference checks, each capped at
+a sample (500 rows by default, 100 distinct values for reference checks).
+`incident` returns `clean-within-sample` over 10 checks. The verdict is worded
+that way deliberately: a diagnostic that silently sampled and reported "clean"
+is worse than no diagnostic, and one that scans a production table to exhaustion
+gets switched off.
+
+Worth stating because it surprises people: mandatory is enforced on the FORM,
+not in the database, so historic rows routinely violate it. An empty mandatory
+column is a finding about data, not proof of a broken dictionary.
+
+### `dba_audit` records an assertion and does not dress it as a verification
+
+It writes through the existing `mutation_ledger` — no second audit store — and
+stamps every entry `status: 'unverified'` with `note: "Recorded as reported by
+the caller; no read-back was performed by this tool."` The ledger's other
+statuses are earned by an actual field-by-field read-back, and letting a
+self-reported entry sit beside them unmarked would devalue every honest row in
+the table.
+
+### Cost, and the running total
+
+Tool schemas: **13,732 → 14,860 estimated tokens** (64 → 69 tools). Across all
+three phases the DBA module adds 20 tools and about 3,100 estimated tokens of
+fixed overhead.
+
+`npm test` — **1015 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 103 | **A static rollback matrix outliving the instance it describes** | `reversible: true` on a record delete that nothing on the instance can restore | The documented matrix is a DEFAULT, not an answer. Where an operation's reversibility depends on engine or plugins, overwrite the flag with the live verdict and publish the divergence — prose saying one thing while a boolean says another is worse than either alone |
+| 104 | **Schema rules applied to data operations** | "never edit this platform table directly" blocking an ordinary record delete | Every useful table on a PDI is OOTB, so this blocks everything and the gate gets routed around. Tag each operation with what it acts on and gate schema rules on that |
+| 105 | **A dependency report that does not publish its blind spots** | a clean impact report for a table that three flows depend on | Flow triggers are a gzip blob (trap #11) and are unqueryable by table; dynamic names are unfindable by any search. List what was scanned AND what was not, in the report itself, every time |
+| 106 | **A bounded check reporting an unbounded verdict** | "clean" from a diagnostic that looked at 500 of 400,000 rows | Say `clean-within-sample` and state the bound. A diagnostic that scans everything gets turned off; one that silently samples gets believed |
