@@ -4770,15 +4770,26 @@ glide.rollback.expiration_days_inst_preview    1
 Quoting "10 days" at someone whose change was a plugin activation understates
 their window by a third; quoting it after a redact overstates it by more than 3x.
 
-#### 4. `security_admin` does not exist on this instance
+#### 4. `security_admin` is invisible over REST — ~~and does not exist~~
 
-`sys_user_role` where `name=security_admin` returns **zero rows**, while `admin`
-is one of only two directly-held roles (the other is
-`snc_required_script_writer_permission`; 124 roles total, 122 inherited). So the
-runbook's "requires `security_admin` elevation" cannot be implemented as a role
-check here. The context service reports the measurement and refuses to infer an
-elevation capability from a role that is not there — the route this repo
-actually established is in `docs/role-elevation-gate*.md`.
+> **CORRECTED 2026-08-31.** This section originally read "`security_admin` does
+> not exist on this instance", concluding that from a REST query returning zero
+> rows. **That conclusion was wrong.** The role exists; plain REST cannot see
+> it. Gate 0 D-2/H6 had already established this, and `elevation-gate.js` says
+> so explicitly: *"a REST-0-rows result must never be interpreted as 'not
+> assigned' — that interpretation would refuse every legitimate elevation."*
+> The DBA context service made exactly that interpretation. It has been fixed.
+
+`sys_user_role` where `name=security_admin` returns zero rows **over REST**,
+while being readable server-side. `admin` is one of only two directly-held roles
+(the other is `snc_required_script_writer_permission`; 124 roles total, 122
+inherited) — and that role list carries the same blind spot.
+
+So the context service does not decide elevation eligibility at all. It reports
+`securityAdmin: { determinable: false, restVisible: false, held: null }` with the
+reason, and defers: ACL authoring is attempted through the guarded elevation
+path and the **platform's own authorization result** is surfaced. Pre-gating on
+a role REST cannot see would refuse every legitimate elevation.
 
 ### Four different shapes of "no" for one question: where are the indexes?
 

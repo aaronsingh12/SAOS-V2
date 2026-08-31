@@ -1,4 +1,5 @@
 import { table } from './client.js';
+import { registerInstanceScopedCache } from './instance-binding.js';
 
 /**
  * Reference/table handling core.
@@ -18,6 +19,15 @@ export function clearSchemaCaches() {
   schemaCache.clear();
   displayFieldCache.clear();
 }
+
+/*
+ * B5 — a schema cache is about ONE instance.
+ *
+ * Consulted after a switch it answers with fields that are all real and none of
+ * which describe the instance the user is looking at. Registered so the switch
+ * handler empties it without this module having to know a switch happened.
+ */
+registerInstanceScopedCache('schema-cache', clearSchemaCaches);
 
 export async function getTableHierarchy(t) {
   if (hierarchyCache.has(t)) return hierarchyCache.get(t);

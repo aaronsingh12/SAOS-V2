@@ -16,6 +16,9 @@ import { SnowError } from './servicenow/client.js';
 import { getDb } from './memory/db.js';
 import { seedLedger } from './memory/facts.js';
 import { getSettings } from './config/store.js';
+// Loaded for its side effect: registers the instance-switch hook on config/store
+// so no path can save a connection without per-instance state being flushed (B6).
+import { boundInstance } from './servicenow/instance-binding.js';
 import { DB_PATH } from './memory/db.js';
 
 const app = express();
@@ -123,7 +126,7 @@ function start(attempt = 1) {
     const s = getSettings();
     banner([
       `NowHelpAssist  ·  http://localhost:${PORT}   (bound ${HOST} — loopback only)`,
-      `instance   ${s.connection.instanceUrl || '(none bound)'}`,
+      `instance   ${s.connection.instanceUrl || '(none bound)'}   (both tiers derive from this)`,
       `model      ${s.llm.provider} · ${s.llm.model || '(default)'}`,
       `storage    ${DB_PATH}`,
       `ledger     ${seeded.seeded} facts for ${seeded.instance}`,

@@ -6,6 +6,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSettings } from '../config/store.js';
+import { sdkAuthEnv, boundInstance, parseSdkInstanceEcho, instanceKeyFrom } from './instance-binding.js';
 import { chatOnce } from '../agent/providers/index.js';
 import { codegenDecoding } from '../agent/decoding.js';
 import {
@@ -53,6 +54,8 @@ const MAX_VERIFY_ATTEMPTS = 4;
 const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 const QUICK_TIMEOUT_MS = 2 * 60 * 1000;
+/** The binding probe is one authenticated round trip; the CLI start-up dominates it. */
+const PROBE_TIMEOUT_MS = 120_000;
 
 /**
  * Live Flow Designer authoring via the ServiceNow SDK (Fluent).
@@ -128,12 +131,29 @@ export async function runSdk(args, timeout = QUICK_TIMEOUT_MS, cwd = WORKSPACE) 
   if (!entry) {
     return { ok: false, code: -1, stdout: '', stderr: 'ServiceNow SDK not found. Install it with: npm i -g @servicenow/sdk', missing: true };
   }
+  /*
+   * THE SDK'S INSTANCE BINDING IS DERIVED HERE, PER INVOCATION.
+   *
+   * It used to come from a standing credential alias, which is a second place
+   * an instance address could live — and did, pointing at a retired PDI while
+   * the REST tier had moved on. Passing the CI environment derived from the
+   * UI config makes the alias irrelevant: MEASURED 2026-08-31, the env vars
+   * override the stored alias completely ("Running in CI mode, using instance
+   * <url>"), verified with a discriminator table present on one host only.
+   *
+   * When nothing is bound in the UI, no env is injected and the CLI falls back
+   * to whatever it has. That is fine for unauthenticated commands like
+   * `--version`; anything that touches an instance goes through
+   * assertTiersAgree() first, which fails closed on an unbound app.
+   */
+  const authEnv = sdkAuthEnv();
   try {
     const { stdout, stderr } = await pexec(process.execPath, [entry, ...args], {
       cwd,
       timeout,
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
+      env: authEnv ? { ...process.env, ...authEnv } : process.env,
     });
     return { ok: true, code: 0, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
   } catch (err) {
@@ -145,6 +165,76 @@ export async function runSdk(args, timeout = QUICK_TIMEOUT_MS, cwd = WORKSPACE) 
       timedOut: err.killed === true,
     };
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * The shared binding preflight — every mutating deploy passes through it
+ * ------------------------------------------------------------------ */
+
+/**
+ * Ask the SDK which instance it actually used, by reading its own echo.
+ *
+ * Not the alias list, and not the env we intended to pass: what the CLI SAYS it
+ * targeted, on a real authenticated round trip. That is the only observation
+ * that catches a derivation or injection bug, which is precisely what this
+ * guard exists to be a backstop for now that both tiers derive from one source.
+ *
+ * Costs one cheap query (~8s of CLI start-up). An install costs minutes, so
+ * this is noise on the path that matters.
+ */
+export async function resolveSdkTarget() {
+  const res = await runSdk(['query', 'sys_user', '-q', 'user_name=NOWHELPASSIST_BINDING_PROBE', '-f', 'sys_id', '--limit', '1'], PROBE_TIMEOUT_MS);
+  const echoed = parseSdkInstanceEcho(`${res.stdout || ''}
+${res.stderr || ''}`);
+  return { host: echoed, ok: res.ok, raw: `${res.stdout || ''}${res.stderr || ''}`.slice(0, 400) };
+}
+
+/**
+ * REFUSE ANY MUTATING DEPLOY WHEN THE TWO TIERS DO NOT NAME THE SAME INSTANCE.
+ *
+ * With a single UI-owned source that both tiers derive from, this should never
+ * fire. That is the point: its job is no longer to catch a human forgetting to
+ * repoint an alias, it is to catch a bug in the derivation — an env var that
+ * did not reach the child process, a settings read that returned stale data, a
+ * CLI version that ignores the CI variables. Any of those silently restores the
+ * original failure, where an install succeeds against the wrong instance and
+ * every read-back honestly reports nothing.
+ *
+ * Fails CLOSED: unbound, unknown, or mismatched all refuse.
+ */
+export async function assertTiersAgree({ probe = true } = {}) {
+  const bound = boundInstance();
+  if (!bound.configured) {
+    throw Object.assign(new Error(
+      'No ServiceNow instance is bound. Set the instance URL and credentials in Settings — nothing may be '
+      + 'installed until the UI specifies where.'
+    ), { status: 409, detail: { restHost: null } });
+  }
+  if (!sdkAuthEnv()) {
+    throw Object.assign(new Error(
+      `The bound instance ${bound.host} has no usable credentials for the SDK tier. Basic auth needs a username `
+      + 'and password; OAuth needs a client id and secret. The SDK binding is derived from those, so an install '
+      + 'cannot be authorised without them.'
+    ), { status: 409, detail: { restHost: bound.host } });
+  }
+  if (!probe) return { ok: true, host: bound.host, probed: false };
+
+  const sdk = await resolveSdkTarget();
+  if (!sdk.host) {
+    throw Object.assign(new Error(
+      `Could not confirm which instance the ServiceNow SDK is targeting, so an install cannot be authorised. `
+      + `The CLI named no instance in its output. Expected it to echo "using instance ${bound.url}".`
+    ), { status: 409, detail: { restHost: bound.host, sdkHost: null, raw: sdk.raw } });
+  }
+  if (sdk.host !== bound.host) {
+    throw Object.assign(new Error(
+      `REFUSING TO INSTALL: the two tiers resolved to DIFFERENT INSTANCES. The Table API reads and verifies `
+      + `against "${bound.host}" (the instance set in the UI), but the ServiceNow SDK reported it is targeting `
+      + `"${sdk.host}". Both are supposed to derive from the same UI config, so this is a derivation bug, not a `
+      + `stale alias — an install would succeed and land the artifacts where the read-back cannot see them.`
+    ), { status: 409, detail: { restHost: bound.host, sdkHost: sdk.host, raw: sdk.raw } });
+  }
+  return { ok: true, host: bound.host, probed: true };
 }
 
 /* ------------------------------------------------------------------ *
@@ -168,15 +258,55 @@ function serialize(job) {
  * Persisted state (last install)
  * ------------------------------------------------------------------ */
 
-function readState() {
+function readRawState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
 }
 
-function writeState(patch) {
-  const next = { ...readState(), ...patch };
+function writeRawState(next) {
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(next, null, 2));
   return next;
+}
+
+/**
+ * B5 — install state is namespaced by instance, and a foreign entry is inert.
+ *
+ * The file used to hold one flat `lastInstall`. After the PDI swap it still
+ * carried `rollbackUrl: https://dev442675.../sys_rollback_context.do?sys_id=…`
+ * while the app was bound to dev428633 — a live, clickable instruction to roll
+ * something back on a retired instance. A rollback URL from instance A must be
+ * impossible to fire against instance B, so state is filed under the host and
+ * a read for the wrong host returns NOTHING rather than the other host's row.
+ *
+ * The legacy flat shape is migrated on first read: it is moved under the
+ * instance it names, recovered from its own rollback URL, and quarantined if
+ * that cannot be determined. It is never silently adopted as the current
+ * instance's state.
+ */
+function migrateLegacyState(raw) {
+  if (!raw || raw.byInstance || !raw.lastInstall) return raw;
+  const owner = instanceKeyFrom(raw.lastInstall.rollbackUrl || '') || null;
+  const { lastInstall, ...rest } = raw;
+  const next = { ...rest, byInstance: {} };
+  if (owner) {
+    next.byInstance[owner] = { lastInstall: { ...lastInstall, instance: owner } };
+  } else {
+    next.quarantined = [{ reason: 'a legacy flat lastInstall naming no instance', entry: lastInstall }];
+  }
+  return writeRawState(next);
+}
+
+export function readInstanceState(host) {
+  const raw = migrateLegacyState(readRawState());
+  if (!host) return {};
+  return raw.byInstance?.[host] ?? {};
+}
+
+function writeInstanceState(host, patch) {
+  const raw = migrateLegacyState(readRawState());
+  const byInstance = { ...(raw.byInstance || {}) };
+  byInstance[host] = { ...(byInstance[host] || {}), ...patch };
+  return writeRawState({ ...raw, byInstance });
 }
 
 /* ------------------------------------------------------------------ *
@@ -632,39 +762,48 @@ export async function capability({ deep = false, force = false } = {}) {
     }
   }
 
-  // --- auth ---
+  /* --- auth ---
+   *
+   * B3 — THE SDK NO LONGER HAS A BINDING OF ITS OWN.
+   *
+   * This used to read the stored credential alias and report which host it
+   * pointed at. That store is exactly the second place an instance address
+   * could live, and it drifted: it named a retired PDI for weeks while the REST
+   * tier had moved on, and an install landed there, successfully, unnoticed.
+   *
+   * The alias is gone. Authentication is derived per invocation from the UI
+   * config, so what this reports is whether that derivation produces usable
+   * credentials — and any remaining stored alias is listed as INERT, because it
+   * no longer decides anything and reporting it as the binding would be a lie.
+   */
   const settings = getSettings();
-  const nowhelpassistHost = (settings.connection.instanceUrl || '').replace(/\/+$/, '');
+  const bound = boundInstance();
   const auth = {
-    credentials: [], alias: null, host: null, username: null,
+    source: 'derived-from-ui-config',
+    credentials: [], alias: null, host: bound.host, username: bound.username,
     verified: 'unknown', matchesNowHelpAssistInstance: null, error: null,
+    inertStoredAliases: [],
   };
+  if (!bound.configured) {
+    auth.error = 'No instance is bound. Set the instance URL and credentials in Settings.';
+    fixes.push({ problem: 'No instance bound', command: 'Open Settings and save the instance URL, username and password.' });
+  } else if (!sdkAuthEnv()) {
+    auth.error = `The bound instance ${bound.host} has no credentials the SDK can use (basic needs a password; OAuth needs a client id and secret).`;
+    fixes.push({ problem: 'SDK credentials incomplete', command: 'Open Settings and complete the connection credentials.' });
+  } else {
+    auth.verified = 'derived';
+    // True by construction now — both tiers read one config — and reported so
+    // the UI can keep showing agreement rather than silently dropping the field.
+    auth.matchesNowHelpAssistInstance = true;
+  }
   if (cli.present && !cli.error) {
     const a = await runSdk(['auth', '--list']);
     if (a.ok) {
-      auth.credentials = parseAuthList(a.stdout);
-      const def = auth.credentials.find((c) => c.isDefault) || auth.credentials[0] || null;
-      if (def) {
-        auth.alias = def.alias;
-        auth.host = def.host;
-        auth.username = def.username;
-        auth.verified = 'stored';
-        if (nowhelpassistHost && def.host) {
-          auth.matchesNowHelpAssistInstance = def.host.replace(/\/+$/, '') === nowhelpassistHost;
-        }
-      } else {
-        auth.error = 'No stored SDK credentials.';
-        fixes.push({
-          problem: 'SDK not authenticated',
-          command: `now-sdk auth --add ${nowhelpassistHost || 'https://<instance>.service-now.com'} --type basic --alias nowhelpassist`,
-        });
-      }
-    } else {
-      auth.error = (a.stderr || 'now-sdk auth --list failed').slice(0, 400);
+      auth.inertStoredAliases = parseAuthList(a.stdout).map((c) => ({ ...c, inert: true }));
     }
   }
 
-  if (deep && auth.alias) {
+  if (deep && auth.verified === 'derived') {
     const probe = await runSdk(['query', 'sys_user', '-q', 'user_name=admin', '-f', 'sys_id', '--limit', '1', '-o', 'json']);
     if (probe.ok && /"ok"\s*:\s*true/.test(probe.stdout)) {
       auth.verified = 'live';
@@ -706,9 +845,13 @@ export async function capability({ deep = false, force = false } = {}) {
     fixes.push({ problem: 'Codegen cheatsheet missing', command: 'restore docs/fluent-flow-cheatsheet.md' });
   }
 
-  const state = readState();
+  // Only this instance's install history is visible; another host's is not ours to report.
+  const state = readInstanceState(boundInstance().host);
   const value = {
-    ok: Boolean(cli.present && !cli.error && auth.alias && !workspace.error && cheatsheet.present && auth.verified !== 'failed'),
+    // `auth.alias` used to be the readiness signal. There is no alias any more —
+    // the binding is derived from the UI config — so readiness is now "the
+    // derivation produced usable credentials and they have not been proven bad".
+    ok: Boolean(cli.present && !cli.error && auth.verified === 'derived' && !workspace.error && cheatsheet.present),
     cli,
     auth,
     workspace,
@@ -1393,17 +1536,43 @@ export async function deploy(name, emit = () => {}) {
     return { ok: false, message: 'Build failed; nothing was installed.', diagnostics: extractDiagnostics(pre) };
   }
 
+  /*
+   * B7 — the binding preflight, on the flow/SLA/catalog path too.
+   *
+   * This path was unguarded while the DBA one was, which is backwards: it is
+   * the older and busier of the two. It runs after the build (so a spec that
+   * was never going to compile is not charged a probe) and before the install
+   * (because the install is the thing that becomes untrue).
+   */
+  emit({ type: 'binding_check' });
+  let binding;
+  try {
+    binding = await assertTiersAgree();
+  } catch (err) {
+    return { ok: false, message: err.message, bindingRefused: true, detail: err.detail ?? null };
+  }
+  emit({ type: 'binding_ok', host: binding.host });
+
   emit({ type: 'deploying' });
   const res = await serialize(() => runSdk(['install'], INSTALL_TIMEOUT_MS));
   const parsed = parseInstall(res);
 
-  writeState({
+  /*
+   * B5 — install state is filed UNDER the instance it happened on.
+   *
+   * A rollback URL is an instruction to undo something on a specific host. The
+   * flat `lastInstall` this replaced held a dev442675 URL long after the app
+   * had been rebound to dev428633, so the one piece of state whose whole
+   * purpose is to point at a real thing pointed at the wrong system.
+   */
+  writeInstanceState(binding.host, {
     lastInstall: {
       at: new Date().toISOString(),
       ok: res.ok,
       activation: parsed.activation,
       rollbackUrl: parsed.rollbackUrl,
       requested: name || null,
+      instance: binding.host,
     },
   });
 

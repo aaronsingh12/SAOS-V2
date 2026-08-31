@@ -1,5 +1,6 @@
 import { table } from './client.js';
 import { log } from '../logging.js';
+import { registerInstanceScopedCache } from './instance-binding.js';
 
 /**
  * DBA Layer 0 — the metadata client.
@@ -184,3 +185,6 @@ export async function cached(key, producer, { ttlMs = DEFAULT_TTL_MS, forWrite =
   store.set(key, { value, expiresAt: Date.now() + ttlMs, freshAt: Date.now() });
   return value;
 }
+
+// B5 — the DBA metadata cache is per instance; the switch handler empties it.
+registerInstanceScopedCache('dba-metadata-cache', () => cacheClear());

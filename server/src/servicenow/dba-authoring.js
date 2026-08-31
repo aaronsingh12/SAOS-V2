@@ -3,8 +3,7 @@ import fsp from 'node:fs/promises';
 import { table } from './client.js';
 import { metaQuery, cacheClear } from './dba-metadata.js';
 import { preflight } from './dba-impact.js';
-import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, runSdk } from './fluent.js';
-import { getSettings } from '../config/store.js';
+import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, assertTiersAgree } from './fluent.js';
 import { log } from '../logging.js';
 
 /**
@@ -302,103 +301,6 @@ ${schema}
 async function currentScope() {
   const cfg = JSON.parse(await fsp.readFile(path.join(WORKSPACE_DIRS.workspace, 'now.config.json'), 'utf8'));
   return cfg.scope;
-}
-
-/* ── the two-tier instance guard ──────────────────────────────────────────── */
-
-const HOST_RE = /^\s*host\s*=\s*(\S+)/i;
-const ALIAS_RE = /^(\*?)\s*\[([^\]]+)\]/;
-
-/**
- * Parse `now-sdk auth --list` into the alias the CLI will actually use.
- *
- * Output shape, measured:
- *
- *   [now-sdk] Listing all credentials:
- *   *[snada-pdi]
- *         host = https://dev442675.service-now.com
- *         type = basic
- *         username = admin
- *         default = Yes
- *
- * The leading `*` and `default = Yes` both mark the active alias; either is
- * accepted, and when exactly one alias exists it is the target regardless.
- */
-export function parseSdkAuth(stdout) {
-  const aliases = [];
-  let current = null;
-  for (const line of String(stdout || '').split(/\r?\n/)) {
-    const a = ALIAS_RE.exec(line.replace(/^\[now-sdk\]\s*/, ''));
-    if (a) {
-      current = { alias: a[2], starred: a[1] === '*', host: null, isDefault: false };
-      aliases.push(current);
-      continue;
-    }
-    if (!current) continue;
-    const h = HOST_RE.exec(line);
-    if (h) { current.host = h[1]; continue; }
-    if (/^\s*default\s*=\s*yes/i.test(line)) current.isDefault = true;
-  }
-  const active = aliases.find((x) => x.isDefault || x.starred) || (aliases.length === 1 ? aliases[0] : null);
-  return { aliases, active };
-}
-
-const hostOf = (url) => { try { return new URL(url).host.toLowerCase(); } catch { return null; } };
-
-/**
- * REFUSE TO INSTALL WHEN THE TWO TIERS POINT AT DIFFERENT INSTANCES.
- *
- * MEASURED, 2026-08-31, and it cost a full deploy to find: NowHelpAssist has
- * TWO independent bindings to "the instance" and nothing kept them in step —
- *
- *   REST / Table API   server/data/settings.json      dev428633
- *   SDK / now-sdk      stored credential alias        dev442675
- *
- * The PDI was replaced and only settings.json was updated. So `now-sdk install`
- * reported success, `activation` was real, and the artifacts genuinely landed —
- * on dev442675. The read-back against dev428633 then found no table and
- * correctly reported the install as unverified.
- *
- * Every layer behaved exactly as designed. What was missing was anyone checking
- * that the two halves of the tool were talking about the same system. A green
- * install against the wrong instance is the most expensive shape of
- * confidently-wrong this repo has hit: it is not a bug in either tier, and
- * neither tier can see it alone.
- *
- * This throws rather than warns, and it runs BEFORE the install, because the
- * install is the thing that becomes untrue.
- */
-export async function assertTiersAgree() {
-  const restUrl = getSettings().connection.instanceUrl || '';
-  const restHost = hostOf(restUrl);
-  if (!restHost) {
-    throw Object.assign(new Error('No ServiceNow connection is configured, so the SDK target cannot be checked against it.'), { status: 400 });
-  }
-
-  const res = await runSdk(['auth', '--list']);
-  const parsed = parseSdkAuth(res.stdout);
-  const sdkHost = hostOf(parsed.active?.host);
-
-  if (!sdkHost) {
-    throw Object.assign(new Error(
-      'Could not determine which instance the ServiceNow SDK is authenticated against, so an install cannot be '
-      + `authorised. \`now-sdk auth --list\` reported ${parsed.aliases.length} alias(es) and no usable default. `
-      + 'Set one with `now-sdk auth --add`, or make exactly one alias the default.'
-    ), { status: 409, detail: { restHost, aliases: parsed.aliases } });
-  }
-
-  if (sdkHost !== restHost) {
-    throw Object.assign(new Error(
-      `REFUSING TO INSTALL: the two halves of NowHelpAssist are bound to DIFFERENT INSTANCES. `
-      + `The Table API reads and verifies against "${restHost}" (server/data/settings.json), but the ServiceNow SDK `
-      + `would install to "${sdkHost}" (credential alias "${parsed.active.alias}"). `
-      + 'An install would succeed, report activation, and put the artifacts on the other instance — where the '
-      + 'read-back cannot see them. Point the SDK at the bound instance with `now-sdk auth --add` and make it the '
-      + 'default, or change the connection in Settings, so both tiers name the same host.'
-    ), { status: 409, detail: { restHost, sdkHost, alias: parsed.active.alias } });
-  }
-
-  return { ok: true, host: restHost, alias: parsed.active.alias };
 }
 
 /**

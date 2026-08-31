@@ -102,17 +102,39 @@ export function annotateLatestCapture(sessionId, turnSeq, captureEvent) {
   } catch { return false; }
 }
 
-export function mutationsForTurn(sessionId, turnSeq) {
+/*
+ * B5 — THE LEDGER IS READ PER INSTANCE.
+ *
+ * Every row already carried the instance it landed on; nothing filtered on it.
+ * So after a PDI swap a session's history mixed hosts, and a mutation recorded
+ * against instance A could be read back — and acted on — while bound to B. A
+ * sys_id is only meaningful on the instance that minted it, so a cross-instance
+ * read is not merely untidy: it invites an operation against the wrong record.
+ *
+ * `allInstances: true` exists for the audit page, which legitimately shows
+ * history across bindings. It has to be asked for.
+ */
+function instanceFilter(allInstances) {
+  if (allInstances) return { clause: '', params: [] };
+  const { instance } = currentActor();
+  // An unbound app sees nothing rather than everything: no binding means no
+  // basis for claiming any row describes the current instance.
+  return { clause: ' AND instance IS ?', params: [instance] };
+}
+
+export function mutationsForTurn(sessionId, turnSeq, { allInstances = false } = {}) {
+  const f = instanceFilter(allInstances);
   return getDb()
-    .prepare('SELECT * FROM mutation_ledger WHERE session = ? AND turn_seq = ? ORDER BY id')
-    .all(sessionId, Number(turnSeq ?? 0))
+    .prepare(`SELECT * FROM mutation_ledger WHERE session = ? AND turn_seq = ?${f.clause} ORDER BY id`)
+    .all(sessionId, Number(turnSeq ?? 0), ...f.params)
     .map(hydrate);
 }
 
-export function mutationsForSession(sessionId, { limit = 200 } = {}) {
+export function mutationsForSession(sessionId, { limit = 200, allInstances = false } = {}) {
+  const f = instanceFilter(allInstances);
   return getDb()
-    .prepare('SELECT * FROM mutation_ledger WHERE session = ? ORDER BY id DESC LIMIT ?')
-    .all(sessionId, limit)
+    .prepare(`SELECT * FROM mutation_ledger WHERE session = ?${f.clause} ORDER BY id DESC LIMIT ?`)
+    .all(sessionId, ...f.params, limit)
     .map(hydrate);
 }
 

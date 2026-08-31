@@ -117,6 +117,28 @@ export function credentialWarnings(conn) {
   return warnings;
 }
 
+/*
+ * B6 — the instance-switch handler.
+ *
+ * Registered by the binding module at boot rather than imported here, because
+ * `config/store.js` is the lowest layer in the app and must not depend on
+ * anything that reads settings — that would be a cycle, and this file is loaded
+ * by the offline suite in isolation.
+ *
+ * Fires AFTER the new config is durable. If it threw, the app would be left
+ * with new settings and old caches, which is the worst of both.
+ */
+let bindingHook = null;
+
+export function _setBindingHook(fn) {
+  bindingHook = fn;
+}
+
+function announceBinding() {
+  if (!bindingHook) return null;
+  try { return bindingHook(); } catch { return null; }
+}
+
 export function saveSettings(patch) {
   const cur = load();
   const next = {
@@ -127,6 +149,7 @@ export function saveSettings(patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(FILE, JSON.stringify(next, null, 2));
   cache = next;
+  announceBinding();
   return next;
 }
 
@@ -137,6 +160,7 @@ export function clearConnection() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(FILE, JSON.stringify(next, null, 2));
   cache = next;
+  announceBinding();
   return next;
 }
 

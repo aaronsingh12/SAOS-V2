@@ -60,12 +60,22 @@ import { log } from '../logging.js';
  *    There is NO delete-recovery retention property on this instance, so the
  *    7-day figure stays labelled as documentation, not measurement.
  *
- * 4. `security_admin` DOES NOT EXIST as a sys_user_role row here — a query for
- *    name=security_admin returns zero rows, while `admin` is held directly.
- *    Elevation is therefore not a role grant to check for; this repo already
- *    established (docs/role-elevation-gate*.md) that the write capability is
- *    reached another way. This service reports what it measured and refuses to
- *    infer an elevation capability from a role that is not there.
+ * 4. `security_admin` IS NOT VISIBLE OVER REST — and that is NOT the same as
+ *    absent. CORRECTED 2026-08-31: an earlier version of this file queried
+ *    `sys_user_role` for name=security_admin, got zero rows, and concluded the
+ *    role did not exist on this instance. That conclusion was wrong, and it is
+ *    the exact interpretation this codebase already warns against: Gate 0
+ *    D-2/H6 proved the role RECORD is invisible to plain REST (0 rows) while
+ *    being readable server-side, which is why `elevation-gate.js` and
+ *    `acl-spec.js` resolve roles through a server-side GlideRecord and never
+ *    over REST.
+ *
+ *    So this service does not decide elevation eligibility at all. It reports
+ *    that REST cannot see the role, states plainly that this is a blind spot
+ *    rather than evidence, and defers: ACL authoring is attempted through the
+ *    guarded elevation path and the PLATFORM'S OWN authorization result is
+ *    surfaced. Pre-gating on a role REST cannot see would refuse every
+ *    legitimate elevation.
  */
 
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -176,10 +186,16 @@ export async function detectIdentity() {
     .filter((r) => r.name);
   const direct = roles.filter((r) => !r.inherited).map((r) => r.name);
 
-  // security_admin: measured absent on this instance. Report the measurement,
-  // do not infer availability from its absence in either direction.
-  const secRows = await metaQuery('sys_user_role', { query: 'name=security_admin', fields: 'sys_id,name', max: 1 });
-
+  /*
+   * NO REST READ OF `security_admin`, DELIBERATELY.
+   *
+   * Gate 0 D-2/H6: the role record returns 0 rows over REST on this instance
+   * while existing and being readable server-side. Querying it here and
+   * reporting the result would manufacture a false "the role does not exist",
+   * which is what an earlier version of this file did. The role list above is
+   * a plain REST read and carries the same blind spot, so `held` is reported as
+   * UNDETERMINED rather than false.
+   */
   return {
     username,
     user: { sys_id: user.sys_id, user_name: user.user_name, name: user.name, active: user.active === 'true' },
@@ -187,12 +203,14 @@ export async function detectIdentity() {
     directRoles: direct,
     hasAdmin: roles.some((r) => r.name === 'admin'),
     securityAdmin: {
-      roleExists: secRows.length > 0,
-      held: roles.some((r) => r.name === 'security_admin'),
-      note: secRows.length
-        ? 'The security_admin role exists on this instance.'
-        : 'MEASURED: no sys_user_role row named security_admin exists on this instance, so ACL authoring cannot '
-          + 'be gated on holding it. See docs/role-elevation-gate*.md for the route this repo established instead.',
+      determinable: false,
+      restVisible: false,
+      held: null,
+      note: 'Elevation eligibility is NOT decided here. `sys_user_role` and `sys_user_has_role` return 0 rows over '
+          + 'REST for security_admin on this instance even though the role exists and is readable server-side '
+          + '(Gate 0 D-2/H6), so a REST answer here would be a false negative that refuses every legitimate '
+          + 'elevation. ACL authoring goes through the guarded elevation path and surfaces the platform’s own '
+          + 'authorization result; see elevation-gate.js and docs/role-elevation-gate*.md.',
     },
   };
 }
