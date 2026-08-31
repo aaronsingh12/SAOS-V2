@@ -5818,3 +5818,119 @@ the acceptance.
 | 120 | **A destructive op against SDK-managed schema leaves the source lying** | a column is dropped, verified gone, and reappears at the next install | The Fluent source still declares it, so the next `install` re-creates it and the drop looks undone by accident. A drop is not finished until the source that describes the object agrees with the instance |
 | 121 | **An escalation flag the agent can reach is not an escalation** | a "human-only" override that some tool can write | The guarantee is the ABSENCE of a capability, and absences get restored by accident. Assert in a test that no tool can reach the setting — and that none takes a settings-shaped input — or the claim silently stops being true |
 | 122 | **A guard that fires on the correct text** | `/\breversible\b/` rejecting "NEVER describes the result as reversible" | Match the affirmative CLAIM (`is reversible`, `can be undone`), not the word. A guard that fails on the right answer teaches people to weaken the guard |
+
+---
+
+## 46. Closing the in-scope authoring gap
+
+NowForge could add a column to a table it was *creating*, and to a table it does
+*not own*, and had nothing for the case in between — an existing custom table it
+owns. A user asking to add `user_age` to `x_2002152_nwforge_test_demo` got "that
+process isn't supported". It was not unsupported. It was unbuilt.
+
+### The routing was the gap, not the capability
+
+The path is chosen from two facts, both read live: does the table exist on the
+bound instance, and does this application's Fluent source define it?
+
+| target | route | why |
+|---|---|---|
+| `x_2002152_nwforge_brand_new` | `create_table` | on neither the instance nor in source |
+| `x_2002152_nwforge_test_demo` | `in_scope_source` | **the new path** — our source defines it |
+| `incident`, `sys_user` | `augment` | another scope owns it |
+| in our scope, absent from our source | `unmanaged_in_scope` | refuse, offer to adopt |
+
+That last case matters. A table in our scope that our source does not declare
+was created on the instance directly. Inserting a column into `sys_dictionary`
+would work until the next install reconciled the app to its source and took the
+column with it. Adopting the table into source first is the only path that does
+not create a divergence, and that is a deliberate act rather than a side effect.
+
+### Source editing, and where it refuses
+
+A custom in-scope table is SDK-managed: the Fluent source is the definition and
+the `sys_dictionary` rows are its output. So the column is added by editing that
+source and reinstalling — **never** by a REST insert, which would put the column
+on the instance while the source stayed silent and the next install removed it.
+That is the additive mirror of §45's finding, and the rule holds both ways:
+
+> a schema change to SDK-managed source is not finished until the source and the
+> instance agree.
+
+`dba-source.js` does the editing and is pure, so it is asserted offline against
+the real generated shape. It matches braces rather than pattern-matching,
+because a choice column nests its own `choices: { … }` and a lazy match would
+truncate the file on the next edit. It refuses — naming what it looked for —
+whenever the shape is not the one it expects: no `schema: { … }` block, no
+`@servicenow/sdk/core` import to extend, a column that already exists, or more
+than one source defining the same table. **A source file it does not fully
+understand is one it must not rewrite**, because a corrupted source fails later,
+at build time, with a diagnostic pointing at generated code nobody wrote.
+
+Removal round-trips **byte for byte** — asserted, because reconciliation runs
+immediately after an irreversible drop and a near-enough edit would corrupt the
+source at the worst possible moment.
+
+### Acceptance, live on the bound instance
+
+```
+[ 1.5s] dba_preflight
+[18.0s] dba_source_edited
+[18.0s] dba_building
+[34.2s] dba_tier_check
+[46.9s] dba_tiers_agree   dev428633.service-now.com
+[46.9s] dba_installing
+        → ok: true | stage: verified | route: in_scope_source
+```
+
+```json
+{ "column": "user_age",
+  "onInstance": { "type": "integer", "label": "User Age", "scope": "8e720e9b…" },
+  "inSource": true,
+  "sourceAndInstanceAgree": true }
+```
+
+The read-back checks **two** things. A column live on the instance but absent
+from source is removed by the next install; one in source but absent from the
+instance never shipped. Each direction has a different consequence, so a
+divergence is reported as its own finding with which way it points, rather than
+folded into a single `ok`.
+
+### Two things completed rather than assumed
+
+**Source reconciliation after a drop was not "already built".** In §45 I did it
+by hand, which is exactly how it gets forgotten. `executeIrreversible` now
+removes the column from the source that declared it, reads the file back to
+confirm, and reports `sourceDivergence` loudly if it could not — so a dropped
+column cannot be silently re-created by the next install. It deliberately does
+**not** rebuild and reinstall: that would be a second deploy behind a
+destructive operation the caller confirmed once.
+
+**"Nothing to remove" was reported as "escalation unmet".** Dropping a column
+that does not exist walked the caller into the full Tier 3 ceremony and told
+them to open the most dangerous switch in the application — in order to perform
+a no-op. Existence is cheap to check and it is the more useful answer, so it now
+comes first:
+
+> `x_2002152_nwforge_test_demo` has no column "service" on this instance, so
+> there is nothing to remove. No escalation, export or confirmation is needed
+> for an operation with no target.
+
+A real in-scope column still faces the full gate, unchanged: escalation,
+snapshot, typed phrase naming `table.column`, and an acknowledged impact report.
+
+### The authoring surface is now complete
+
+**create** (new tables) · **modify in-scope** (tables this app owns) · **augment
+OOTB** (tables it does not) — each by the mechanism that keeps source and
+instance in agreement.
+
+13 new tests; `npm test` — **1111 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 123 | **A capability gap reported as an unsupported operation** | "that process isn't supported through the current mutation APIs" for something the platform supports fine | The refusal to REST-insert was the right instinct; the missing half was the correct path. When a tool refuses, check whether it is refusing a bad METHOD or a bad GOAL — and route, rather than dead-end |
+| 124 | **A schema block matched by regex** | an edit that truncates the file at the first nested `}` | A choice column nests `choices: { … }`. Match braces, skip string literals, and refuse outright on a shape you do not recognise — a corrupted source surfaces as a build error pointing at code nobody wrote |
+| 125 | **A destructive gate that demands ceremony for a no-op** | dropping a column that does not exist tells you to enable irreversible operations first | Check that the target EXISTS before computing requirements. Sending someone to open the most dangerous switch in the app to perform nothing is how that switch stops being taken seriously |

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fsp from 'node:fs/promises';
 import { table } from './client.js';
 import { getSettings } from '../config/store.js';
 import { metaQuery, cacheClear } from './dba-metadata.js';
@@ -6,6 +7,7 @@ import { getSchema, referenceLookup, getDisplayField } from './schema.js';
 import { diffWrite } from './write-verify.js';
 import { preflight, classifyOperation, analyzeImpact } from './dba-impact.js';
 import { getDbaContext } from './dba-context.js';
+import { findTableSource, removeColumn } from './dba-source.js';
 import { log } from '../logging.js';
 
 /**
@@ -414,6 +416,32 @@ export async function destructiveGate({ operation, table: tableName, field = nul
 
   const cls = await classifyOperation(operation);
   const target = field ? `${tableName}.${field}` : tableName;
+
+  /*
+   * DOES THE TARGET EXIST? Asked first, and it changes the answer.
+   *
+   * Before this, dropping a column that was not there reported "escalation
+   * unmet" — sending someone to open the most dangerous switch in the
+   * application in order to perform a no-op. Existence is cheap to check and it
+   * is the more useful answer, so it comes first. Nothing is destroyed by
+   * saying "there is nothing there".
+   */
+  const present = field
+    ? await metaQuery('sys_dictionary', { query: `name=${tableName}^element=${field}`, fields: 'sys_id', max: 1 }).catch(() => null)
+    : await metaQuery('sys_db_object', { query: `name=${tableName}`, fields: 'sys_id', max: 1 }).catch(() => null);
+  if (present && present.length === 0) {
+    return {
+      ok: false,
+      nothingToRemove: true,
+      operation,
+      target,
+      tier: 3,
+      reason: field
+        ? `${tableName} has no column "${field}" on this instance, so there is nothing to remove. No escalation, `
+          + 'export or confirmation is needed for an operation with no target.'
+        : `No table named "${tableName}" exists on this instance, so there is nothing to remove.`,
+    };
+  }
   const phrase = confirmationPhraseFor(operation, target);
   const impact = await analyzeImpact({ table: tableName, field }).catch(() => null);
 
@@ -479,6 +507,21 @@ export async function executeIrreversible({ operation, table: tableName, field =
     : await metaQuery('sys_db_object', { query: `name=${tableName}`, fields: 'sys_id', max: 1 }).catch(() => []);
   const gone = after.length === 0;
 
+  /*
+   * RECONCILE THE SOURCE, or the drop undoes itself.
+   *
+   * MEASURED in E2: dropping a column from an SDK-managed table left the Fluent
+   * source still declaring it, so the next `now-sdk install` would have silently
+   * re-created it and the drop would have looked undone by accident. That
+   * reconciliation was done by hand at the time; doing it by hand is exactly how
+   * it gets forgotten.
+   *
+   * A drop against an object this application does NOT define needs no
+   * reconciliation — there is no source of ours to correct — and that case
+   * reports `applicable: false` rather than silently doing nothing.
+   */
+  const reconciliation = gone ? await reconcileSourceAfterDrop(operation, tableName, field) : { applicable: false, reason: 'nothing was dropped' };
+
   return {
     ok: gone,
     stage: gone ? 'verified' : 'verification-failed',
@@ -491,9 +534,48 @@ export async function executeIrreversible({ operation, table: tableName, field =
       ? `${target} is gone. This cannot be undone — no rollback context was created and none exists to create. The `
         + `snapshot ${snapshotId} is evidence of what was there, not a restore path.`
       : `${target} is still present. Nothing was destroyed.`,
+    sourceReconciliation: reconciliation,
+    ...(reconciliation.applicable && !reconciliation.reconciled
+      ? { sourceDivergence: 'The object was dropped on the instance and this application’s source still declares it. '
+          + 'The next install would RE-CREATE it. Fix the source before installing again.' }
+      : {}),
     ...(failed ? { deleteReportedFailure: true, deleteError: String(failed.message || failed).slice(0, 400) } : {}),
     audit: auditEntry({ tool: `dba:${operation}`, tableName, sys_id: rows[0].sys_id, ctx, why, before: { [target]: 'present' }, after: gone ? { [target]: 'DROPPED' } : { [target]: 'present' }, status: gone ? 'applied' : 'unverified' }),
   };
+}
+
+/**
+ * After a successful drop, take the column out of the source that declared it.
+ *
+ * Deliberately does NOT rebuild or reinstall: that would be a second deploy
+ * behind a destructive operation the caller has already confirmed once. It
+ * corrects the source and says so, leaving the next ordinary install to carry
+ * it — which is now a no-op for this column rather than a resurrection.
+ */
+async function reconcileSourceAfterDrop(operation, tableName, field) {
+  if (operation !== 'drop_column') {
+    return { applicable: false, reason: 'source reconciliation currently covers drop_column only' };
+  }
+  let found;
+  try { found = await findTableSource(tableName); }
+  catch (err) { return { applicable: true, reconciled: false, error: err.message }; }
+  if (!found.definedIn) {
+    return { applicable: false, reason: `no Fluent source in this application defines ${tableName}, so there is nothing to reconcile` };
+  }
+  try {
+    const { text, changed, reason } = removeColumn(found.definedIn.text, field);
+    if (!changed) return { applicable: true, reconciled: true, alreadyAbsent: true, reason, file: found.definedIn.file };
+    await fsp.writeFile(found.definedIn.file, text, 'utf8');
+    const readBack = await fsp.readFile(found.definedIn.file, 'utf8');
+    return {
+      applicable: true,
+      reconciled: !readBack.includes(`${field}:`),
+      file: found.definedIn.file,
+      note: 'The column was removed from the Fluent source so the next install cannot re-create it.',
+    };
+  } catch (err) {
+    return { applicable: true, reconciled: false, error: err.message };
+  }
 }
 
 /* ── audit ────────────────────────────────────────────────────────────────── */

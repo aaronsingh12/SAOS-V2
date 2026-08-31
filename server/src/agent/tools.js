@@ -38,7 +38,12 @@ import {
   preflight as dbaPreflight,
 } from '../servicenow/dba-impact.js';
 import { appendMutation, mutationsForSession } from '../memory/ledger.js';
-import { createTable as dbaCreateTable, augmentTable as dbaAugmentTable } from '../servicenow/dba-authoring.js';
+import {
+  createTable as dbaCreateTable,
+  augmentTable as dbaAugmentTable,
+  addField as dbaAddField,
+  classifyColumnTarget as dbaClassifyColumnTarget,
+} from '../servicenow/dba-authoring.js';
 import {
   setFieldValue as dbaSetFieldValue,
   deleteRecord as dbaDeleteRecord,
@@ -1814,6 +1819,42 @@ export const TOOLS = [
         impactAcknowledged: impact_acknowledged === true,
         why,
       }, ctx || {}),
+  },
+  {
+    name: 'dba_column_route',
+    description:
+      'Which authoring path a column belongs on, decided from live facts: does the table exist on this instance, and '
+      + 'does this application define it in Fluent source? Returns one of create_table (new table), in_scope_source '
+      + '(a table this app owns — use dba_add_field), augment (a table another scope owns — use dba_augment_table), '
+      + 'or unmanaged_in_scope (in our scope but not in our source, which needs adopting first). '
+      + 'Call this when unsure; it prevents adding a column the wrong way. Read-only.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: { table: { type: 'string' } }, required: ['table'] },
+    execute: ({ table: t }) => dbaClassifyColumnTarget(t),
+  },
+  {
+    name: 'dba_add_field',
+    description:
+      'Add a column to an existing table THIS APPLICATION OWNS (in-scope, defined in its Fluent source). '
+      + 'The column is added by editing that source and reinstalling — never by writing to sys_dictionary, because a '
+      + 'column on the instance that the source does not declare is removed again by the next install. '
+      + 'Additive only: mandatory and unique are forced off, since the table already holds rows. '
+      + 'Verifies TWO things afterwards — the column is live with the right type, and source and instance now agree. '
+      + 'For a table another scope owns use dba_augment_table; for a table that does not exist yet use '
+      + 'dba_create_table; dba_column_route will say which applies.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        field: {
+          type: 'object',
+          description: '{name, type, label, maxLength, reference, choices, default}. Types: string, integer, boolean, reference, choice, datetime, decimal.',
+        },
+      },
+      required: ['table', 'field'],
+    },
+    execute: ({ table: t, field }) => dbaAddField(t, field || {}),
   },
   {
     name: 'dba_augment_table',

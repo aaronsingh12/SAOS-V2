@@ -3,7 +3,8 @@ import fsp from 'node:fs/promises';
 import { table } from './client.js';
 import { metaQuery, cacheClear } from './dba-metadata.js';
 import { preflight } from './dba-impact.js';
-import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, assertTiersAgree, readInstallVersionRecords } from './fluent.js';
+import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, assertTiersAgree, readInstallVersionRecords, resolveScopeId } from './fluent.js';
+import { findTableSource, insertColumn, columnsInSchema } from './dba-source.js';
 import { log } from '../logging.js';
 
 /**
@@ -267,6 +268,258 @@ ${schema}
 })
 ${acls.length ? `\n${acls.join('\n\n')}\n` : ''}`;
 }
+
+/* ── adding a column to a table this application already owns ─────────────── */
+
+/**
+ * Which of the three authoring paths a column belongs on.
+ *
+ * NowForge could add a column to a NEW table (baked into `createTable`) and to
+ * somebody else's OOTB table (`augmentTable`), and had no path for the case in
+ * between — an existing custom table it owns. That gap surfaced as "that
+ * process isn't supported", which was wrong: it was unbuilt, not unsupported.
+ *
+ * The routing is decided from two facts, both read live: does the table exist on
+ * the bound instance, and does this application's Fluent source define it?
+ */
+export async function classifyColumnTarget(tableName) {
+  const scope = await currentScope();
+  const onInstance = (await metaQuery('sys_db_object', { query: `name=${tableName}`, fields: 'sys_id,name,sys_scope,super_class.name', max: 1 }))[0] || null;
+  const found = await findTableSource(tableName);
+  const ourScopeId = (await resolveScopeId(scope).catch(() => ({ scopeId: null }))).scopeId;
+  const inOurScope = Boolean(onInstance) && onInstance.sys_scope === ourScopeId;
+
+  if (!onInstance && !found.definedIn) {
+    return {
+      route: 'create_table', tableName, scope,
+      reason: `${tableName} does not exist on this instance and no source defines it. Creating it is dba_create_table.`,
+    };
+  }
+  if (found.definedIn) {
+    return {
+      route: 'in_scope_source', tableName, scope,
+      sourceFile: found.definedIn.file,
+      existsOnInstance: Boolean(onInstance),
+      reason: `${tableName} is defined by this application's Fluent source, so a column is added by editing that `
+            + 'source and reinstalling — not by writing to sys_dictionary.',
+    };
+  }
+  if (inOurScope) {
+    /*
+     * Ours by scope, but nothing in our source declares it — so it was created
+     * on the instance directly rather than by this application. Inserting a
+     * column into sys_dictionary would work until the next install, which
+     * reconciles the app to its source and would take the column with it.
+     * Adopting the table into source first is the only path that does not
+     * create a divergence, and that is a deliberate act, not a side effect.
+     */
+    return {
+      route: 'unmanaged_in_scope', tableName, scope,
+      existsOnInstance: true,
+      reason: `${tableName} is in this application's scope but NO Fluent source declares it — it was created on the `
+            + 'instance directly, not by this application. Adding a column over REST would put it on the instance '
+            + 'while the source stayed silent, and the next install would remove it again. Adopt the table into '
+            + 'source first, then add the column through the normal path.',
+      offer: 'adopt-into-source',
+    };
+  }
+  return {
+    route: 'augment', tableName, scope,
+    existsOnInstance: true,
+    targetScope: onInstance.sys_scope,
+    reason: `${tableName} belongs to another scope, so a column is added through the table-augments pattern `
+          + '(dba_augment_table) and the base object is never edited.',
+  };
+}
+
+/**
+ * `dba.addField` — add a column to an in-scope, SDK-managed table.
+ *
+ * Source is edited, the workspace is rebuilt offline, the guards run, the app
+ * is installed, and the result is read back off the instance. The read-back
+ * checks two things, not one: that the column is live with the right type, AND
+ * that the source and the instance now agree — because a change to SDK-managed
+ * schema is not finished until they do.
+ */
+export async function addField(tableName, field, emit = () => {}, { dryRun = false } = {}) {
+  const scope = await currentScope();
+
+  const route = await classifyColumnTarget(tableName);
+  if (route.route !== 'in_scope_source') {
+    return { ok: false, stage: 'route', route, errors: [route.reason] };
+  }
+
+  // Validate the column the same way createTable does — one emitter, one set of
+  // rules, so a column added later cannot be shaped differently from one baked
+  // in at creation.
+  const el = String(field?.name || '').trim().toLowerCase();
+  const errors = [];
+  if (!el || !NAME_RE.test(el)) errors.push(`"${field?.name}" is not a valid column name.`);
+  if (!COLUMN_EMITTERS[field?.type]) {
+    errors.push(`Column "${el}" has type "${field?.type}", which this authoring layer does not emit. `
+      + `Supported: ${Object.keys(COLUMN_EMITTERS).join(', ')}.`);
+  }
+  if (field?.type === 'reference' && !field.reference) errors.push(`Reference column "${el}" must name the table it points at.`);
+  if (field?.type === 'choice' && !(field.choices && Object.keys(field.choices).length)) errors.push(`Choice column "${el}" must supply choices.`);
+  if (errors.length) return { ok: false, stage: 'spec', route, errors };
+
+  const normalized = {
+    name: el,
+    type: field.type,
+    label: field.label || field.name,
+    maxLength: field.maxLength ?? null,
+    /*
+     * Additive means additive, on an EXISTING table with existing rows.
+     * A mandatory column makes every row that predates it fail validation on
+     * the next save; a unique index can fail to build against data already
+     * there. Both are forced off, exactly as the augment path does.
+     */
+    mandatory: false,
+    unique: false,
+    default: field.default ?? null,
+    reference: field.reference ?? null,
+    choices: field.choices ?? null,
+  };
+
+  emit({ type: 'dba_preflight', table: tableName });
+  const pre = await preflight({ operation: 'add_column', table: tableName });
+  if (pre.verdict !== 'go') return { ok: false, stage: 'preflight', route, blockers: pre.blockers, preflight: pre };
+
+  // Re-read live: a cache never drives a write.
+  const already = await metaQuery('sys_dictionary', { query: `name=${tableName}^element=${el}`, fields: 'element,internal_type', max: 1 });
+  if (already.length) {
+    return {
+      ok: false, stage: 'preflight', route,
+      errors: [`${tableName} already has a column "${el}" (${already[0].internal_type}). Adding it again is not what `
+             + 'this does; changing an existing column is a different operation.'],
+    };
+  }
+
+  const file = route.sourceFile;
+  const original = await fsp.readFile(file, 'utf8');
+  let nextSource;
+  try {
+    nextSource = insertColumn(original, {
+      column: el,
+      emitted: COLUMN_EMITTERS[normalized.type](normalized),
+      importName: IMPORTS_FOR[normalized.type],
+    });
+  } catch (err) {
+    return { ok: false, stage: 'source', route, errors: [err.message] };
+  }
+
+  if (dryRun) return { ok: true, stage: 'dry-run', route, file, column: el, source: nextSource, preflight: pre, installed: false };
+
+  await fsp.writeFile(file, nextSource, 'utf8');
+  emit({ type: 'dba_source_edited', file });
+
+  emit({ type: 'dba_building' });
+  const built = await buildWorkspace();
+  if (!built.ok) {
+    // Put the source back exactly as it was. A failed edit must leave nothing
+    // for the next install to pick up.
+    await fsp.writeFile(file, original, 'utf8');
+    const restored = (await fsp.readFile(file, 'utf8')) === original;
+    return {
+      ok: false, stage: 'build', route, diagnostics: extractDiagnostics(built), source: nextSource,
+      sourceRestored: restored,
+      message: 'now-sdk build failed; nothing was installed and the source was restored to its previous state.',
+    };
+  }
+
+  emit({ type: 'dba_tier_check' });
+  const tiers = await assertTiersAgree();
+  emit({ type: 'dba_tiers_agree', host: tiers.host });
+
+  emit({ type: 'dba_installing' });
+  const installed = await installWorkspace();
+
+  // A red install is only a claim (§44) — the read-back decides, on both paths.
+  emit({ type: 'dba_verifying' });
+  cacheClear('dba:');
+  const verification = await verifyColumn(tableName, normalized, file);
+
+  if (!installed.ok && !verification.ok) {
+    return { ok: false, stage: 'install', route, diagnostics: extractDiagnostics(installed), file, verification };
+  }
+
+  return {
+    ok: verification.ok,
+    stage: verification.ok ? 'verified' : 'verification-failed',
+    route: route.route,
+    table: tableName,
+    column: el,
+    file,
+    installedTo: tiers.host,
+    preflight: pre,
+    verification,
+    permanence: pre.permanence ?? null,
+    ...(installed.ok ? {} : {
+      installReportedFailure: true,
+      installDiagnostics: extractDiagnostics(installed),
+      reconciliation: 'The SDK reported a failure and the read-back found the column live. The read-back is the '
+        + 'authority; do not retry without reading back first.',
+    }),
+    wholeAppNote: 'now-sdk install deploys the ENTIRE application (trap #8).',
+  };
+}
+
+/**
+ * Read the column back, and check that source and instance AGREE.
+ *
+ * The second half is the one that matters for SDK-managed schema. A column
+ * present on the instance but absent from source is removed by the next
+ * install; a column in source but absent from the instance never shipped.
+ * Either way the two disagreeing is the defect, so it is reported as its own
+ * finding rather than folded into "ok".
+ */
+export async function verifyColumn(tableName, normalized, file) {
+  const rows = await metaQuery('sys_dictionary', {
+    query: `name=${tableName}^element=${normalized.name}`,
+    fields: 'element,name,internal_type,column_label,max_length,mandatory,reference,sys_scope',
+    max: 1,
+  });
+  const got = rows[0] || null;
+
+  const problems = [];
+  if (!got) problems.push(`absent from ${tableName}'s dictionary on the instance`);
+  else {
+    const wantType = EXPECTED_INTERNAL_TYPE[normalized.type] ?? null;
+    if (wantType && got.internal_type !== wantType) problems.push(`stored as ${got.internal_type}, expected ${wantType}`);
+    if (normalized.reference && got.reference !== normalized.reference) problems.push(`references ${got.reference}, expected ${normalized.reference}`);
+    if (got.mandatory === 'true') problems.push('stored mandatory — an added column must not invalidate existing rows');
+  }
+
+  const sourceText = await fsp.readFile(file, 'utf8').catch(() => '');
+  const inSource = columnsInSchema(sourceText).includes(normalized.name);
+  const agree = Boolean(got) && inSource;
+
+  return {
+    ok: problems.length === 0 && agree,
+    table: tableName,
+    column: normalized.name,
+    onInstance: got ? { type: got.internal_type, label: got.column_label, maxLength: got.max_length, scope: got.sys_scope } : null,
+    inSource,
+    sourceAndInstanceAgree: agree,
+    ...(problems.length ? { problems } : {}),
+    ...(agree ? {} : {
+      divergence: inSource
+        ? 'The source declares the column and the instance does not have it — the install did not ship it.'
+        : 'The instance has the column and the source does not declare it — the next install would REMOVE it.',
+    }),
+  };
+}
+
+/** What each emitted column type stores as, so a read-back can check the type rather than assume it. */
+const EXPECTED_INTERNAL_TYPE = {
+  string: 'string',
+  integer: 'integer',
+  boolean: 'boolean',
+  reference: 'reference',
+  choice: 'string',
+  datetime: 'glide_date_time',
+  decimal: 'decimal',
+};
 
 /* ── the augment path: adding a column to an out-of-scope table ───────────── */
 
