@@ -306,6 +306,12 @@ Constraints that bite (all confirmed in the bundled guides):
 > right now" claim below as describing the retired PDI. The Table-API
 > measurements in §38–§40 were taken against the currently bound REST host and
 > stand.
+>
+> **Outcome (§43):** the application has since been re-established on the bound
+> instance as `x_2002152_nwforge` — a NEW scope, because the vendor prefix is
+> issued by the instance and the old name is unregistrable there. The flow, SLA
+> and catalog artifacts below have NOT been re-verified on it; that is tracked
+> as its own task.
 
 
 Built and installed from `server/fluent-workspace`, then read back off the instance:
@@ -5390,3 +5396,145 @@ were not started.
 | 110 | **A `scopeId` in static config is an instance-specific pin** | `Unable to install application as application was null`, on a workspace that builds cleanly | `now.config.json` carries a sys_id, and a sys_id means nothing on another instance. Blanking it fails the build (`requires property "scopeId"`), so it cannot simply be made optional — it has to be resolved against the bound instance, and the app has to exist there |
 | 111 | **A vendor prefix is issued by the instance, not chosen** | a scope name that worked for months cannot be created on the new PDI | `glide.appcreator.company.code` differs per instance (2196302 vs 2002152 here). A scope name embeds it, so an application is not portable between instances by name — moving one means a NEW scope, not a re-install |
 | 112 | **A readiness flag outliving the thing it measured** | `capability().ok` false forever after the credential alias is removed by design | It was gated on `auth.alias`. When a binding mechanism is replaced, every derived signal has to move with it — grep for the field, do not assume the callers are obvious |
+
+---
+
+## 43. Re-establishing the application, and Phase 3 closing green
+
+§42 left section D blocked: the workspace was pinned to an application that did
+not exist on the bound instance, under a scope name that instance could not
+issue. This closes it.
+
+### The scope name could not be preserved, and that is a property of the platform
+
+The app-repository escape hatch does not apply — `sys_remote_app` holds no
+`nwforge` entry, so the retired scope cannot be reinstalled from a published
+package. And the name itself is unregistrable here:
+
+```
+glide.appcreator.company.code   on the bound instance   2002152
+vendor prefix in the old scope name                      2196302
+```
+
+**A vendor prefix is issued by the instance, not chosen.** So an application
+"moved" between instances does not keep its scope name — it gets a new one. That
+makes the scope name a one-time migration decision rather than per-instance
+behaviour, and the distinction that governs the whole fix:
+
+| | | |
+|---|---|---|
+| scope **NAME** | canonical project identity | the same on every instance the app installs to — belongs in source |
+| scope **SYS_ID** | instance-local | must never be in source |
+
+### De-pinned as a class
+
+`now.config.json` now carries `{ scope, name }`. The SDK build schema *requires*
+`scopeId` — blanking it fails with `requires property "scopeId"` — so
+`withMaterializedConfig` resolves it, writes it for the seconds the CLI needs
+it, and restores the committed shape in a `finally`. Verified: after a 249-second
+install the file was back to two keys.
+
+`resolveScopeId` looks the id up **by name** on the bound instance and caches it
+under that instance's key, in the same namespace as the rest of the B5 state:
+
+```
+first call, scope absent   { source: 'minted-for-first-install', existsOnInstance: false }
+after the install          { source: 'resolved-live-by-scope-name', existsOnInstance: true }
+```
+
+Minting an id for a record that is about to be created is not trap #89 — nothing
+is being passed off as a researched reference to an existing record; it is what
+`now-sdk init` does locally, and `assertAppBinding` still refuses an ordinary
+install against a scope that does not exist.
+
+Two further pins the sweep exposed, neither in the brief:
+
+- **`workspaces.js` addressed a workspace by scope sys_id**, read from the
+  config pin — so "which workspace owns this sys_id?" was answerable only
+  because the answer was hardcoded. It cannot be answered without naming an
+  instance. Resolution is by name now; `applications.js` keyed the same dead map.
+- **`execution-harness.js` namespaced its `sys_user_preference` sink under the
+  app scope**, coupling a transient row that is created, read and deleted inside
+  one call to the application's identity — so a rename broke the harness. It is
+  now `nowhelpassist.exec_harness`: decoupled, not re-literalled.
+
+Also de-pinned: `app-create.test.js` hardcoded a real vendor prefix while
+labelling it "measured from `glide.appcreator.company.code`", which made an
+offline test read as a live assertion about a value that differs per instance.
+
+### The application, established
+
+```
+sys_app     8e720e9b904541b482628a69bebc91a3
+scope       x_2002152_nwforge
+version     0.0.1
+rollback    https://dev428633.service-now.com/sys_rollback_context.do?sys_id=e067bbd5…
+```
+
+Flow activation 24/25. The one failure — `Resolve Approval Matrix`, *"At least
+one Action Instance is required to publish a subflow"* — is a pre-existing
+defect in that artifact's source and would fail on any instance. It is not
+caused by this work.
+
+### Section D — GREEN
+
+Phase 3 scoped-scratch authoring, end to end on the bound instance:
+
+```
+[  0.0s] dba_preflight
+[  1.4s] dba_source_written
+[  1.4s] dba_building
+[ 11.8s] dba_tier_check
+[ 19.7s] dba_tiers_agree      dev428633.service-now.com
+[ 19.7s] dba_installing
+[343.9s] dba_verifying        ok: true | stage: verified
+```
+
+Read back off the instance, field by field:
+
+| check | result |
+|---|---|
+| table | `x_2002152_nwforge_asset` — `73983b1d7387c390a40ef7303ab8b7f2` |
+| scope held | true — `8e720e9b…`, not demoted to global |
+| fields | 5/5 (string, reference, string+choices, integer, boolean) |
+| choices | 3 asked, 3 stored |
+| ACLs | 2 asked, 2 stored (`[read]`, `[write]`) |
+| web service | **reachable** — a live Table API read succeeded, so `allowWebServiceAccess` took effect |
+| audit | ledger row `instance: https://dev428633.service-now.com` |
+
+### The change record is `sys_update_version`, not `sys_update_xml`
+
+Worth stating because the obvious check returns a confident zero:
+
+```
+sys_update_xml     nameLIKEx_2002152        0 rows
+sys_update_version nameLIKEx_2002152       31 rows  (20 for the table alone)
+```
+
+An **application install writes version records**; `sys_update_xml` is the
+update-set capture mechanism, and artifacts that arrive as application files do
+not pass through it. Checking `sys_update_xml` to confirm an SDK install would
+report "the change never happened" about a change that plainly did.
+
+### A defect this section produced, and the test that caught it
+
+The commit adopting the new identity contained the very `scopeId` it removes.
+`git add -A` ran while a deploy had the file materialised, so the stage captured
+the transient copy. The `finally` was working correctly — the working tree was
+pin-free seconds later — but the commit had already frozen the wrong moment.
+
+The `app-identity` test caught it, and only because it reads the **committed
+blob** via `git show HEAD:…` rather than the working tree. A test reading the
+working tree would have passed or failed depending on whether a deploy happened
+to be running, and would have missed this entirely.
+
+The lesson is not "be careful with `git add`". It is that a tracked file which a
+build legitimately mutates must never be swept up by a bulk stage.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 113 | **A vendor prefix is issued by the instance** | a scope name that worked for months is rejected on the new PDI | `glide.appcreator.company.code` differs per instance. A scope name embeds it, so an application is not portable by name — moving one means a NEW scope. Read the prefix live; never carry one in a constant or a test fixture |
+| 114 | **`sys_update_xml` is empty after a successful SDK app install** | 0 update rows for a table you just watched get created | An app install writes `sys_update_version`, not customer updates — `sys_update_xml` is the update-set path. Checking the wrong table reports "no change" about a change that happened. 0 vs 31 rows, measured |
+| 115 | **A bulk `git add` during a build commits the build's scratch state** | the commit that removes a pin contains the pin | A file the build legitimately rewrites (here `now.config.json`, materialised then restored in a `finally`) is correct on disk for all but a few seconds. Stage it explicitly, and assert the invariant against the COMMITTED blob — a test reading the working tree passes or fails on timing |
