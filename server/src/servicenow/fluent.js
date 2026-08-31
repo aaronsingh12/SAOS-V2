@@ -234,7 +234,79 @@ export async function assertTiersAgree({ probe = true } = {}) {
       + `stale alias — an install would succeed and land the artifacts where the read-back cannot see them.`
     ), { status: 409, detail: { restHost: bound.host, sdkHost: sdk.host, raw: sdk.raw } });
   }
-  return { ok: true, host: bound.host, probed: true };
+  // The host agreeing is necessary and not sufficient: the APPLICATION the
+  // workspace is pinned to must also exist on that host.
+  const app = await assertAppBinding();
+  return { ok: true, host: bound.host, probed: true, scope: app.scope, scopeId: app.scopeId };
+}
+
+/**
+ * The APPLICATION is instance-specific too, and `now.config.json` pins it.
+ *
+ * MEASURED 2026-08-31, and it is why section D could not close. The workspace
+ * is pinned to scope `x_2196302_nwforge` with `scopeId`
+ * c44f3c6c37c24793be9f8b759c7818e4 — a sys_id, which is only meaningful on the
+ * instance that minted it. On the newly bound instance neither exists, so
+ * `now-sdk install` answers:
+ *
+ *   "Unable to install application as application was null"
+ *
+ * and blanking `scopeId` does not help — the build refuses with
+ * `requires property "scopeId"`.
+ *
+ * Worse, the scope name itself may be UNCREATABLE here: the vendor prefix is
+ * issued by the instance, not chosen. `glide.appcreator.company.code` reads
+ * 2002152 on the bound instance against the 2196302 baked into the scope name,
+ * so an application created here would be `x_2002152_…` and could never carry
+ * the pinned name.
+ *
+ * So this refuses before the install with the actual reason, instead of letting
+ * the CLI report a null-pointer-shaped message that names nothing.
+ */
+export async function assertAppBinding() {
+  const bound = boundInstance();
+  let cfg;
+  try {
+    cfg = JSON.parse(await fsp.readFile(path.join(WORKSPACE, 'now.config.json'), 'utf8'));
+  } catch (err) {
+    throw Object.assign(new Error(`The Fluent workspace has no readable now.config.json (${err.message}), so no application can be installed.`), { status: 409 });
+  }
+
+  const rows = await table.query('sys_scope', {
+    query: `scope=${cfg.scope}`, fields: 'sys_id,scope,name', display: 'false', limit: 1,
+  }).catch(() => []);
+
+  if (!rows.length) {
+    let localPrefix = null;
+    try {
+      const p = await table.query('sys_properties', { query: 'name=glide.appcreator.company.code', fields: 'value', display: 'false', limit: 1 });
+      localPrefix = p[0]?.value ?? null;
+    } catch { /* the advice is better with it, still correct without */ }
+    const pinned = /^x_(\d+)_/.exec(cfg.scope || '')?.[1] ?? null;
+    const prefixNote = localPrefix && pinned && localPrefix !== pinned
+      ? ` This instance issues vendor prefix "${localPrefix}", but the scope name carries "${pinned}" — vendor `
+        + `prefixes are issued by the instance, so this scope name cannot be created here. An application created `
+        + `on ${bound.host} would be x_${localPrefix}_<name>.`
+      : '';
+    throw Object.assign(new Error(
+      `REFUSING TO INSTALL: the application "${cfg.scope}" does not exist on the bound instance ${bound.host}. `
+      + `The workspace is pinned to it by now.config.json (scopeId ${cfg.scopeId || 'unset'}), and a sys_id is only `
+      + `meaningful on the instance that minted it.${prefixNote} `
+      + 'Re-establishing this application on the bound instance is a deliberate action — a new scope name and a new '
+      + 'app record — not something an install should do as a side effect.'
+    ), { status: 409, detail: { scope: cfg.scope, scopeId: cfg.scopeId ?? null, boundHost: bound.host, localVendorPrefix: localPrefix } });
+  }
+
+  const onInstance = rows[0].sys_id;
+  if (cfg.scopeId && cfg.scopeId !== onInstance) {
+    throw Object.assign(new Error(
+      `REFUSING TO INSTALL: "${cfg.scope}" exists on ${bound.host} as ${onInstance}, but now.config.json pins `
+      + `scopeId ${cfg.scopeId}. That pin was minted on a different instance; installing against a stale app sys_id `
+      + 'is how artifacts land in the wrong application.'
+    ), { status: 409, detail: { scope: cfg.scope, pinned: cfg.scopeId, onInstance, boundHost: bound.host } });
+  }
+
+  return { ok: true, scope: cfg.scope, scopeId: onInstance, host: bound.host };
 }
 
 /* ------------------------------------------------------------------ *

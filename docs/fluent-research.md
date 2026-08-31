@@ -297,6 +297,17 @@ Constraints that bite (all confirmed in the bundled guides):
 
 ## 8. Phase 1 proof — what is live right now ✅
 
+> ⚠️ **PROVENANCE, ADDED 2026-08-31.** Everything in this section was verified
+> through the SDK tier while it was bound to **dev442675**, which is not the
+> currently bound instance. The artifacts described here are live *there*, and
+> are **not present on the bound instance** — see §41 and §42. They have not
+> been re-verified, and cannot be until the application is re-established on the
+> bound instance under a scope name that instance can issue. Treat every "live
+> right now" claim below as describing the retired PDI. The Table-API
+> measurements in §38–§40 were taken against the currently bound REST host and
+> stand.
+
+
 Built and installed from `server/fluent-workspace`, then read back off the instance:
 
 | Artifact | sys_id | type | active |
@@ -5264,3 +5275,118 @@ dev442675, and deleting them would create a drift instead of removing one.
 | 107 | **Two tiers bound to different instances** | `now-sdk install` reports success with real activation, and the artifact is absent from every read-back | NHA binds to "the instance" twice — `settings.json` for REST, a stored SDK credential alias for the CLI — and nothing keeps them in step. Replace a PDI and update one, and every install lands on the old one, correctly, forever. Neither tier can see this alone: compare the two hostnames before installing, and refuse |
 | 108 | **A Fluent Table must be a named export matching its own name** | `TS213` naming a table you did define | A bare `Table({...})` compiles as far as the type checker and is rejected by the build. `export const <table_name> = Table({...})`. Cheap to hit, free to catch — the offline build is the reason it never reached an instance |
 | 109 | **A validator regex that quietly requires two characters** | three unrelated negative tests all reporting "not a valid column name" | `^[a-z][a-z0-9_]*[a-z0-9]$` has no single-character match. The wrong error did not just fire — it MASKED the real ones, so the spec's actual problems were invisible. Make the tail optional, and check that each negative case reports the cause you meant to test |
+
+---
+
+## 42. The binding fix — one UI-owned source, and what it uncovered
+
+§41 found that NowHelpAssist bound to "the instance" twice and the two had
+drifted. The fix is not to repoint the alias; that repairs one day and rebuilds
+the same trap for the next PDI swap. The principle now enforced:
+
+> Nothing instance-specific is hardcoded, in code, in static config, or in a
+> standing credential alias. The bound instance is whatever the UI specifies.
+
+### The SDK tier no longer has a binding of its own
+
+MEASURED: the SDK's CI environment variables override a stored alias completely.
+Proven with a discriminator — a table present on the alias host and absent on
+the UI host — same command, twice:
+
+```
+alias path (no env):  "Attempting to log into instance https://dev442675…"   1 record
+CI env path:          "Running in CI mode, using instance https://dev428633…" 0 records
+```
+
+`runSdk` now derives `SN_SDK_*` from the UI config on every invocation. That
+echo line is also the backstop: **the CLI states which instance it actually
+used**, so `assertTiersAgree` compares what the SDK really targeted against what
+the UI specified, rather than trusting that the env reached the child process.
+With one source feeding both tiers the guard should never fire — its job is now
+to catch a derivation bug, and it fails closed on unbound, unknown or mismatched.
+
+### The three stale hardcodes, purged with a read-back each
+
+| what | before | after |
+|---|---|---|
+| SDK credential alias `snada-pdi` | default, → dev442675 | **deleted** — `auth --list` reports "No credentials found", and the SDK still works from derived config alone |
+| `fluent-state.json` rollback URL | a live dev442675 `sys_rollback_context` link | **purged**; state is namespaced by host, legacy entry migrated by recovering its owner from its own URL |
+| instance hostnames in code/static config | — | **none**; every remaining occurrence is a provenance comment |
+
+Per-instance state can no longer act cross-instance: schema and DBA metadata
+caches register for flush on switch, `fluent-state` reads for the wrong host
+return nothing, and ledger reads filter on `instance` — a column every row
+already carried and nothing had ever filtered on, so a sys_id minted on one
+instance could be read back while bound to another.
+
+`assertTiersAgree` is hoisted into `fluent.js` and now guards `deploy()` too —
+the older and busier path, and the one that was unguarded.
+
+### A wrong claim of mine, corrected
+
+Phase 0 reported "`security_admin` does not exist on this instance", concluded
+from a REST query returning zero rows. **That was wrong.** The role exists; REST
+cannot see it. Gate 0 D-2/H6 had already established this and
+`elevation-gate.js` says so in terms: *"a REST-0-rows result must never be
+interpreted as 'not assigned' — that interpretation would refuse every
+legitimate elevation."* The DBA context service made exactly that
+interpretation. It now reports `determinable: false, held: null` and defers to
+the platform's own authorization result. §38's item 4 is corrected in place.
+
+`capability()` also had to change: readiness was gated on `auth.alias`, which is
+now always null by design and would have reported the SDK as permanently broken.
+
+### Section D could not close, and the reason is structural
+
+The re-run got further than before — build clean, `assertTiersAgree` **passed**
+at 21s with the SDK confirming dev428633 — and then the install refused:
+
+```
+[now-sdk] ERROR: Unable to install application as application was null
+```
+
+`now.config.json` pins the workspace to scope `x_2196302_nwforge` with
+`scopeId c44f3c6c37c24793be9f8b759c7818e4`. **Neither exists on the bound
+instance.** A sys_id is only meaningful on the instance that minted it — this is
+a *fourth* instance-specific pin, in static config, of exactly the class this
+work exists to remove. Blanking it does not help: the build refuses with
+`requires property "scopeId"`.
+
+And the scope name itself is **uncreatable here**. The vendor prefix is issued
+by the instance, not chosen:
+
+```
+glide.appcreator.company.code  on dev428633  =  2002152
+scope name pinned in the workspace           =  x_2196302_nwforge
+```
+
+An application created on the bound instance would be `x_2002152_…`. Corroborated
+independently — the only `sys_app` on dev428633 is an unrelated `aaron`, and a
+`sys_metadata_customization` row references `/global/x-2002152-aaron/…`.
+
+So closing D requires **re-establishing the application on the bound instance
+under a new scope name**, which is the follow-up this run was explicitly told
+not to fold in. `assertAppBinding()` now refuses before the install with that
+reason and the local vendor prefix named, instead of letting the CLI report a
+null-pointer-shaped message:
+
+> REFUSING TO INSTALL: the application "x_2196302_nwforge" does not exist on the
+> bound instance dev428633.service-now.com. … This instance issues vendor prefix
+> "2002152", but the scope name carries "2196302" — vendor prefixes are issued by
+> the instance, so this scope name cannot be created here. … Re-establishing this
+> application on the bound instance is a deliberate action — a new scope name and
+> a new app record — not something an install should do as a side effect.
+
+**Status: D is BLOCKED, not failed.** The authoring pipeline is proven through
+spec validation, codegen, offline build, the tier guard and the app guard. The
+one unproven step remains the install-and-read-back, and it is unprovable until
+the application exists on the bound instance. E1 and E2 are gated behind D and
+were not started.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 110 | **A `scopeId` in static config is an instance-specific pin** | `Unable to install application as application was null`, on a workspace that builds cleanly | `now.config.json` carries a sys_id, and a sys_id means nothing on another instance. Blanking it fails the build (`requires property "scopeId"`), so it cannot simply be made optional — it has to be resolved against the bound instance, and the app has to exist there |
+| 111 | **A vendor prefix is issued by the instance, not chosen** | a scope name that worked for months cannot be created on the new PDI | `glide.appcreator.company.code` differs per instance (2196302 vs 2002152 here). A scope name embeds it, so an application is not portable between instances by name — moving one means a NEW scope, not a re-install |
+| 112 | **A readiness flag outliving the thing it measured** | `capability().ok` false forever after the credential alias is removed by design | It was gated on `auth.alias`. When a binding mechanism is replaced, every derived signal has to move with it — grep for the field, do not assume the callers are obvious |

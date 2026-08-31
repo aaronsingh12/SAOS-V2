@@ -13,8 +13,15 @@ function CapabilityBanner({ cap }) {
     return (
       <div className="note" style={{ borderLeftColor: 'var(--verdigris)' }}>
         <b>Live flow authoring ready.</b>{' '}
-        ServiceNow SDK {cap.cli?.version} · credential <span className="mono">{cap.auth?.alias}</span>
-        {cap.auth?.host ? <> → <span className="mono">{cap.auth.host}</span></> : null}
+        {/*
+          The SDK no longer has a credential alias of its own — its binding is
+          derived per invocation from the connection set in Settings, which is
+          why there is one host here rather than a credential name and a host
+          that could disagree. Rendering `cap.auth.alias` now would print an
+          empty span forever.
+        */}
+        ServiceNow SDK {cap.cli?.version} · deploys to{' '}
+        <span className="mono">{cap.auth?.host || '(no instance bound)'}</span>
         {' '}· scope <span className="mono">{cap.workspace?.scope}</span>
         {cap.auth?.matchesNowHelpAssistInstance === false && (
           <div style={{ marginTop: 6, color: 'var(--amber, #b8860b)' }}>
