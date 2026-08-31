@@ -4841,3 +4841,133 @@ hit the ceiling unintentionally.
 | 96 | **One question, four different shapes of "no"** | `sys_index` 403, `sys_index_ii` 400, `v_db_index` 200-with-zero-rows, `sys_package` 403 | A 403 on a metadata table is an API-level ACL, not a credential problem, and no credential fixes it; a readable view that is always empty is worse, because it looks like an answer. Record reachability per table and route to the server-side path instead of retrying REST |
 | 97 | **Delete Recovery active + Restore Deleted Records inactive** | deletes are captured in `sys_delete_recovery` marked "Ready for Recovery", and nothing on the instance can restore them | Recoverability is three-state. A boolean must round this either to "7-day window" (nothing can restore it) or to "not recoverable" (the data is captured and one plugin away). Say which of the two halves is missing |
 | 98 | **Rollback retention is per-category** | "contexts purge after 10 days", quoted at every change | 10 is `scripts_bg` only: app_install 15, plugin 15, redact 3, inst_preview 1. Read `glide.rollback.expiration_days_*` and quote the row that matches the operation |
+
+---
+
+## 39. Database Administration — Phase 1, Schema Intelligence
+
+Thirteen read-only tools over the metadata tables. It builds on `schema.js`
+rather than beside it — that module already walks `super_class` and merges the
+dictionary across the chain, and a second schema reader would be two readers
+that can disagree. What Phase 1 adds is the DBA half: origin tables, overrides,
+inbound references, classification, relationships, indexes, and the derived map.
+
+### Acceptance, live on dev428633
+
+The runbook's own examples, run against the instance:
+
+| question | answer |
+|---|---|
+| What does `caller_id` reference? | `sys_user`, display field `name`, no qualifier in effect |
+| Show all fields referencing `sys_user` | **3,999** inbound reference fields, not truncated |
+| Where does `incident.number` actually come from? | origin `task` — inherited, `string`, max length 40 |
+| Resolve `INC0000060` | `incident` / `1c741bd70b2322007518478d83673af3` |
+| Classify `incident` | `core-ootb`, uncustomised, "not-directly" safe to modify |
+| Classify a `u_` table | `custom-in-scope`, safe to modify: yes |
+| Schema map for `incident`, depth 1 | 43 nodes, 201 edges (6 extends, 195 reference) |
+| `incident.state` choices | 6, defined on `incident` |
+| Dot-walk `caller_id.department.name` | valid, 3 hops, resolves to `cmn_department.name` |
+
+### Three measurements that changed the implementation
+
+**`sys_dictionary.reference` holds the table NAME, not a sys_id.** The raw cell
+is `{value: "sys_user", display_value: "User"}`. So "every field referencing
+sys_user" is one query on `reference=sys_user` rather than a lookup and then a
+query.
+
+**`super_class` holds a sys_id.** Walking UP can dot-walk `super_class.name`;
+walking DOWN needs the parent's sys_id. `task` has 47 direct children.
+
+**`sys_dictionary_override` values are inert without their flags.** Each
+attribute has both a value and a `<attr>_override` boolean, and real rows carry
+`mandatory: "false"` / `read_only: "false"` with every flag false — a record
+that overrides nothing. Reading the values alone reports configuration that is
+not in effect, so `shapeOverride` returns only flagged attributes and counts the
+rest as `inertOverrideRows`.
+
+### `dba.listIndexes` is the one Layer 1 tool that cannot be completed
+
+It looked like the easiest. Every candidate source was probed, server-side where
+REST refused:
+
+| source | result |
+|---|---|
+| `sys_index` over REST | 403 `Failed API level ACL Validation` |
+| `sys_index` server-side | readable — and **33 rows instance-wide**, none for `incident`, `task` or `sys_user` |
+| `sys_index_ii` | 400 Invalid table — absent |
+| `v_db_index` | 0 rows: REST and server-side, filtered and unfiltered |
+| `v_index_creator` | 0 rows server-side |
+| `GlideTableDescriptor('incident').getIndexes()` | `undefined` — no such method |
+
+`sys_index` extends `sys_metadata`: it is a table of index **definition
+records** (the 33 are plugin-shipped CMDB ones), not a catalogue of the physical
+indexes the platform maintains. Nothing reachable on this instance enumerates
+those.
+
+Every table has at least a primary key, so `count: 0` would be a confidently
+wrong answer indistinguishable from a real empty. The tool therefore never
+claims completeness: it returns `complete: false` always, and on an empty result
+returns a `zeroMeans` field saying in words that this is "no index DEFINITION
+RECORD", not "no indexes", and pointing at System Definition > Database Indexes.
+Verified both ways — `incident` returns 0 with the disclaimer, and
+`cmdb_ci_endpoint_app` returns its 3 real definition records with `zeroMeans:
+null`.
+
+### Two defects the guards caught in their own author
+
+Both were written into this module and both failed loudly rather than silently,
+which is the entire argument for the Phase 0 guards:
+
+1. `sys_number.maximum` does not exist; the column is `maximum_digits`.
+   `assertFieldsHonoured` threw a 502 naming the column. Without it, `maximum`
+   would have been `undefined` on every auto-number report — a field-shaped
+   nothing.
+
+2. `sys_relationship` uses `apply_to` / `query_from`, **not** `applies_to` /
+   `queries_from`, which is what the plural label suggests and what was written
+   first. This one is worse than a wrong field list: an encoded query on an
+   unknown field is silently DROPPED (trap #2), so
+   `applies_toIN…^ORqueries_fromIN…` degrades to *no condition at all* and would
+   have returned every relationship on the instance as though each applied to
+   the table asked about. Caught by re-reading the measured column list, and now
+   held by the field guard.
+
+### A third defect, found by running it: the map fanned out instance-wide scans
+
+`generateSchemaMap` first called `getTable` + `getReferences` per node. Both are
+correct and both are catastrophic here: `getReferences` runs an instance-wide
+inbound scan (`sys_user` alone is 3,999 rows over four pages), and at depth 1
+`incident` has 24 outbound targets. That is ~25 full-instance scans for a graph
+that needs none of them, and it ran past two minutes without finishing.
+
+A map edge only ever needs OUTBOUND references, which come from the node's own
+chain. Classification is now read once, for the root. With `tableRow` and
+`chainDictionary` memoised, depth 1 on `incident` returns 43 nodes and 201 edges
+well inside the timeout.
+
+### Cost
+
+Tool schemas grew from **11,759 to 13,732 estimated tokens** (51 → 64 tools),
+about 152 tokens per new tool. That is a 17% rise in fixed overhead, which
+matters on the constrained model this project is pinned to — descriptions were
+written tight for that reason, keeping only the load-bearing warnings
+(`listIndexes` partiality, `resolveIdentifier` refusing a bare sys_id,
+`getReferences` truncation).
+
+### What ships
+
+`server/src/servicenow/dba-schema.js`, thirteen read-only tools
+(`dba_get_table`, `dba_list_fields`, `dba_get_field`, `dba_get_hierarchy`,
+`dba_get_references`, `dba_resolve_reference`, `dba_dot_walk`, `dba_classify`,
+`dba_resolve_identifier`, `dba_list_choices`, `dba_get_relationships`,
+`dba_list_indexes`, `dba_schema_map`), and 8 offline tests over the two pure
+verdict functions. `npm test` — **999 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 99 | **`sys_index` is a metadata table, not an index catalogue** | `listIndexes('incident')` returns zero and looks like an answer | It extends `sys_metadata` and holds only explicitly-defined index records — 33 instance-wide, none for the common tables. No reachable source enumerates physical indexes (`v_db_index`/`v_index_creator` are empty even server-side, `GlideTableDescriptor.getIndexes` does not exist). Every table has a primary key, so a zero here can never be reported as "unindexed" |
+| 100 | **`sys_relationship` is `apply_to`/`query_from`, singular** | a relationship query that returns every relationship on the instance | The plural reading is the natural one and it is wrong. An encoded query on an unknown field is DROPPED, not rejected (trap #2), so the wrong name widens the query to everything instead of narrowing it to nothing — which reads like a table with a great many relationships |
+| 101 | **A `sys_dictionary_override` value is inert without its `_override` flag** | a child table appears to make a field mandatory, and the form disagrees | Every attribute is a pair: `mandatory` and `mandatory_override`. Rows exist carrying values with every flag false. Report only flagged attributes; count the rest as inert |
+| 102 | **A graph walk that calls a scan per node** | a schema map at depth 1 that never returns | `getReferences` is instance-wide (3,999 rows for `sys_user`). An edge needs only the node's own outbound refs. Check what a traversal actually reads before letting it fan out — 24 targets turned one cheap question into 25 full scans |

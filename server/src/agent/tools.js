@@ -16,6 +16,21 @@ import { whoReallyDid, impersonationAuditForSession, impersonationAuditForTarget
 import { writeAsCurrentIdentity } from './impersonated-write.js';
 import { getDbaContext } from '../servicenow/dba-context.js';
 import { metaQuery } from '../servicenow/dba-metadata.js';
+import {
+  getTable as dbaGetTable,
+  listFields as dbaListFields,
+  getField as dbaGetField,
+  getHierarchy as dbaGetHierarchy,
+  getReferences as dbaGetReferences,
+  resolveReference as dbaResolveReference,
+  dotWalk as dbaDotWalk,
+  classify as dbaClassify,
+  resolveIdentifier as dbaResolveIdentifier,
+  listChoices as dbaListChoices,
+  getRelationships as dbaGetRelationships,
+  listIndexes as dbaListIndexes,
+  generateSchemaMap as dbaSchemaMap,
+} from '../servicenow/dba-schema.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -1285,6 +1300,180 @@ export const TOOLS = [
         rows,
       };
     },
+  },
+
+  /* ── DBA Layer 1 — Schema Intelligence. Read-only, all of it. ───────────── */
+  {
+    name: 'dba_get_table',
+    description:
+      'Describe a table: label, what it extends, its full extends chain, whether it is extendable, its direct '
+      + 'children, scope, auto-numbering prefix, and a core/custom classification. A table that does not exist '
+      + 'says so explicitly — treat that as absent, not as possibly-renamed.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: { table: { type: 'string' } }, required: ['table'] },
+    execute: ({ table: t }) => dbaGetTable(t),
+  },
+  {
+    name: 'dba_list_fields',
+    description:
+      'Every column on a table with its dictionary detail: type, reference target, qualifier, max length, '
+      + 'mandatory/read-only/display/unique flags, default, and — the DBA-specific part — which table in the '
+      + 'inheritance chain actually DEFINES each one. Set include_inherited:false for only the columns this table '
+      + 'adds itself. Says if the scan was truncated; if it was, absence proves nothing.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, include_inherited: { type: 'boolean', description: 'Default true.' } },
+      required: ['table'],
+    },
+    execute: ({ table: t, include_inherited }) => dbaListFields(t, { includeInherited: include_inherited !== false }),
+  },
+  {
+    name: 'dba_get_field',
+    description:
+      'One column in full, and the answer to "where does this field actually come from?" — the ORIGIN table is the '
+      + 'highest ancestor whose dictionary defines it. Also lists child-table overrides, reporting only attributes '
+      + 'whose _override flag is actually set: an override row carrying values with no flag set changes nothing.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, element: { type: 'string', description: 'The column name.' } },
+      required: ['table', 'element'],
+    },
+    execute: ({ table: t, element }) => dbaGetField(t, element),
+  },
+  {
+    name: 'dba_get_hierarchy',
+    description: 'The table tree: the extends chain upward to the root, and children downward to a stated depth. '
+      + 'Says when the tree was cut, so a missing child is never mistaken for a childless table.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, depth: { type: 'number', description: 'How many levels of children. Default 2.' } },
+      required: ['table'],
+    },
+    execute: ({ table: t, depth }) => dbaGetHierarchy(t, { depth: Math.min(Math.max(Number(depth) || 2, 1), 4) }),
+  },
+  {
+    name: 'dba_get_references',
+    description:
+      'Both directions of the implicit relationships: OUTBOUND (reference fields on this table, and what they point '
+      + 'at) and INBOUND (every field anywhere on the instance that points here). Use this for "show all fields '
+      + 'referencing sys_user". The inbound scan is instance-wide and reports whether it was truncated — if it was, '
+      + 'the count is a floor, not a total.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: { table: { type: 'string' } }, required: ['table'] },
+    execute: ({ table: t }) => dbaGetReferences(t),
+  },
+  {
+    name: 'dba_resolve_reference',
+    description:
+      'For one reference field: the table it points at, that table\'s display field, and the qualifier with its kind '
+      + '(simple / dynamic / advanced). Reports no qualifier when none is set — use_reference_qualifier reads '
+      + '"simple" on many fields that have none, so "simple" alone does not mean one is in effect.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, element: { type: 'string' } },
+      required: ['table', 'element'],
+    },
+    execute: ({ table: t, element }) => dbaResolveReference(t, element),
+  },
+  {
+    name: 'dba_dot_walk',
+    description:
+      'Validate a dot-walk path hop by hop, e.g. caller_id.department.name from incident. Returns each hop with its '
+      + 'type, or names exactly which hop failed and why (absent field, or a non-reference the path cannot continue '
+      + 'through). Use before putting a dotted field in a query: an encoded query silently DROPS a condition on an '
+      + 'unknown dot-walk and then matches everything.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string', description: 'The starting table.' }, path: { type: 'string', description: 'Dotted path, e.g. caller_id.department.name' } },
+      required: ['table', 'path'],
+    },
+    execute: ({ table: t, path }) => dbaDotWalk(t, path),
+  },
+  {
+    name: 'dba_classify',
+    description:
+      'Is this table core-ootb, ootb-customized, custom-in-scope or custom-global — and is it safe to modify? '
+      + 'Combines three independent signals (name prefix, sys_metadata_customization, sys_update_version) because '
+      + 'each alone is wrong somewhere, and returns the evidence for each. Platform tables come back "not-directly": '
+      + 'extend them through the table-augments pattern, never by editing the base object.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: { table: { type: 'string' } }, required: ['table'] },
+    execute: ({ table: t }) => dbaClassify(t),
+  },
+  {
+    name: 'dba_resolve_identifier',
+    description:
+      'Turn a human identifier into {table, sys_id, display}: a prefixed number like INC0012345 (resolved through '
+      + 'the instance\'s own sys_number prefixes, not a guessed mapping), a sys_id, or a display value. A bare '
+      + 'sys_id CANNOT be resolved without a table — nothing on the instance indexes sys_id to table — and it says '
+      + 'so rather than guessing. Ambiguous matches are refused, not picked.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { value: { type: 'string' }, table: { type: 'string', description: 'Required for a bare sys_id or display value.' } },
+      required: ['value'],
+    },
+    execute: ({ value, table: t }) => dbaResolveIdentifier(value, { table: t || null }),
+  },
+  {
+    name: 'dba_list_choices',
+    description:
+      'The sys_choice entries for a field, resolved the way the platform resolves them: the most-derived table in '
+      + 'the chain that defines a set wins, and it says which table that was. Reports when a field\'s values come '
+      + 'from a choice TABLE instead of sys_choice rather than returning an empty list.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, element: { type: 'string' } },
+      required: ['table', 'element'],
+    },
+    execute: ({ table: t, element }) => dbaListChoices(t, element),
+  },
+  {
+    name: 'dba_get_relationships',
+    description:
+      'Explicit relationships (sys_relationship records, for related lists no reference field can express) plus the '
+      + 'implicit ones (reference fields in both directions). Most tables have zero explicit relationships and many '
+      + 'implicit ones — that is normal, not a gap.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: { table: { type: 'string' } }, required: ['table'] },
+    execute: ({ table: t }) => dbaGetRelationships(t),
+  },
+  {
+    name: 'dba_list_indexes',
+    description:
+      'Index DEFINITION RECORDS for a table, read from sys_index through a server-side script (sys_index is 403 '
+      + 'over REST here). ALWAYS PARTIAL, and it says so: sys_index holds only explicitly-defined index records — '
+      + '33 instance-wide when measured, none for incident, task or sys_user — and no reachable source on this '
+      + 'instance enumerates a table\'s physical indexes. A zero result means "no index definition record", NEVER '
+      + '"this table has no indexes". Do not report a table as unindexed from this. Costs a few seconds.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, include_inherited: { type: 'boolean', description: 'Also scan ancestor tables. Default false.' } },
+      required: ['table'],
+    },
+    execute: ({ table: t, include_inherited }) => dbaListIndexes(t, { includeInherited: Boolean(include_inherited) }),
+  },
+  {
+    name: 'dba_schema_map',
+    description:
+      'A graph for rendering: nodes are tables, edges are extends / reference / relationship. DERIVED from '
+      + 'sys_db_object, sys_dictionary and sys_relationship — ServiceNow exposes no schema-map API, so the graph is '
+      + 'exactly as complete as the depth requested and nothing authoritative exists to check it against. Depth 1 on '
+      + 'incident is ~43 nodes and ~200 edges; raise depth carefully.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { table: { type: 'string' }, depth: { type: 'number', description: 'Hops to follow. Default 1. 2 is already large.' } },
+      required: ['table'],
+    },
+    execute: ({ table: t, depth }) => dbaSchemaMap(t, { depth: Math.min(Math.max(Number(depth) || 1, 0), 2) }),
   },
 ];
 
