@@ -243,22 +243,22 @@ export async function assertTiersAgree({ probe = true } = {}) {
 /**
  * The APPLICATION is instance-specific too, and `now.config.json` pins it.
  *
- * MEASURED 2026-08-31, and it is why section D could not close. The workspace
- * is pinned to scope `x_2196302_nwforge` with `scopeId`
- * c44f3c6c37c24793be9f8b759c7818e4 — a sys_id, which is only meaningful on the
- * instance that minted it. On the newly bound instance neither exists, so
- * `now-sdk install` answers:
+ * MEASURED 2026-08-31, and it is why section D could not close on the first
+ * attempt. The workspace was pinned to a scope name minted under the RETIRED
+ * PDI's vendor prefix, together with that instance's scope sys_id — and a
+ * sys_id is only meaningful on the instance that minted it. On the newly bound
+ * instance neither existed, so `now-sdk install` answered:
  *
  *   "Unable to install application as application was null"
  *
  * and blanking `scopeId` does not help — the build refuses with
  * `requires property "scopeId"`.
  *
- * Worse, the scope name itself may be UNCREATABLE here: the vendor prefix is
- * issued by the instance, not chosen. `glide.appcreator.company.code` reads
- * 2002152 on the bound instance against the 2196302 baked into the scope name,
- * so an application created here would be `x_2002152_…` and could never carry
- * the pinned name.
+ * Worse, the scope NAME itself was uncreatable here: the vendor prefix is
+ * issued by the instance, not chosen (`glide.appcreator.company.code`), so the
+ * old name could never be registered on this PDI. The project has since adopted
+ * the instance-issued name as its canonical identity, and the scope sys_id is
+ * no longer pinned at all — see readAppIdentity/resolveScopeId above.
  *
  * So this refuses before the install with the actual reason, instead of letting
  * the CLI report a null-pointer-shaped message that names nothing.
@@ -307,6 +307,90 @@ export async function assertAppBinding() {
   }
 
   return { ok: true, scope: cfg.scope, scopeId: onInstance, host: bound.host };
+}
+
+/* ------------------------------------------------------------------ *
+ * Application identity: the NAME is source, the SYS_ID is instance-local
+ * ------------------------------------------------------------------ */
+
+const APP_CONFIG = path.join(WORKSPACE, 'now.config.json');
+
+/**
+ * THE DISTINCTION THAT GOVERNS THIS FILE.
+ *
+ *   scope NAME   canonical project identity. The same on every instance the app
+ *                installs to, and legitimately fixed in source.
+ *   scope SYS_ID instance-local. A sys_id means nothing on an instance that did
+ *                not mint it, so pinning one in static config is the "fourth
+ *                pin" that blocked section D — removed here as a CLASS, not
+ *                just for one host.
+ *
+ * `now.config.json` in git therefore carries `{ scope, name }` and no sys_id.
+ * The SDK's build schema requires `scopeId` (blanking it fails with `requires
+ * property "scopeId"`), so it is MATERIALISED around a build/install and the
+ * committed shape is restored afterwards — the pin exists for the seconds the
+ * CLI needs it and never in source.
+ */
+export async function readAppIdentity() {
+  const cfg = JSON.parse(await fsp.readFile(APP_CONFIG, 'utf8'));
+  if (!cfg.scope) throw Object.assign(new Error('now.config.json names no scope; the workspace has no application identity.'), { status: 409 });
+  return { scope: cfg.scope, name: cfg.name || cfg.scope };
+}
+
+/**
+ * The scope's sys_id ON THE BOUND INSTANCE, resolved by NAME.
+ *
+ * Cached per instance, namespaced exactly like the rest of the B5 state, so a
+ * switch cannot serve one instance's app id to another.
+ *
+ * When the scope does not exist on the bound instance a fresh sys_id is MINTED
+ * and cached. That is not trap #89 — nothing is being passed off as a
+ * researched reference to an existing record. It is the id the application will
+ * be CREATED with by `now-sdk install`, exactly as `now-sdk init` mints one
+ * locally, and `assertAppBinding` still refuses to install against a scope that
+ * is absent unless the caller is deliberately establishing it.
+ */
+export async function resolveScopeId(scopeName, { refresh = false } = {}) {
+  const bound = boundInstance();
+  if (!bound.host) throw Object.assign(new Error('No instance is bound, so the application scope cannot be resolved.'), { status: 409 });
+
+  const cached = readInstanceState(bound.host).scopeIds?.[scopeName];
+  if (cached && !refresh) return { scopeId: cached, source: 'cached-per-instance', existsOnInstance: true };
+
+  const rows = await table.query('sys_scope', {
+    query: `scope=${scopeName}`, fields: 'sys_id,scope,name', display: 'false', limit: 1,
+  }).catch(() => []);
+
+  if (rows.length) {
+    const scopeId = rows[0].sys_id;
+    const prev = readInstanceState(bound.host).scopeIds || {};
+    writeInstanceState(bound.host, { scopeIds: { ...prev, [scopeName]: scopeId } });
+    return { scopeId, source: 'resolved-live-by-scope-name', existsOnInstance: true };
+  }
+
+  const minted = crypto.randomUUID().replace(/-/g, '');
+  const prev = readInstanceState(bound.host).scopeIds || {};
+  writeInstanceState(bound.host, { scopeIds: { ...prev, [scopeName]: minted } });
+  return { scopeId: minted, source: 'minted-for-first-install', existsOnInstance: false };
+}
+
+/**
+ * Run a job with `now.config.json` temporarily carrying the resolved scopeId.
+ *
+ * `finally` restores the committed shape whatever happens, so a crashed build
+ * cannot leave an instance-local sys_id sitting in a tracked file.
+ */
+export async function withMaterializedConfig(job) {
+  const identity = await readAppIdentity();
+  const { scopeId, source } = await resolveScopeId(identity.scope);
+  const committed = await fsp.readFile(APP_CONFIG, 'utf8');
+  await fsp.writeFile(APP_CONFIG, `${JSON.stringify({ ...identity, scopeId }, null, 4)}
+`, 'utf8');
+  try {
+    return await job({ ...identity, scopeId, scopeIdSource: source });
+  } finally {
+    await fsp.writeFile(APP_CONFIG, committed, 'utf8');
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -902,7 +986,7 @@ export async function capability({ deep = false, force = false } = {}) {
     workspace.error = `now.config.json unreadable: ${err.message}`;
     fixes.push({
       problem: 'Fluent workspace missing',
-      command: 'now-sdk init --appName "NowForge Flows" --packageName nowforge-flows --scopeName x_2196302_nwforge --template base',
+      command: 'now-sdk init --appName "NowForge Flows" --packageName nowforge-flows --scopeName x_2002152_nwforge --template base',
     });
   }
   workspace.sources = await listSourceFiles();
@@ -1242,7 +1326,9 @@ function extractDiagnostics(result) {
 }
 
 async function build() {
-  return serialize(() => runSdk(['build'], BUILD_TIMEOUT_MS));
+  // The scopeId the CLI's schema demands exists only for the duration of the
+  // call; the committed config carries the scope NAME and nothing instance-local.
+  return serialize(() => withMaterializedConfig(() => runSdk(['build'], BUILD_TIMEOUT_MS)));
 }
 
 /* ------------------------------------------------------------------ *
@@ -1266,7 +1352,7 @@ export async function buildWorkspace() {
 
 /** Install the workspace. Serialized against every other build/install. */
 export async function installWorkspace() {
-  return serialize(() => runSdk(['install'], INSTALL_TIMEOUT_MS));
+  return serialize(() => withMaterializedConfig(() => runSdk(['install'], INSTALL_TIMEOUT_MS)));
 }
 
 export { extractDiagnostics };
@@ -1626,7 +1712,7 @@ export async function deploy(name, emit = () => {}) {
   emit({ type: 'binding_ok', host: binding.host });
 
   emit({ type: 'deploying' });
-  const res = await serialize(() => runSdk(['install'], INSTALL_TIMEOUT_MS));
+  const res = await serialize(() => withMaterializedConfig(() => runSdk(['install'], INSTALL_TIMEOUT_MS)));
   const parsed = parseInstall(res);
 
   /*

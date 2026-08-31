@@ -422,7 +422,7 @@ export async function resolveRoleNames(roleNames, { emit, timeoutMs, _run = runC
  * ------------------------------------------------------------------ */
 
 /**
- * Resolve a scope the caller NAMED (`x_2196302_nwforge`, or `global`) to the
+ * Resolve a scope the caller NAMED (`x_2002152_nwforge`, or `global`) to the
  * value `sys_scope` actually holds. Returns null when it does not resolve —
  * which is a refusal, never a fallback to global.
  */
@@ -447,7 +447,8 @@ export async function resolveScopeRef(ref, { _query = table.query } = {}) {
  * R1 cannot be simplified to same-scope-only.
  *
  * The `sys_db_object` cross-check is load-bearing, not defensive. Gate S measured
- * `x_2196302_nwforge` owning 73 scoped dictionary columns of which ZERO belonged
+ * this project's application scope (as it was then named, on the retired PDI —
+ * see docs/fluent-research.md §42) owning 73 scoped dictionary columns of which ZERO belonged
  * to a table that exists in `sys_db_object` — they were all on `var__m_*`
  * flow-variable pseudo-tables. Counting those would have "found" a legal target
  * that cannot be written to.

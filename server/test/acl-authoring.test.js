@@ -205,8 +205,8 @@ test('INVARIANT — every ACL payload asserts sys_scope, so a silent rewrite ren
   assert.equal(create.sys_scope, GLOBAL_SCOPE, 'create asserts scope');
   assert.equal(update.sys_scope, GLOBAL_SCOPE, 'update asserts scope too');
   // WI-ACL-2: and the asserted value follows the DERIVED scope, not a constant.
-  const scoped = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', scopeSysId: 'c44f3c6c37c24793be9f8b759c7818e4' });
-  assert.equal(scoped.sys_scope, 'c44f3c6c37c24793be9f8b759c7818e4');
+  const scoped = composeAclPayload(spec, { operationSysId: 'read', typeSysId: 'record', scopeSysId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+  assert.equal(scoped.sys_scope, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
   /*
    * Gate A B measured this exactly: B1 omitted sys_scope and rendered a clean

@@ -16,7 +16,17 @@ import {
   validateScopeName, suggestScopeName, scopeSuffixFrom, studioSteps, MAX_SCOPE_LENGTH,
 } from '../src/servicenow/app-create.js';
 
-const PREFIX = 'x_2196302_';   // measured from glide.appcreator.company.code
+/*
+ * A FIXTURE, not a measurement.
+ *
+ * This read "measured from glide.appcreator.company.code", which made an
+ * offline test look like it was asserting something about a live instance. The
+ * vendor prefix is ISSUED BY THE INSTANCE and differs between them — the PDI
+ * this project moved to issues a different one — so pinning a real prefix in a
+ * test was itself the class of hardcode this work removes. The value below is
+ * arbitrary and only has to be shaped like a prefix.
+ */
+const PREFIX = 'x_9999999_';
 
 /* ------------------------------------------------------------------ *
  * The guard
@@ -68,12 +78,12 @@ test('the guard sits inside create_record, not merely beside it', async () => {
 test('a scope without the instance vendor prefix is rejected, and says why it matters', () => {
   const r = validateScopeName('x_acme_fleet', PREFIX);
   assert.equal(r.ok, false);
-  assert.match(r.errors[0], /must start with this instance's vendor prefix "x_2196302_"/);
+  assert.match(r.errors[0], new RegExp(`must start with this instance's vendor prefix "${PREFIX}"`));
   assert.match(r.errors[0], /only a WARNING at install time/, 'the reason this is checked early must be stated');
 });
 
 test('a scope over 18 characters is rejected with the arithmetic shown', () => {
-  const r = validateScopeName('x_2196302_way_too_long', PREFIX);
+  const r = validateScopeName(`${PREFIX}way_too_long`, PREFIX);
   assert.equal(r.ok, false);
   assert.match(r.errors[0], /is 22 characters; the platform maximum is 18/);
   assert.match(r.errors[0], /leaves 8 characters/);
@@ -87,7 +97,7 @@ test('exactly 18 characters is legal — the limit is inclusive', () => {
 });
 
 test('illegal characters are rejected', () => {
-  for (const bad of ['x_2196302_Fleet', 'x_2196302_fl-et', 'x_2196302_fl et']) {
+  for (const bad of [`${PREFIX}Fleet`, `${PREFIX}fl-et`, `${PREFIX}fl et`]) {
     const r = validateScopeName(bad, PREFIX);
     assert.equal(r.ok, false, `${bad} was accepted`);
   }
@@ -103,13 +113,13 @@ test('an empty scope name is rejected rather than defaulted', () => {
  * ------------------------------------------------------------------ */
 
 test('a name that fits is used whole', () => {
-  assert.equal(suggestScopeName('Fleet', PREFIX), 'x_2196302_fleet');
+  assert.equal(suggestScopeName('Fleet', PREFIX), `${PREFIX}fleet`);
 });
 
 test('a long name falls back to its first word before it truncates', () => {
   // "fleet_ma" is a name nobody would have picked.
-  assert.equal(suggestScopeName('Fleet Management', PREFIX), 'x_2196302_fleet');
-  assert.equal(suggestScopeName('AGAMYA_TEST', PREFIX), 'x_2196302_agamya');
+  assert.equal(suggestScopeName('Fleet Management', PREFIX), `${PREFIX}fleet`);
+  assert.equal(suggestScopeName('AGAMYA_TEST', PREFIX), `${PREFIX}agamya`);
 });
 
 test('a single long word drops vowels rather than being cut mid-syllable', () => {

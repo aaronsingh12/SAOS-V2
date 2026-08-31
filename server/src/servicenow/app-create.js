@@ -19,7 +19,7 @@ import { log } from '../logging.js';
  *
  * The constructive half is here. `now-sdk init` DOES create a real application:
  * it scaffolds a workspace and `install` writes a `sys_app` record — the same
- * path that produced `x_2196302_nwforge`. The build output even names it
+ * path that produced this project's own application. The build output even names it
  * (`dist/app/scope/sys_app_<scopeId>.xml`), which is the difference between an
  * application and a husk in one filename.
  *
@@ -28,7 +28,9 @@ import { log } from '../logging.js';
  *
  *   - must start with the instance's vendor prefix, read live from
  *     `glide.appcreator.company.code` — never hardcoded;
- *   - 18 characters maximum, TOTAL. With `x_2196302_` that leaves 8.
+ *   - 18 characters maximum, TOTAL. With a 10-character `x_<vendor>_` prefix
+ *     that leaves 8 — and the vendor prefix is issued by the instance, so the
+ *     budget is computed from the live one, never from a remembered value.
  *
  * So validation happens before anything is scaffolded, and it is pure and
  * offline-testable: getting told "two characters too long" costs a second,

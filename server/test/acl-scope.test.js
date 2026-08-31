@@ -32,7 +32,7 @@ const stubs = ({ objectScope, found = true, fieldsInScope = [], tableExists = tr
   _query: async (t) => {
     if (t === 'sys_dictionary') return fieldsInScope.map((e) => ({ name: 'tbl', element: e, sys_scope: APP }));
     if (t === 'sys_db_object') return tableExists ? [{ name: 'tbl' }] : [];
-    if (t === 'sys_scope') return [{ sys_id: APP, scope: 'x_2196302_nwforge', name: 'NowForge Flows' }];
+    if (t === 'sys_scope') return [{ sys_id: APP, scope: 'x_2002152_nwforge', name: 'NowForge Flows' }];
     return [{ sys_id: 'read', name: 'read' }];
   },
   _resolveRoles: async () => ({ resolved: [{ name: 'itil', sys_id: ITIL, found: true }], transport: 'server-side' }),
@@ -193,7 +193,7 @@ test('INVARIANT — no scope switch is emitted when none was derived', () => {
 
 test('INVARIANT R1 — a cross-scope object with no field in scope is refused', async () => {
   const r = await resolveAclSpec(
-    { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2196302_nwforge' },
+    { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2002152_nwforge' },
     stubs({ objectScope: GLOBAL_SCOPE, fieldsInScope: [] }),
   );
   assert.equal(r.ok, false);
@@ -206,7 +206,7 @@ test('INVARIANT R1 — the field-in-scope branch ALLOWS a cross-scope rule (the 
   // Gate S found a live example: cmdb_software_instance, ACL in CMDB Workspace,
   // table global. R1 cannot be simplified to same-scope-only.
   const r = await resolveAclSpec(
-    { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2196302_nwforge' },
+    { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2002152_nwforge' },
     stubs({ objectScope: GLOBAL_SCOPE, fieldsInScope: ['u_my_column'] }),
   );
   assert.equal(r.ok, true, 'a table carrying a field in the ACL scope is a legal cross-scope target');
@@ -216,7 +216,8 @@ test('INVARIANT R1 — the field-in-scope branch ALLOWS a cross-scope rule (the 
 
 test('INVARIANT R1 — columns on a PSEUDO-table do not count as a field in scope', async () => {
   /*
-   * Gate S measured x_2196302_nwforge owning 73 scoped dictionary columns, ZERO
+   * Gate S measured this application's scope (as it was named then, on the
+   * retired PDI) owning 73 scoped dictionary columns, ZERO
    * of which belonged to a table present in sys_db_object — all were on
    * var__m_sys_hub_flow_* flow-variable pseudo-tables. Counting those would
    * "find" a legal target that cannot be written to.
@@ -228,7 +229,7 @@ test('INVARIANT R1 — columns on a PSEUDO-table do not count as a field in scop
   assert.match(res.note, /pseudo-table/);
 
   const r = await resolveAclSpec(
-    { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2196302_nwforge' },
+    { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2002152_nwforge' },
     stubs({ objectScope: GLOBAL_SCOPE, fieldsInScope: ['taskSysId'], tableExists: false }),
   );
   assert.equal(r.ok, false);
@@ -258,7 +259,7 @@ test('INVARIANT R3 — a wildcard table outside global is refused', () => {
 });
 
 test('INVARIANT R3 — the tool refuses a wildcard-table request outright, in any scope', async () => {
-  for (const scope of [undefined, 'x_2196302_nwforge']) {
+  for (const scope of [undefined, 'x_2002152_nwforge']) {
     const r = await resolveAclSpec({ table: '*', operation: 'read', roles: ['itil'], scope }, stubs({ objectScope: APP }));
     assert.equal(r.ok, false);
     assert.match(r.refusal.reason, /wildcard_table/, `scope=${scope}: a wildcard table is refused`);
@@ -303,7 +304,7 @@ test('INVARIANT — every R-rule refusal happens BEFORE the approval card', asyn
   let approvalRequested = false;
   let dispatched = false;
   const r = await runGatedWrite({
-    descriptor: { table: 'sys_security_acl', operation: 'insert', requested: {}, sys_id: null, acl_spec: { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2196302_nwforge' } },
+    descriptor: { table: 'sys_security_acl', operation: 'insert', requested: {}, sys_id: null, acl_spec: { table: 'tbl', operation: 'read', roles: ['itil'], scope: 'x_2002152_nwforge' } },
     runnerUserSysId: RUNNER,
     requestApproval: async () => { approvalRequested = true; return { approved: true, source: 'user' }; },
     _preDecision: async ({ table, operation }) => ({
@@ -363,6 +364,6 @@ test('INVARIANT — resolveScopeRef resolves by name or sys_id, and refuses ambi
   assert.equal(await resolveScopeRef(''), null);
   assert.equal(await resolveScopeRef('x_dup', { _query: async () => [{ sys_id: '1' }, { sys_id: '2' }] }), null,
     'two matches is not a resolution');
-  const one = await resolveScopeRef('x_2196302_nwforge', { _query: async () => [{ sys_id: APP, scope: 'x_2196302_nwforge', name: 'NowForge Flows' }] });
+  const one = await resolveScopeRef('x_2002152_nwforge', { _query: async () => [{ sys_id: APP, scope: 'x_2002152_nwforge', name: 'NowForge Flows' }] });
   assert.equal(one.sys_id, APP);
 });

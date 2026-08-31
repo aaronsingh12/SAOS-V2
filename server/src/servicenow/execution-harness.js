@@ -63,7 +63,17 @@ import { table } from './client.js';
  * embedded through jsLiteral(). Nothing is concatenated raw.
  */
 
-const SINK_PREFIX = 'x_2196302_nwforge.exec_harness';
+/*
+ * The sink is a `sys_user_preference` NAME, not a scoped artifact.
+ *
+ * It used to be namespaced under the application's scope name, which coupled a
+ * transient preference row to the app scope for no reason — and broke the
+ * harness when that scope was renamed. Nothing about this row belongs to the
+ * app scope: it is created, read once and deleted inside a single call.
+ * Namespacing it under the product removes the coupling entirely, rather than
+ * swapping one scope literal for another.
+ */
+const SINK_PREFIX = 'nowhelpassist.exec_harness';
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_MS = 3000;
 

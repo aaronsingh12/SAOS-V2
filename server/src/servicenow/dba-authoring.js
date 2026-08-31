@@ -247,7 +247,7 @@ export function generateTableSource(normalized) {
    * build` refused it:
    *
    *   TS213: Table definition should be exported as a named export with the
-   *          name 'x_2196302_nwforge_asset'
+   *          name 'x_2002152_nwforge_asset'
    *
    * This is exactly what the offline build exists to catch (§5: build is free
    * and reaches nothing), and it is why nothing is installed before one passes.

@@ -15,7 +15,7 @@ import { validateTableSpec, generateTableSource, idKey, MAX_TABLE_NAME } from '.
  * what the spec asked for.
  */
 
-const SCOPE = 'x_2196302_nwforge';
+const SCOPE = 'x_2002152_nwforge';
 
 const SPEC = {
   name: `${SCOPE}_asset`,

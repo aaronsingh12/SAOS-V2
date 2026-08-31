@@ -1088,7 +1088,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Human-readable application name, e.g. "Fleet Management"' },
-        scope_name: { type: 'string', description: 'Optional explicit scope, e.g. x_2196302_fleet. Derived from the name when omitted.' },
+        scope_name: { type: 'string', description: 'Optional explicit scope, e.g. x_<vendor>_fleet, where the vendor prefix is the one THIS instance issues. Derived from the name when omitted.' },
         description: { type: 'string' },
       },
       required: ['name'],

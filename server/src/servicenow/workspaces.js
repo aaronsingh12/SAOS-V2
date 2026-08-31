@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
  * The SDK workspace registry.
  *
  * There has only ever been one workspace — `server/fluent-workspace`, scope
- * `x_2196302_nwforge` — and `fluent.js` reaches it through a module-level
+ * `x_2002152_nwforge` — and `fluent.js` reaches it through a module-level
  * constant. That is correct for authoring, where every managed source belongs
  * to the one application we install. It is not enough for two questions this
  * phase asks:
@@ -71,7 +71,17 @@ async function readWorkspace(dir) {
   try {
     const cfg = JSON.parse(await fsp.readFile(configPath, 'utf8'));
     entry.scope = cfg.scope || null;
-    entry.scopeId = cfg.scopeId || null;
+    /*
+     * The scope NAME is the workspace's identity; the scope SYS_ID is not.
+     *
+     * `now.config.json` no longer carries a scopeId — a sys_id is instance-local
+     * and pinning one in tracked config is what left this workspace addressed to
+     * a retired PDI. The id is resolved live per instance at deploy time
+     * (fluent.js resolveScopeId) and cached under that instance's key, so it is
+     * deliberately NOT read here: a registry that is asked "which workspace owns
+     * this sys_id" without naming an instance is asking an unanswerable question.
+     */
+    entry.scopeId = null;
     entry.name = cfg.name || null;
     if (!entry.scope) entry.error = `${CONFIG_NAME} has no "scope"`;
   } catch (err) {
@@ -126,11 +136,14 @@ export function refreshWorkspaces() { cache = null; }
  * row carries `application` as a sys_id (or the literal string `global`),
  * while `now.config.json` and every artifact path speak the scope NAME.
  */
-export async function workspaceForScope(scopeNameOrId) {
-  if (!scopeNameOrId) return null;
-  const key = String(scopeNameOrId);
+export async function workspaceForScope(scopeName) {
+  if (!scopeName) return null;
+  const key = String(scopeName);
   const all = await listWorkspaces();
-  return all.find((w) => w.scope === key || w.scopeId === key) || null;
+  // Name only. Addressing by sys_id used to work because the id was pinned in
+  // config; it is now instance-local, and resolving one without knowing which
+  // instance is meant would answer confidently for the wrong host.
+  return all.find((w) => w.scope === key) || null;
 }
 
 /** The scope names we manage — the set the Applications page flags against. */

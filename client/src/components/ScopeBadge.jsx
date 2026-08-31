@@ -3,7 +3,7 @@
  *
  * One component wherever a scope is shown, so Flows, Catalog, SLA and Access
  * cannot drift into four spellings of the same fact. It renders the scope NAME
- * (`x_2196302_nwforge`, `global`) rather than the application's display label,
+ * (`x_2002152_nwforge`, `global`) rather than the application's display label,
  * because the scope name is the address — it is what prefixes an artifact, what
  * `now.config.json` claims, and what decides which update set a change can move
  * into. The friendly name goes in the tooltip.
