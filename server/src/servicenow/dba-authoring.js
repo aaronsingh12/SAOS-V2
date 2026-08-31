@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import { table } from './client.js';
 import { metaQuery, cacheClear } from './dba-metadata.js';
 import { preflight } from './dba-impact.js';
-import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, assertTiersAgree } from './fluent.js';
+import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, assertTiersAgree, readInstallVersionRecords } from './fluent.js';
 import { log } from '../logging.js';
 
 /**
@@ -442,6 +442,10 @@ export async function verifyTable(t) {
     query: `name=${t.name}^ORnameSTARTSWITH${t.name}.`, fields: 'name,operation,active', max: 100,
   });
 
+  // A2 — the install's own change record. NOT sys_update_xml, which is empty
+  // after an application install and would report "no change" for this one.
+  const versions = await readInstallVersionRecords(t.name);
+
   // The live round trip. §1.7: without allowWebServiceAccess the Table API
   // answers 403 "User Not Authorized" no matter how correct the ACLs are, so
   // this is the only check that proves the table is actually reachable.
@@ -473,6 +477,7 @@ export async function verifyTable(t) {
     choices: choiceChecks,
     choicesOk,
     acls: { asked: t.acls.length, stored: aclRows.length, rows: aclRows.map((a) => `${a.name} [${a.operation}]`), ok: aclsOk },
+    updateVersions: { count: versions.count, types: versions.types, signal: versions.signal, note: versions.note },
     webService,
   };
 }

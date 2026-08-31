@@ -434,6 +434,45 @@ export async function withMaterializedConfig(job) {
   }
 }
 
+/**
+ * A2 — THE VERIFICATION SIGNAL FOR AN SDK INSTALL IS `sys_update_version`.
+ *
+ * MEASURED on the bound instance immediately after a successful install that
+ * demonstrably created a table:
+ *
+ *   sys_update_xml      nameLIKE<scope>     0 rows
+ *   sys_update_version  nameLIKE<scope>    31 rows   (20 for the table alone)
+ *
+ * An application install writes APPLICATION FILE version records. `sys_update_xml`
+ * is the update-set capture path, and artifacts that arrive as application files
+ * never pass through it. Checking it to confirm an SDK install therefore returns
+ * a confident zero about a change that plainly happened — the exact shape of
+ * wrongness this project exists to prevent.
+ *
+ * So: `sys_update_xml` is reserved for update-set / UI-captured changes
+ * (transport.js, transport-export.js, capture.js and the elevated-write cleanup
+ * in execution-harness.js all use it correctly for that). Nothing on the SDK
+ * path may consult it.
+ */
+export async function readInstallVersionRecords(namePattern, { max = 500 } = {}) {
+  const rows = await table.query('sys_update_version', {
+    query: `nameLIKE${namePattern}`,
+    fields: 'name,state,type,source,sys_recorded_at',
+    display: 'false',
+    limit: max,
+  }).catch(() => []);
+  return {
+    pattern: namePattern,
+    count: rows.length,
+    types: [...new Set(rows.map((r) => r.type).filter(Boolean))],
+    current: rows.filter((r) => r.state === 'current').length,
+    rows: rows.slice(0, 25),
+    signal: 'sys_update_version',
+    note: 'sys_update_version is the SDK-install signal. sys_update_xml is the update-set path and is EMPTY after '
+        + 'an application install — checking it would report no change for a change that happened.',
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Invariant (c): one build/install at a time
  * ------------------------------------------------------------------ */
