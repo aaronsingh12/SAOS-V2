@@ -1500,6 +1500,14 @@ declare global {
                         table: 'sys_security_acl'
                         id: '8a625048c7cb467e86beea49ab77e863'
                     }
+                    x_2002152_nwforge_xsp_incident_read: {
+                        table: 'sys_scope_privilege'
+                        id: '65cc53a06d7441d29ff88c094e4bc650'
+                    }
+                    x_2002152_nwforge_xsp_incident_write: {
+                        table: 'sys_scope_privilege'
+                        id: '6900541e9f554e999aa3857f8c845f2e'
+                    }
                 }
                 composite: [
                     {
@@ -1835,6 +1843,15 @@ declare global {
                     },
                     {
                         table: 'sys_documentation'
+                        id: '447c471484bc4008a95531b7fc9ec4db'
+                        key: {
+                            name: 'incident'
+                            element: 'x_2002152_nwforge_triage_note'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
                         id: '46be1a2aa34f4a7fb768c28d1a20e471'
                         deleted: true
                         key: {
@@ -2017,6 +2034,13 @@ declare global {
                         key: {
                             model: '20455bf77e754d48b4f9b057b831b534'
                             element: 'taskSysId'
+                        }
+                    },
+                    {
+                        table: 'sys_db_object'
+                        id: '81af97968bd84aa38c1a6a50b9cdc23d'
+                        key: {
+                            name: 'incident'
                         }
                     },
                     {
@@ -2363,6 +2387,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: 'ca5df56e9944480eb6a18dce163c151d'
+                        key: {
+                            name: 'incident'
+                            element: 'NULL'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_security_acl_role'
                         id: 'cbe1eaaece7042bbaf6abba779bb0ff2'
                         key: {
@@ -2443,6 +2476,13 @@ declare global {
                         }
                     },
                     {
+                        table: 'ua_table_licensing_config'
+                        id: 'd8d1951045fe4236975ac3165e9e9f5a'
+                        key: {
+                            name: 'incident'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: 'dd43f6eb45024be1a28deeacfe678fdf'
                         deleted: true
@@ -2469,6 +2509,14 @@ declare global {
                         key: {
                             model: '724901780a6d4508bb397e78c6ed5ac4'
                             element: 'user'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: 'e652ffe5fd144bf087d678e63b4d94c2'
+                        key: {
+                            name: 'incident'
+                            element: 'x_2002152_nwforge_triage_note'
                         }
                     },
                     {

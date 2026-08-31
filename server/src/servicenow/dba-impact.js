@@ -296,6 +296,47 @@ const OPERATIONS = {
         + 'operation in this table that is not destructive to data.',
   },
 
+  /*
+   * ADDITIVE SCHEMA OPERATIONS — neither of the two existing answers fits.
+   *
+   * "reversible: false" is wrong: adding a column destroys nothing, and
+   * demanding the three DDL confirmations for it would make the gate noise.
+   * "reversible: true" alone is also wrong, because UNDOING it is drop_column,
+   * which creates no rollback context on any engine. A column you add is a
+   * column you cannot cleanly remove.
+   *
+   * So they are reversible in the sense that matters here — no data is at risk —
+   * and they carry an explicit `permanence` the caller must surface. That is a
+   * required acknowledgement, not a blocker.
+   */
+  add_column: {
+    acts_on: 'schema', additive: true, reversible: true,
+    mechanism: 'not applicable — nothing is destroyed, so there is nothing to roll back',
+    undo: 'drop_column', undoReversible: false,
+    note: 'Adding a column is additive and risks no data. REMOVING it later is drop_column, which creates no '
+        + 'rollback context on any engine — so treat an added column as permanent, not as an experiment.',
+  },
+  create_table: {
+    acts_on: 'schema', additive: true, reversible: true,
+    mechanism: 'not applicable — nothing is destroyed',
+    undo: 'drop_table', undoReversible: false,
+    note: 'Creating a table risks nothing. Dropping it later is irreversible and takes every row with it.',
+  },
+  /*
+   * The sanctioned route for an OUT-OF-SCOPE table. It is a distinct operation
+   * from `add_column` precisely because the classifier's "never edit this
+   * platform table directly" verdict must NOT block it — the augment IS the
+   * indirect path that verdict is telling you to take.
+   */
+  augment_column: {
+    acts_on: 'schema', additive: true, reversible: true, augment: true,
+    mechanism: 'not applicable — the base object is not modified',
+    undo: 'drop_column', undoReversible: false,
+    note: 'Adds a column to an out-of-scope table through the SDK table-augments pattern plus a cross-scope '
+        + 'privilege. The base object is never edited; the column is owned by the authoring scope. Removing it '
+        + 'later is drop_column and is irreversible.',
+  },
+
   drop_table: { acts_on: 'schema', reversible: false, reason: 'No rollback context is created for a table drop. The table and every row in it are gone.' },
   drop_column: { acts_on: 'schema', reversible: false, reason: 'No rollback context is created for a column drop. The column and all of its data are gone.' },
   truncate_table: { acts_on: 'schema', reversible: false, reason: 'A truncate creates no rollback context and no delete-recovery records. Every row is gone.' },
@@ -324,6 +365,15 @@ export async function classifyOperation(op, { withContext = true } = {}) {
     operation: op,
     known: true,
     actsOn: spec.acts_on,
+    ...(spec.additive
+      ? {
+        additive: true,
+        undo: spec.undo,
+        undoReversible: spec.undoReversible,
+        permanence: `Undoing ${op} means ${spec.undo}, which creates no rollback context on any engine. `
+                  + 'An additive change is safe to make and effectively impossible to take back.',
+      }
+      : {}),
     reversible: spec.reversible,
     ...(irreversible
       ? { reason: spec.reason, requiredConfirmations: DESTRUCTIVE_POLICY.irreversibleDdl.requires }
@@ -531,14 +581,36 @@ export async function preflight({ operation, table: tableName, field = null, inc
    * which is a per-record check and belongs to Layer 4, not here.
    */
   const isSchemaOp = op.actsOn === 'schema';
+  const isAugment = OPERATIONS[operation]?.augment === true;
 
-  if (isSchemaOp && classification && classification.safeToModify?.verdict === 'not-directly') {
+  /*
+   * The "not-directly" verdict says: do not edit this platform table, use the
+   * augment pattern. Raising it against an AUGMENT would refuse the very thing
+   * it recommends — a gate that blocks its own remedy.
+   */
+  if (isSchemaOp && !isAugment && classification && classification.safeToModify?.verdict === 'not-directly') {
     blockers.push(classification.safeToModify.reason);
   }
-  if (isSchemaOp && impact?.bySeverity?.structural) {
+  if (isAugment && classification?.category?.startsWith('custom')) {
+    blockers.push(`${tableName} is a custom table in your own scope — augment it directly with add_column rather `
+      + 'than through the cross-scope augment pattern, which exists for out-of-scope objects.');
+  }
+  /*
+   * Structural dependents matter when something is going AWAY.
+   *
+   * 79 inbound reference fields are a serious reason not to drop or re-type a
+   * column on `incident`. They are no reason at all not to add one: nothing
+   * that points at the table is affected by a new column existing. Blocking an
+   * additive change on them made the preflight refuse the sanctioned augment
+   * path on every OOTB table, which is the same "gate that always says no"
+   * failure as the schema/data mix-up.
+   */
+  const isDestructiveSchemaOp = isSchemaOp && !OPERATIONS[operation]?.additive;
+
+  if (isDestructiveSchemaOp && impact?.bySeverity?.structural) {
     blockers.push(`${impact.bySeverity.structural} structural dependent(s) — child tables or inbound reference fields — depend on this target.`);
   }
-  if (isSchemaOp && impact?.findings?.some((f) => f.truncated)) {
+  if (isDestructiveSchemaOp && impact?.findings?.some((f) => f.truncated)) {
     blockers.push('The impact scan was TRUNCATED, so the dependency list is a floor rather than a total. A schema change must not be authorised on a partial impact report.');
   }
 
@@ -555,6 +627,11 @@ export async function preflight({ operation, table: tableName, field = null, inc
       ? { totalDependents: impact.totalDependents, bySeverity: impact.bySeverity, blindSpots: impact.blindSpots?.length ?? 0 }
       : impact,
     integrity,
+    ...(OPERATIONS[operation]?.additive
+      ? { permanence: `${operation} is additive and risks no data, but undoing it means `
+          + `${OPERATIONS[operation].undo}, which creates no rollback context on any engine. Acknowledge that it is `
+          + 'effectively permanent before proceeding.' }
+      : {}),
     statement: goNoGo === 'go'
       ? 'Nothing in this preflight blocks the operation. That is not the same as "safe" — read the impact report.'
       : `BLOCKED: ${blockers.length} condition(s) must be resolved or explicitly acknowledged first.`,

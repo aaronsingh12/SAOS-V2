@@ -1401,7 +1401,16 @@ export function extractSource(raw) {
 
 function extractDiagnostics(result) {
   const text = `${result.stdout}\n${result.stderr}`;
-  const lines = text.split('\n').filter((l) => /ERROR|error TS|Build failed|diagnostic/i.test(l));
+  /*
+   * `timed out` and `Command failed` earn their place here by measurement.
+   *
+   * A failed install reported only "Command failed: …node.exe …index.js install"
+   * — the command, not the cause — while the line that actually explained it,
+   * "[now-sdk] ERROR: The deployment request timed out waiting for a response.",
+   * sat in stdout and matched no filter. Naming the command instead of the
+   * reason is trap #51 committed in our own code.
+   */
+  const lines = text.split('\n').filter((l) => /ERROR|error TS|Build failed|diagnostic|timed out|Command failed/i.test(l));
   return (lines.length ? lines.join('\n') : text).slice(0, 6000).trim();
 }
 

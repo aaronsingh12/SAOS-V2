@@ -268,32 +268,277 @@ ${schema}
 ${acls.length ? `\n${acls.join('\n\n')}\n` : ''}`;
 }
 
+/* ── the augment path: adding a column to an out-of-scope table ───────────── */
+
 /**
- * The augment pattern for an OOTB table — GENERATED BUT NOT PROVEN.
+ * E1 — the ONLY sanctioned way NowHelpAssist touches an OOTB table.
  *
- * `augments` exists on SDK 4.10.1, and this emits it. It has NOT been deployed
- * against a real out-of-scope table in this phase, which was deliberately
- * scoped to a custom table in our own application. Anything calling this must
- * say it is unproven; the repo's standing rule is that a green build is a claim
- * and only a read-back is evidence.
+ * The base object is never edited. `Table({ augments: '<table>' })` attaches
+ * columns owned by THIS scope to a table owned by another, so the platform
+ * records them as our application's files while the target's own definition is
+ * untouched. A `CrossScopePrivilege` record declares the access our scope needs
+ * to the target scope's resources.
+ *
+ * A column added this way must carry the authoring scope's prefix — the
+ * platform namespaces cross-scope columns so two applications cannot collide on
+ * `u_note`. That is enforced at the spec rather than discovered at build time.
+ *
+ * ADDITIVE ONLY, and structurally so rather than by convention: this function
+ * emits a schema and nothing else. There is no path through it that drops,
+ * renames, retypes or narrows anything — because undoing an augment is
+ * `drop_column`, which creates no rollback context on any engine.
  */
-export function generateAugmentSource(baseTable, fields, { scope }) {
+export function validateAugmentSpec({ baseTable, fields = [] } = {}, { scope } = {}) {
+  const errors = [];
+  if (!scope) errors.push('No application scope is configured.');
+  if (!baseTable || !NAME_RE.test(String(baseTable))) errors.push(`"${baseTable}" is not a valid table name.`);
+  if (!fields.length) errors.push('An augment must add at least one column.');
+
+  const seen = new Set();
+  for (const f of fields) {
+    const el = String(f?.name || '').trim().toLowerCase();
+    if (!el) { errors.push('A column with no name was given.'); continue; }
+    if (!NAME_RE.test(el)) errors.push(`"${el}" is not a valid column name.`);
+    if (seen.has(el)) errors.push(`Column "${el}" is defined twice.`);
+    seen.add(el);
+    if (scope && !el.startsWith(`${scope}_`)) {
+      errors.push(`Cross-scope column "${el}" must carry this scope's prefix "${scope}_". The platform namespaces `
+        + 'columns added to another application\'s table so two applications cannot collide on the same short name.');
+    }
+    if (!COLUMN_EMITTERS[f.type]) {
+      errors.push(`Column "${el}" has type "${f.type}", which this authoring layer does not emit.`);
+    }
+    if (f.type === 'reference' && !f.reference) errors.push(`Reference column "${el}" must name the table it points at.`);
+    if (f.type === 'choice' && !(f.choices && Object.keys(f.choices).length)) errors.push(`Choice column "${el}" must supply choices.`);
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    normalized: {
+      baseTable,
+      fields: fields.map((f) => ({
+        name: String(f.name).trim().toLowerCase(),
+        type: f.type,
+        label: f.label || String(f.name).trim(),
+        maxLength: f.maxLength ?? null,
+        // Forced off, and it matters: a mandatory column added to a table with
+        // millions of existing rows makes every one of them fail validation on
+        // the next save. Additive has to mean additive.
+        mandatory: false,
+        default: f.default ?? null,
+        reference: f.reference ?? null,
+        choices: f.choices ?? null,
+        unique: false,
+      })),
+    },
+  };
+}
+
+/** The Fluent source for an augment, plus the cross-scope privileges it declares. */
+export function generateAugmentSource(normalized, { scope, targetScope = 'global', privileges = ['read', 'write'] } = {}) {
+  const { baseTable, fields } = normalized;
   const columnImports = [...new Set(fields.map((f) => IMPORTS_FOR[f.type]))].sort();
   const schema = fields.map((f) => `        ${f.name}: ${COLUMN_EMITTERS[f.type](f)},`).join('\n');
-  return `// nowhelpassist-dba: augment ${baseTable}
-// UNPROVEN PATH — generated and build-checked only. Adding columns to an
-// out-of-scope table also needs a CrossScopePrivilege, and neither half has
-// been deployed against a real OOTB table from here.
-import { Table, ${columnImports.join(', ')} } from '@servicenow/sdk/core'
 
-Table({
-    $id: Now.ID[${lit(`${scope}_augment_${baseTable}`)}],
-    augments: ${lit(baseTable)},
-    schema: {
-${schema}
+  const priv = privileges.map((op) => [
+    'CrossScopePrivilege({',
+    `    $id: Now.ID[${lit(`${scope}_xsp_${baseTable}_${op}`)}],`,
+    `    operation: ${lit(op)},`,
+    "    status: 'allowed',",
+    "    targetType: 'sys_db_object',",
+    `    targetScope: ${lit(targetScope)},`,
+    `    targetName: ${lit(baseTable)},`,
+    '})',
+  ].join('\n')).join('\n\n');
+
+  return [
+    `// nowhelpassist-dba: augment ${baseTable}`,
+    '// Generated from a validated augment spec. The base object is NOT edited —',
+    `// these columns are owned by this application and attached to ${baseTable}.`,
+    '// Additive only: undoing an augment is drop_column, which is irreversible.',
+    `import { Table, ${columnImports.join(', ')}, CrossScopePrivilege } from '@servicenow/sdk/core'`,
+    '',
+    /*
+     * MEASURED: the named export must be the BASE TABLE's name, not a scoped
+     * alias. `export const x_2002152_nwforge_augment_incident` failed the build
+     * with TS213 "Table definition should be exported as a named export with
+     * the name 'incident'". The rule is the same one that applies to a table
+     * definition — the export name must match the table the block describes —
+     * and for an augment that table is the one being augmented, not the app
+     * doing the augmenting. Caught offline, before anything reached the instance.
+     */
+    `export const ${baseTable} = Table({`,
+    `    $id: Now.ID[${lit(`${scope}_augment_${baseTable}`)}],`,
+    `    augments: ${lit(baseTable)},`,
+    '    schema: {',
+    schema,
+    '    },',
+    '})',
+    '',
+    priv,
+    '',
+  ].join('\n');
+}
+
+/**
+ * `dba.augmentTable` — the guarded pipeline, identical in shape to createTable.
+ *
+ * preflight(augment_column) → generate → build (offline) → tier + app guards →
+ * install → read back off the BASE table → report.
+ */
+export async function augmentTable(spec, emit = () => {}, { dryRun = false } = {}) {
+  const scope = await currentScope();
+  const check = validateAugmentSpec(spec, { scope });
+  if (!check.ok) return { ok: false, stage: 'spec', errors: check.errors };
+  const a = check.normalized;
+
+  emit({ type: 'dba_preflight', table: a.baseTable });
+  const pre = await preflight({ operation: 'augment_column', table: a.baseTable });
+  if (pre.verdict !== 'go') {
+    return { ok: false, stage: 'preflight', blockers: pre.blockers, preflight: pre };
+  }
+
+  // Re-read live. The standing guardrail is that a cache never drives a write.
+  const existing = await metaQuery('sys_dictionary', {
+    query: `name=${a.baseTable}^elementIN${a.fields.map((f) => f.name).join(',')}`,
+    fields: 'element,name', max: 50,
+  });
+  if (existing.length) {
+    return {
+      ok: false,
+      stage: 'preflight',
+      errors: [`${a.baseTable} already has ${existing.map((e) => e.element).join(', ')}. This augment would modify an `
+             + 'existing column rather than add one, which is not what an augment is for.'],
+    };
+  }
+
+  const targetScope = (await metaQuery('sys_db_object', { query: `name=${a.baseTable}`, fields: 'sys_scope', max: 1 }))[0]?.sys_scope || 'global';
+  const source = generateAugmentSource(a, { scope, targetScope });
+  const file = path.join(DBA_DIR, `augment_${a.baseTable}.now.ts`);
+
+  if (dryRun) return { ok: true, stage: 'dry-run', baseTable: a.baseTable, file, source, preflight: pre, installed: false };
+
+  await fsp.mkdir(DBA_DIR, { recursive: true });
+  await fsp.writeFile(file, source, 'utf8');
+  emit({ type: 'dba_source_written', file });
+
+  emit({ type: 'dba_building' });
+  const built = await buildWorkspace();
+  if (!built.ok) {
+    await fsp.rm(file, { force: true });
+    return {
+      ok: false, stage: 'build', diagnostics: extractDiagnostics(built), source,
+      message: 'now-sdk build failed; nothing was installed and the generated source was removed.',
+    };
+  }
+
+  emit({ type: 'dba_tier_check' });
+  const tiers = await assertTiersAgree();
+  emit({ type: 'dba_tiers_agree', host: tiers.host });
+
+  emit({ type: 'dba_installing' });
+  const installed = await installWorkspace();
+
+  /*
+   * A RED INSTALL IS ALSO ONLY A CLAIM.
+   *
+   * This repo's standing rule is that a green install proves nothing until the
+   * work is read back. MEASURED here, the converse bites just as hard: the CLI
+   * answered
+   *
+   *   "[now-sdk] ERROR: The deployment request timed out waiting for a response."
+   *
+   * with exit code 1 — and the deployment had SUCCEEDED. The column was live on
+   * `incident`, the cross-scope privileges were in place, and four
+   * sys_update_version rows recorded it. Adding a column to a table the size of
+   * `incident` is a real ALTER; the server simply took longer than the client
+   * was willing to wait.
+   *
+   * Trusting the exit code would report a failure for a change that happened —
+   * and invite a retry that re-applies it. So the read-back runs either way and
+   * IT decides; the install's own verdict is reported alongside, never instead.
+   */
+  emit({ type: 'dba_verifying' });
+  cacheClear('dba:');
+  const verification = await verifyAugment(a, { scope, targetScope });
+
+  if (!installed.ok && !verification.ok) {
+    return { ok: false, stage: 'install', diagnostics: extractDiagnostics(installed), source, file, verification };
+  }
+
+  return {
+    ok: verification.ok,
+    stage: verification.ok ? 'verified' : 'verification-failed',
+    baseTable: a.baseTable,
+    file,
+    installedTo: tiers.host,
+    preflight: pre,
+    verification,
+    permanence: pre.permanence ?? null,
+    ...(installed.ok ? {} : {
+      installReportedFailure: true,
+      installDiagnostics: extractDiagnostics(installed),
+      reconciliation: 'The SDK reported a failure and the read-back found the change live on the instance. The '
+        + 'read-back is the authority: a deployment timeout is the client giving up on a request the server went on '
+        + 'to complete. Do NOT retry on this shape of failure without reading back first — a retry would re-apply it.',
+    }),
+    wholeAppNote: 'now-sdk install deploys the ENTIRE application (trap #8).',
+  };
+}
+
+/**
+ * Read the augment back off the BASE table, and prove the base was not edited.
+ *
+ * Two separate claims, and the second is the one that matters most: the column
+ * is live on the target, AND the target's own definition still belongs to its
+ * original scope. An augment that quietly moved `incident` into our scope would
+ * be a far worse outcome than one that failed.
+ */
+export async function verifyAugment(a, { scope, targetScope }) {
+  const dict = await metaQuery('sys_dictionary', {
+    query: `name=${a.baseTable}^elementIN${a.fields.map((f) => f.name).join(',')}`,
+    fields: 'element,name,internal_type,column_label,max_length,mandatory,reference,sys_scope',
+    max: 50,
+  });
+  const byElement = new Map(dict.map((d) => [d.element, d]));
+
+  const fields = a.fields.map((f) => {
+    const got = byElement.get(f.name);
+    if (!got) return { field: f.name, ok: false, reason: `absent from ${a.baseTable}'s dictionary` };
+    const problems = [];
+    if (got.name !== a.baseTable) problems.push(`attached to ${got.name}, not ${a.baseTable}`);
+    if (got.mandatory === 'true') problems.push('stored mandatory — an augment must not invalidate existing rows');
+    return {
+      field: f.name,
+      ok: problems.length === 0,
+      type: got.internal_type,
+      label: got.column_label,
+      columnScope: got.sys_scope,
+      ...(problems.length ? { problems } : {}),
+    };
+  });
+
+  const base = (await metaQuery('sys_db_object', { query: `name=${a.baseTable}`, fields: 'name,sys_scope,sys_update_name', max: 1 }))[0] || null;
+  const baseUntouched = Boolean(base) && base.sys_scope === targetScope;
+
+  // A2 — the SDK-install signal. Never sys_update_xml, which is empty here.
+  const versions = await readInstallVersionRecords(a.fields[0].name);
+
+  return {
+    ok: fields.every((f) => f.ok) && baseUntouched,
+    baseTable: a.baseTable,
+    fields,
+    baseObject: {
+      scope: base?.sys_scope ?? null,
+      expectedScope: targetScope,
+      untouched: baseUntouched,
+      note: baseUntouched
+        ? `${a.baseTable} is still owned by ${targetScope}; only the added columns belong to ${scope}.`
+        : `${a.baseTable}'s own scope is ${base?.sys_scope} — expected ${targetScope}. The base object may have been modified.`,
     },
-})
-`;
+    updateVersions: { count: versions.count, types: versions.types, signal: versions.signal },
+  };
 }
 
 /* ── the pipeline ─────────────────────────────────────────────────────────── */
@@ -373,17 +618,27 @@ export async function createTable(spec, emit = () => {}, { dryRun = false } = {}
 
   emit({ type: 'dba_installing' });
   const installed = await installWorkspace();
-  if (!installed.ok) {
-    return { ok: false, stage: 'install', diagnostics: extractDiagnostics(installed), source, file };
-  }
 
+  // A red install is only a claim too — see augmentTable. A deployment timeout
+  // is the client giving up on a request the server went on to complete, so the
+  // read-back decides and the install's verdict is reported beside it.
   emit({ type: 'dba_verifying' });
   cacheClear('dba:');
   const verified = await verifyTable(t);
 
+  if (!installed.ok && !verified.ok) {
+    return { ok: false, stage: 'install', diagnostics: extractDiagnostics(installed), source, file, verification: verified };
+  }
+
   return {
     ok: verified.ok,
     stage: verified.ok ? 'verified' : 'verification-failed',
+    ...(installed.ok ? {} : {
+      installReportedFailure: true,
+      installDiagnostics: extractDiagnostics(installed),
+      reconciliation: 'The SDK reported a failure and the read-back found the change live. The read-back is the '
+        + 'authority; do not retry on this shape of failure without reading back first.',
+    }),
     table: t.name,
     file,
     preflight: pre,

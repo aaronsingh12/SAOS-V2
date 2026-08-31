@@ -5538,3 +5538,156 @@ build legitimately mutates must never be swept up by a bulk stage.
 | 113 | **A vendor prefix is issued by the instance** | a scope name that worked for months is rejected on the new PDI | `glide.appcreator.company.code` differs per instance. A scope name embeds it, so an application is not portable by name — moving one means a NEW scope. Read the prefix live; never carry one in a constant or a test fixture |
 | 114 | **`sys_update_xml` is empty after a successful SDK app install** | 0 update rows for a table you just watched get created | An app install writes `sys_update_version`, not customer updates — `sys_update_xml` is the update-set path. Checking the wrong table reports "no change" about a change that happened. 0 vs 31 rows, measured |
 | 115 | **A bulk `git add` during a build commits the build's scratch state** | the commit that removes a pin contains the pin | A file the build legitimately rewrites (here `now.config.json`, materialised then restored in a `finally`) is correct on disk for all but a few seconds. Stage it explicitly, and assert the invariant against the COMMITTED blob — a test reading the working tree passes or fails on timing |
+
+---
+
+## 44. E1 — the first OOTB touch, and a red install that had succeeded
+
+Gate A closed three prerequisites; E1 added a column to `incident` through the
+SDK table-augments pattern. The base object was never edited.
+
+### Gate A
+
+**A1 — the materialization race, closed structurally.** The scopeId was written
+into a *tracked* `now.config.json` and restored in a `finally`; a commit landed
+inside that window once. Narrowing a window cannot fix a timing bug, so the
+window is gone: `now.config.template.json` is the tracked identity that no build
+writes, and `now.config.json` is generated and gitignored. `readAppIdentity`
+additionally *refuses* a tracked `scopeId`, which made `assertAppBinding`'s
+stale-pin branch unreachable — it now checks the per-instance cached id against
+live resolution instead.
+
+Proven the way the brief asked: a `git add -A && git commit` forced **inside**
+the materialization window. The generated file held the pin, `git add` staged
+nothing, and the committed tree came out clean.
+
+**A2 — `sys_update_version` is the SDK-install signal.** Measured 0
+`sys_update_xml` rows against 31 `sys_update_version` for the same scope after a
+successful install. Every `sys_update_xml` usage in the tree was audited:
+transport, transport-export, capture, acl-authoring and the harness cleanup all
+use it for update-set / Table-API-captured changes, which is correct. **Nothing
+was checking it on the SDK path** — so there was no false check to retire, and
+the real gap was the absent positive signal. `readInstallVersionRecords()` adds
+it; `verifyTable` and `verifyAugment` both report it.
+
+**A3 — done, not deferred.** A build-failing static scan over executable lines
+only (comments carry provenance deliberately): no instance hostname, no quoted
+32-hex sys_id, no scope literal but the canonical one read from the tracked
+template. A fourth test asserts the scanner reads the tree and can see a planted
+violation — a scan that matches nothing proves nothing. It exists because this
+bug class had already been found in six modules.
+
+### The matrix had no additive operations
+
+`preflight({ operation: 'add_column' })` refused `incident` as *unclassified*.
+That is the fail-closed default working correctly, and it exposed a real gap:
+every operation in the matrix was destructive or platform-level.
+
+Neither existing answer fits an additive change. `reversible: false` is wrong —
+adding a column destroys nothing, and demanding the three DDL confirmations for
+it makes the gate noise. `reversible: true` alone is also wrong, because undoing
+it is `drop_column`, which creates no rollback context on any engine.
+
+So additive operations carry both:
+
+```
+reversible: true          nothing is destroyed
+undo: 'drop_column'
+undoReversible: false
+permanence: "...effectively impossible to take back"
+```
+
+`augment_column` is a **distinct operation** from `add_column`, and deliberately
+so: the classifier's *"never edit this platform table directly, use the augment
+pattern"* verdict must not block the very remedy it recommends. Verified
+discriminating:
+
+| preflight | verdict |
+|---|---|
+| `augment_column` on `incident` | **go**, with permanence stated |
+| `add_column` on `incident` (direct edit) | **no-go** — "never edit an out-of-scope object directly" |
+| `drop_column` / `rename_column` / `truncate_table` | **no-go**, 3 confirmations |
+
+The structural-dependents blocker also had to be gated to destructive ops. 79
+inbound reference fields are a serious reason not to drop a column on
+`incident`; they are no reason at all not to add one. Blocking additive changes
+on them refused the sanctioned augment path on every OOTB table — the same
+"gate that always says no" failure as the earlier schema/data mix-up.
+
+### The augment, and what makes it safe
+
+Three properties, enforced in the spec rather than by convention:
+
+- **additive only, structurally.** `augmentTable` emits a schema and nothing
+  else; there is no path through it that drops, renames, retypes or narrows.
+- **the column carries the authoring scope's prefix** — the platform namespaces
+  cross-scope columns so two applications cannot collide on `u_note` on a table
+  neither of them owns. A bare `u_triage_note` is refused at the spec.
+- **`mandatory` and `unique` are forced off**, whatever the caller asks. A
+  mandatory column added to a table with millions of existing rows makes every
+  one of them fail validation on the next save.
+
+**The offline build earned its place again.** The first attempt exported the
+table as `x_2002152_nwforge_augment_incident` and was rejected:
+
+```
+TS213: Table definition should be exported as a named export with the name 'incident'
+```
+
+For an augment the export must be named after the **base table** — the block
+describes `incident`, not the app doing the augmenting. Caught offline, before
+anything reached the instance, and the failed build removed its own source.
+
+### A RED install that had SUCCEEDED
+
+The install then exited 1. The pipeline reported failure. It had worked.
+
+```
+[now-sdk] Running in CI mode, using instance https://dev428633.service-now.com
+[now-sdk] Attempting to log into instance https://dev428633.service-now.com as admin.
+[now-sdk] ERROR: The deployment request timed out waiting for a response.
+```
+
+Read back immediately afterwards, every part of the change was live. Adding a
+column to a table the size of `incident` is a real `ALTER`; the server simply
+took longer than the client would wait.
+
+This repo's founding rule is that **a green install is only a claim until it is
+read back**. The converse bites exactly as hard and had never been written down:
+**a red install is only a claim too.** Trusting the exit code would have reported
+a failure for a change that happened — and invited a retry that re-applies it.
+
+Both `augmentTable` and `createTable` now run the read-back **either way** and
+let it decide. The install's own verdict is reported alongside, never instead,
+with a `reconciliation` note telling the caller not to retry this shape of
+failure without reading back first.
+
+A second defect the same failure exposed: `extractDiagnostics` filtered for
+`ERROR|error TS|Build failed|diagnostic` and reported only *"Command failed:
+…node.exe …index.js install"* — the command, not the cause. The line that
+explained everything was sitting in stdout and matched no filter. Naming the
+command instead of the reason is trap #51 committed in our own code.
+
+### E1 — GREEN
+
+| check | result |
+|---|---|
+| column on `incident` | `x_2002152_nwforge_triage_note` — string(400), `5e3fb71d73c7c390a40ef7303ab8b749` |
+| owned by | `8e720e9b…` — the NowForge scope, not global |
+| mandatory | false — existing rows untouched |
+| base object | `incident.sys_scope` still **global** — not edited |
+| cross-scope privileges | read + write on `incident` in `global`, from our scope |
+| `sys_update_version` | 4 rows — Dictionary + Field Label, previous + current |
+| `listFields('incident')` | 92 fields, up from the 91 measured in §39 |
+| audit | ledger row, `instance: https://dev428633.service-now.com` |
+
+`npm test` — **1073 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 116 | **A red install that succeeded** | `now-sdk install` exits 1 with "The deployment request timed out waiting for a response", and the change is live | The client gave up on a request the server completed. A green install is a claim; a RED install is a claim too. Read back either way and let the read-back decide — and never retry this shape blind, because a retry re-applies a change that already landed |
+| 117 | **An augment's named export is the BASE table's name** | `TS213 … with the name 'incident'` on a file that never mentions defining `incident` | The export name must match the table the block describes, and for an augment that is the table being augmented, not the application augmenting it |
+| 118 | **A diagnostic filter that hides the only useful line** | a failed install reported as "Command failed: node.exe index.js install" | The cause was in stdout and matched none of `ERROR\|error TS\|Build failed\|diagnostic`. A filter is a guess about which lines matter; when it guesses wrong it is worse than no filter, because it looks like the whole answer |
+| 119 | **An operation matrix with no additive entries** | adding a column is refused as "unclassified, treated as irreversible" | Additive is a third state: nothing is destroyed, and undoing it is a drop that cannot be rolled back. Model both halves, or the gate either blocks safe work or waves through the destructive undo |
