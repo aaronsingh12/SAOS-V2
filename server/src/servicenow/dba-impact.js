@@ -323,6 +323,32 @@ const OPERATIONS = {
     note: 'Creating a table risks nothing. Dropping it later is irreversible and takes every row with it.',
   },
   /*
+   * H-2 — the SAFE half of "modify", and only that half.
+   *
+   * This is the one schema operation in this table that is genuinely undoable:
+   * a label, a hint, a default and a WIDER max_length destroy nothing, and
+   * every one of them can be set back by running this operation again with the
+   * previous value. It is deliberately NOT marked `additive`, because the
+   * additive entries carry a `permanence` warning that is false here — telling
+   * a user that changing a label is "effectively impossible to take back" would
+   * train them to ignore the warning where it is true.
+   *
+   * The dangerous halves of "modify" are separate operations with their own
+   * irreversible entries below, and nothing routes into them from here:
+   * narrowing is decrease_column_width, retyping is change_column_type, and
+   * renaming is rename_column.
+   */
+  modify_column: {
+    acts_on: 'schema', reversible: true,
+    mechanism: 'set the attribute back to its previous value — the previous values are recorded in the audit ledger',
+    engineDependent: false,
+    undo: 'modify_column', undoReversible: true,
+    note: 'Covers ONLY label, hint, default and WIDENING max_length. None of these touch stored data: a default '
+        + 'applies to rows created after it and leaves existing rows alone. NARROWING max_length is '
+        + 'decrease_column_width, changing the type is change_column_type and renaming is rename_column — all three '
+        + 'are irreversible, gated separately, and are not reachable through modify.',
+  },
+  /*
    * The sanctioned route for an OUT-OF-SCOPE table. It is a distinct operation
    * from `add_column` precisely because the classifier's "never edit this
    * platform table directly" verdict must NOT block it — the augment IS the
@@ -372,6 +398,19 @@ export async function classifyOperation(op, { withContext = true } = {}) {
         undoReversible: spec.undoReversible,
         permanence: `Undoing ${op} means ${spec.undo}, which creates no rollback context on any engine. `
                   + 'An additive change is safe to make and effectively impossible to take back.',
+      }
+      : {}),
+    /*
+     * An operation whose UNDO is itself reversible must not inherit the
+     * additive entries' permanence warning — see the modify_column comment.
+     */
+    ...(!spec.additive && spec.undoReversible === true
+      ? {
+        undo: spec.undo,
+        undoReversible: true,
+        permanence: `${op} can be undone by running ${spec.undo} again with the previous value, which is recorded `
+                  + 'before the change. Nothing is destroyed, so this is genuinely reversible — unlike the '
+                  + 'irreversible operations in this matrix, which nothing can bring back.',
       }
       : {}),
     reversible: spec.reversible,

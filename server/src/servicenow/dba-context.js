@@ -113,11 +113,19 @@ export async function detectDbEngine({ refresh = false } = {}) {
       const run = await runServerScript({ body, label: 'dba db-engine detection', timeoutMs: 60_000 });
       const raw = String(run?.report?.rdbms || '').trim().toLowerCase();
       if (!run?.report?.ok || !raw) {
+        /*
+         * M-1 — "the harness never answered" is a different fact from "the
+         * instance would not say what engine it runs". Both degrade safely to
+         * unknown, but only one of them is a reason to go and look at the
+         * harness, so they are no longer flattened into the same sentence.
+         */
         return {
           value: null,
           source: "gs.getProperty('glide.db.rdbms') via the execution harness",
+          harnessAvailable: run?.timedOut !== true,
+          ...(run?.timedOut ? { harnessFailure: run.cause ?? 'timeout', harnessDetail: run.message ?? null } : {}),
           error: run?.timedOut
-            ? 'the detection job did not report back before the timeout'
+            ? `the execution harness did not deliver a result (${run.cause ?? 'timeout'}), so the engine was never read`
             : (run?.report?.error || 'the property came back empty'),
         };
       }
@@ -251,12 +259,20 @@ export function recoveryVerdict({ engine, plugins }) {
   const caps = engine?.value ? ENGINE_RECOVERY[engine.value] : null;
 
   if (!engine?.value) {
+    // The verdict is the same either way — unknown, treat as irreversible — but
+    // the caller is told WHICH unknown it is, because one of them is fixable.
+    const harnessDown = engine?.harnessAvailable === false;
     return {
       state: 'unknown',
       recordDelete: 'unknown',
-      headline: 'The database engine could not be determined, so NHA cannot say whether a deleted record is '
-              + 'recoverable on this instance. Treat every delete as irreversible until it can.',
-      reasons: [engine?.error || 'engine detection did not return a value'],
+      ...(harnessDown ? { blockedBy: 'execution-harness', harnessFailure: engine.harnessFailure ?? 'timeout' } : {}),
+      headline: harnessDown
+        ? 'The database engine could not be determined because the server-side execution harness did not deliver a '
+          + 'result — this is a HARNESS failure, not a finding about the instance. NHA therefore cannot say whether '
+          + 'a deleted record is recoverable. Treat every delete as irreversible until the harness answers.'
+        : 'The database engine could not be determined, so NHA cannot say whether a deleted record is '
+          + 'recoverable on this instance. Treat every delete as irreversible until it can.',
+      reasons: [engine?.error || 'engine detection did not return a value', ...(engine?.harnessDetail ? [engine.harnessDetail] : [])],
     };
   }
   if (!caps) {

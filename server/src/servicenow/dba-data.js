@@ -8,7 +8,7 @@ import { diffWrite } from './write-verify.js';
 import { preflight, classifyOperation, analyzeImpact } from './dba-impact.js';
 import { getDbaContext } from './dba-context.js';
 import { findTableSource, removeColumn } from './dba-source.js';
-import { classifyColumnTarget } from './dba-authoring.js';
+import { classifyColumnTarget, columnRouteDecision } from './dba-authoring.js';
 import { log } from '../logging.js';
 
 /**
@@ -621,7 +621,12 @@ export async function dropField({
   /*
    * Routing decides WHERE the drop happens, never WHETHER it is gated. Every
    * branch below still goes through destructiveGate.
+   *
+   * The decision comes from the shared table in dba-authoring, so add, modify
+   * and remove cannot drift apart again (H-2). The refusal MESSAGES stay here,
+   * because they are about dropping specifically.
    */
+  const decision = columnRouteDecision(route.route, 'remove');
   if (route.route === 'create_table') {
     return {
       ok: false, stage: 'route', route: route.route,
@@ -634,7 +639,14 @@ export async function dropField({
       reason: `${tableName} is in this application's scope but no Fluent source declares it. A column could be `
             + 'dropped from the instance, but there is no source to reconcile, so the table would stay unmanaged and '
             + 'the next install could not account for the change. Adopt the table into source first.',
-      offer: 'adopt-into-source',
+      offer: decision.offer,
+    };
+  }
+  if (!decision.proceed) {
+    return {
+      ok: false, stage: 'route', route: route.route, reason: route.reason,
+      ...(decision.redirect ? { redirect: decision.redirect } : {}),
+      ...(decision.offer ? { offer: decision.offer } : {}),
     };
   }
 

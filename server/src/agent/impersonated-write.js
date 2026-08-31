@@ -1,4 +1,7 @@
 import { runImpersonated } from '../servicenow/impersonation.js';
+// Aliased: the local `table` in this module is a table NAME, not the client API.
+import { table as snTable } from '../servicenow/client.js';
+import { diffWrite } from '../servicenow/write-verify.js';
 import { LIVENESS } from '../servicenow/script-liveness.js';
 import { getMode } from '../memory/impersonation-mode.js';
 import {
@@ -170,6 +173,35 @@ export async function runImpersonatedWrite({
 
   const targetCanSee = result.readback_as_target?.found ?? null;
 
+  /*
+   * ── M-1 CLASS: READ THE WRITE BACK OVER A DIFFERENT TRANSPORT ──────────────
+   *
+   * The script already reads its own work back — as the target, and again as
+   * admin for the attribution — and both are worth having. But they are the
+   * SAME EXECUTION reporting on itself, which is the one thing that cannot
+   * detect the M-1 failure: a scoped script whose field writes were discarded
+   * in silence still sees a real sys_id, a null last-error, and a row that
+   * exists. Only a reader outside that execution can tell the difference.
+   *
+   * So the requested fields are compared over the REST Table API from Node,
+   * through the same `diffWrite` the direct write path uses — so an
+   * impersonated write is held to the same standard as an ordinary one, and a
+   * dropped field is named rather than reported as a success.
+   */
+  const writtenId = result.sys_id ?? sysId;
+  let fieldVerification = null;
+  if (operation !== 'delete' && writtenId && Object.keys(data || {}).length) {
+    const returned = await snTable.get(table, writtenId).catch(() => null);
+    fieldVerification = returned
+      ? diffWrite({ table, operation: operation === 'create' ? 'insert' : 'update', requested: data, returned })
+      : { verdict: 'unverified', reason: 'The record could not be read back over the Table API, so nothing confirms what was stored.' };
+    if (fieldVerification.dropped?.length) {
+      log.error('impersonation',
+        `DROPPED FIELDS on ${table} ${writtenId}: ${fieldVerification.dropped.map((d) => d.field).join(', ')} — `
+        + 'the write reported success and the instance did not store them');
+    }
+  }
+
   return {
     ok: true,
     executed_impersonated: true,
@@ -179,6 +211,8 @@ export async function runImpersonatedWrite({
     table,
     sys_id: result.sys_id ?? sysId,
     operation,
+    // Cross-transport, so it can see what the writing execution cannot.
+    field_verification: fieldVerification,
     identity: payload.identity ?? null,
     preflight,
     preflight_admin: adminPreflight,

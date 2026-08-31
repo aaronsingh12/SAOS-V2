@@ -1,6 +1,15 @@
 # DBA Module — Full Verification & Bug Hunt
 **Instance:** dev428633.service-now.com · **Date:** 2026-08-31 · **Commit at start:** `e65c59e`
 
+> **STATUS: all five findings are fixed.** See
+> [`dba-fixes-2026-08-31.md`](./dba-fixes-2026-08-31.md) for the fixes, their
+> independent verification, and the regression tests that hold them in place.
+> This document is left as it was written — it is the record of what was found,
+> not of what was done about it. One correction it earns: M-1's suspicion that
+> the scheduler was not claiming the job was **wrong**. The job ran in five
+> milliseconds; its return channel was silently discarded. The report was right
+> to refuse to guess.
+
 Every claim below was checked through an **independent path** — a raw
 `/api/now/table/…` query via `client.js`, never the `dba_*` tool that made the
 change. Where a tool and a raw query disagree, the raw query is the evidence.

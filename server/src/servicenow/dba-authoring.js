@@ -4,7 +4,7 @@ import { table } from './client.js';
 import { metaQuery, cacheClear } from './dba-metadata.js';
 import { preflight } from './dba-impact.js';
 import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, assertTiersAgree, readInstallVersionRecords, resolveScopeId } from './fluent.js';
-import { findTableSource, insertColumn, columnsInSchema } from './dba-source.js';
+import { findTableSource, insertColumn, modifyColumn, columnsInSchema } from './dba-source.js';
 import { log } from '../logging.js';
 
 /**
@@ -349,6 +349,88 @@ export async function classifyColumnTarget(tableName) {
   };
 }
 
+/* ── one routing table, for every column verb ─────────────────────────────── */
+
+/**
+ * The verbs that act on a column of an existing table.
+ *
+ * Named as a set because the whole point of what follows is that a FOURTH verb
+ * cannot be added without deciding what it does on all four routes.
+ */
+export const COLUMN_VERBS = ['add', 'modify', 'remove'];
+
+/**
+ * What each verb does on each route — the third fix for one bug class.
+ *
+ * ── WHY THIS IS A TABLE AND NOT AN IF-CHAIN PER VERB ─────────────────────────
+ *
+ * Routing was wired for `add` (§46), then again, separately, for `remove`
+ * (§47), and `modify` dead-ended into "that process isn't supported" (H-2).
+ * Three appearances of the same mistake: treating routing as a property of the
+ * VERB, when it is a property of the TARGET. `classifyColumnTarget` already
+ * reads the target once and answers the same way whoever asks; what was missing
+ * was one place that says what each verb then does with that answer.
+ *
+ * So the decision is a table, it is exhaustive, and a verb or route missing
+ * from it THROWS rather than falling through to a default. A fourth verb cannot
+ * silently diverge, because there is nothing for it to silently diverge into.
+ *
+ * `proceed` says only where the work happens. It never says whether the work is
+ * ALLOWED — every destructive verb still goes through `destructiveGate`
+ * afterwards, and `modify` still refuses its own irreversible half. Routing and
+ * gating are separate questions and are kept that way deliberately.
+ */
+const COLUMN_ROUTE_DECISIONS = {
+  in_scope_source: {
+    add: { proceed: true },
+    modify: { proceed: true },
+    remove: { proceed: true },
+  },
+  augment: {
+    // The base object is never edited; a column is attached through the
+    // table-augments pattern, which is its own tool.
+    add: { proceed: false, redirect: 'dba_augment_table' },
+    modify: { proceed: false, redirect: 'dba_augment_table' },
+    // A drop still routes here: the column being dropped is OURS, attached to
+    // someone else's table, so the gate — not the route — is what governs it.
+    remove: { proceed: true },
+  },
+  create_table: {
+    add: { proceed: false, redirect: 'dba_create_table' },
+    modify: { proceed: false, redirect: 'dba_create_table' },
+    remove: { proceed: false, redirect: null },
+  },
+  unmanaged_in_scope: {
+    add: { proceed: false, offer: 'adopt-into-source' },
+    modify: { proceed: false, offer: 'adopt-into-source' },
+    remove: { proceed: false, offer: 'adopt-into-source' },
+  },
+};
+
+/**
+ * Decide what `verb` does with an already-classified `route`.
+ *
+ * Pure, so the symmetry between the verbs is testable without an instance —
+ * which is the only way a claim like "all three route identically" stays true
+ * a month from now.
+ */
+export function columnRouteDecision(route, verb) {
+  if (!COLUMN_VERBS.includes(verb)) {
+    throw Object.assign(new Error(
+      `"${verb}" is not one of the column verbs (${COLUMN_VERBS.join(', ')}). Routing is decided from the TARGET, `
+      + 'so a new verb must be added to COLUMN_ROUTE_DECISIONS explicitly rather than inheriting a default — '
+      + 'inheriting a default is how add, remove and modify came to disagree three separate times.'
+    ), { status: 500 });
+  }
+  const row = COLUMN_ROUTE_DECISIONS[route];
+  if (!row) {
+    throw Object.assign(new Error(
+      `"${route}" is not a known column route (${Object.keys(COLUMN_ROUTE_DECISIONS).join(', ')}).`
+    ), { status: 500 });
+  }
+  return row[verb];
+}
+
 /**
  * `dba.addField` — add a column to an in-scope, SDK-managed table.
  *
@@ -362,7 +444,7 @@ export async function addField(tableName, field, emit = () => {}, { dryRun = fal
   const scope = await currentScope();
 
   const route = await classifyColumnTarget(tableName);
-  if (route.route !== 'in_scope_source') {
+  if (!columnRouteDecision(route.route, 'add').proceed) {
     return { ok: false, stage: 'route', route, errors: [route.reason] };
   }
 
@@ -551,6 +633,469 @@ const EXPECTED_INTERNAL_TYPE = {
   datetime: 'glide_date_time',
   decimal: 'decimal',
 };
+
+/* ── modifying a column this application already owns ─────────────────────── */
+
+/**
+ * The column attributes this layer will change, and why only these.
+ *
+ * "Modify" is not one operation, and the H-2 gap was only ever in its SAFE
+ * half. Splitting it here rather than at the call site is the point: the
+ * dangerous halves already have correct, gated classifications in the
+ * operations matrix (`decrease_column_width`, `change_column_type`,
+ * `rename_column`), and nothing below can reach them.
+ *
+ *   label      display only. No stored value changes. Lands on
+ *              sys_documentation.label — MEASURED end to end.
+ *   hint       display only. Lands on sys_documentation.hint — but ONLY when
+ *              emitted through the Documentation form; see DOCUMENTATION_FORM.
+ *   help       display only, alongside hint on the same record.
+ *   default    applies to rows created AFTER it; existing rows keep their
+ *              value. Lands on sys_dictionary.default_value — MEASURED.
+ *   maxLength  WIDENING only. Narrowing truncates every value that no longer
+ *              fits and creates no rollback context — that is
+ *              `decrease_column_width` and it stays gated.
+ */
+export const MODIFIABLE_OPTIONS = ['label', 'hint', 'help', 'default', 'maxLength'];
+
+/**
+ * The options that must travel together, and the measurement behind that.
+ *
+ * ── WHY `hint: "…"` ON A COLUMN IS SILENTLY DISCARDED ────────────────────────
+ *
+ * `hint?: string` and `help?: string` are declared on `Column` in sdk-core, and
+ * `now-sdk build` accepts them without a diagnostic. They never arrive. A first
+ * pass caught this the expensive way — a live install where `label` and
+ * `default` landed and `sys_documentation.hint` stayed empty — and the
+ * read-back refused to call it a success.
+ *
+ * The cheap proof is the BUILD ARTIFACT, which settles where the value is lost
+ * without touching the instance at all. Building
+ *
+ *   u_name: StringColumn({ label: "Name", maxLength: 40,
+ *                          hint: "BUILD PROBE HINT", help: "BUILD PROBE HELP" })
+ *
+ * emits dist/app/update/sys_documentation_…_u_name_en.xml containing
+ *
+ *   <help/>  <hint/>  <label>Name</label>
+ *
+ * — empty, before the instance is ever contacted. So this is a BUILD-time drop,
+ * not an install-time or platform one.
+ *
+ * MEASURED on @servicenow/sdk 4.10.1 AND 4.11.2 (the latest at the time of
+ * writing): both drop it identically, and `sdk-core/dist/db/` is byte-identical
+ * between the two, so no upgrade fixes it. It is not a version bug.
+ *
+ * The form that DOES work is the documentation list — `label` may be a
+ * `Documentation[]` rather than a string:
+ *
+ *   u_name: StringColumn({ label: [{ label: "Name", hint: "…", help: "…" }],
+ *                          maxLength: 40 })
+ *
+ * which builds to <hint>…</hint> <help>…</help> <label>Name</label>. Verified
+ * at build on BOTH 4.10.1 and 4.11.2, then verified live by read-back of
+ * sys_documentation.
+ *
+ * The consequence for this layer: label, hint and help are ONE option as far as
+ * the emitter is concerned. Setting any of them re-emits all three, carrying
+ * the current values of the ones the caller did not ask to change — otherwise
+ * setting a hint would blank the label.
+ */
+const DOCUMENTATION_FORM = ['label', 'hint', 'help'];
+
+/** Which gated operation a refused change actually is, so the refusal can name it. */
+const UNSAFE_MODIFY = {
+  narrow: 'decrease_column_width',
+  retype: 'change_column_type',
+  rename: 'rename_column',
+};
+
+/**
+ * Split a requested change into the half this layer performs and the half it refuses.
+ *
+ * Pure — `current` is a live `sys_dictionary` row (plus the documentation row's
+ * hint), `requested` is the caller's change. Kept free of I/O so the safe/unsafe
+ * boundary is testable without an instance, because that boundary is the whole
+ * safety property of this feature.
+ */
+export function classifyColumnChange(current, requested = {}) {
+  const safe = [];
+  const refused = [];
+  const noop = [];
+  const unknown = [];
+
+  const currentMax = Number(current?.max_length);
+  const values = {
+    label: current?.column_label ?? '',
+    hint: current?.hint ?? '',
+    help: current?.help ?? '',
+    default: current?.default_value ?? '',
+    maxLength: Number.isFinite(currentMax) ? currentMax : null,
+  };
+
+  for (const [option, to] of Object.entries(requested)) {
+    if (to === undefined) continue;
+
+    if (option === 'name') {
+      if (String(to) !== String(current?.element)) {
+        refused.push({
+          option, operation: UNSAFE_MODIFY.rename, from: current?.element ?? null, to,
+          reason: 'Renaming a column creates no rollback context, and every query, script and ACL naming the old '
+                + 'column stops matching WITHOUT erroring. It is gated separately and is not part of modify.',
+        });
+      }
+      continue;
+    }
+    if (option === 'type') {
+      if (String(to) !== String(current?.internal_type)) {
+        refused.push({
+          option, operation: UNSAFE_MODIFY.retype, from: current?.internal_type ?? null, to,
+          reason: 'A type change creates no rollback context, and data that does not fit the new type is lost in '
+                + 'the conversion. It is gated separately and is not part of modify.',
+        });
+      }
+      continue;
+    }
+    if (!MODIFIABLE_OPTIONS.includes(option)) {
+      unknown.push({ option, to, reason: `"${option}" is not an attribute this layer changes. Modifiable: ${MODIFIABLE_OPTIONS.join(', ')}.` });
+      continue;
+    }
+
+    const from = values[option];
+    if (option === 'maxLength') {
+      const want = Number(to);
+      if (!Number.isFinite(want) || want <= 0) {
+        unknown.push({ option, to, reason: `maxLength must be a positive number; got ${JSON.stringify(to)}.` });
+        continue;
+      }
+      if (from != null && want < from) {
+        refused.push({
+          option, operation: UNSAFE_MODIFY.narrow, from, to: want,
+          reason: `Narrowing ${current?.element} from ${from} to ${want} truncates every value that no longer fits `
+                + 'and creates no rollback context. It is gated separately and is not part of modify.',
+        });
+        continue;
+      }
+      if (from != null && want === from) { noop.push({ option, value: want }); continue; }
+      safe.push({ option, from, to: want });
+      continue;
+    }
+
+    if (String(from ?? '') === String(to ?? '')) { noop.push({ option, value: to }); continue; }
+    safe.push({ option, from: from ?? null, to });
+  }
+
+  return { safe, refused, noop, unknown };
+}
+
+/** Emit a column option as the literal the schema block will hold. */
+function optionLiteral(option, value, type) {
+  if (option === 'maxLength') return String(Number(value));
+  if (option !== 'default') return lit(String(value));
+  if (type === 'integer' || type === 'decimal') return String(Number(value));
+  if (type === 'boolean') return String(value === true || value === 'true');
+  return lit(String(value));
+}
+
+/**
+ * Turn a set of applied changes into the literals `modifyColumn` will splice in.
+ *
+ * The one piece of real work here is folding label/hint/help into a single
+ * `label: [{ … }]` — see DOCUMENTATION_FORM for why the flat `hint:` option is
+ * not an option at all. `current` supplies the values the caller did not ask to
+ * change, so setting a hint cannot blank a label.
+ *
+ * Pure, so the emitted shape is testable without a build.
+ */
+export function emitColumnOptions(applied, current = {}, type = 'string') {
+  const set = {};
+  const touchesDocs = applied.some((c) => DOCUMENTATION_FORM.includes(c.option));
+
+  for (const change of applied) {
+    if (DOCUMENTATION_FORM.includes(change.option)) continue;   // folded below
+    set[change.option] = optionLiteral(change.option, change.to, type);
+  }
+
+  if (touchesDocs) {
+    const requested = Object.fromEntries(applied.map((c) => [c.option, c.to]));
+    const doc = {
+      label: requested.label ?? current.label ?? '',
+      hint: requested.hint ?? current.hint ?? '',
+      help: requested.help ?? current.help ?? '',
+    };
+    // `language` is deliberately omitted: the project's now.config.json default
+    // supplies it, and pinning one here would make every column single-language
+    // by accident. Measured: the built record carries <language>en</language>
+    // without it.
+    const parts = [`label: ${lit(doc.label)}`];
+    if (doc.hint) parts.push(`hint: ${lit(doc.hint)}`);
+    if (doc.help) parts.push(`help: ${lit(doc.help)}`);
+    // A label with no hint and no help stays a plain string — the simplest form
+    // that works, and the one every generated column already uses.
+    set.label = parts.length === 1 ? lit(doc.label) : `[{ ${parts.join(', ')} }]`;
+  }
+
+  return set;
+}
+
+/** The Fluent column type behind a stored `internal_type`, for emitting a default. */
+const TYPE_FOR_INTERNAL = Object.fromEntries(
+  Object.entries(EXPECTED_INTERNAL_TYPE).map(([k, v]) => [v, k]),
+);
+
+/**
+ * `dba.modifyField` — change a column on an in-scope, SDK-managed table.
+ *
+ * ── H-2, AND WHY IT IS THE SAME FIX AS §46 AND §47 ───────────────────────────
+ *
+ * Add was wired, then remove was wired, and modify dead-ended into "that
+ * process isn't supported" — which was wrong the same way both times before:
+ * unbuilt, not unsupported. The cause each time was routing decided per VERB.
+ * It is now decided once, from the target, in `columnRouteDecision`, and this
+ * function is a consumer of that decision rather than a third copy of it.
+ *
+ * What it does NOT do is loosen anything. Narrowing and retyping are refused
+ * here and stay behind the destructive gate, and the refusal names the gated
+ * operation instead of quietly doing a smaller thing the caller did not ask
+ * for. A change with any refused part is refused WHOLE — a partial application
+ * would leave the caller believing a change landed that did not.
+ */
+export async function modifyField(tableName, change = {}, emit = () => {}, { dryRun = false } = {}) {
+  const el = String(change?.name || '').trim().toLowerCase();
+  if (!tableName || !el) {
+    return { ok: false, stage: 'spec', errors: ['modifyField needs both a table and a column name.'] };
+  }
+
+  const route = await classifyColumnTarget(tableName);
+  const decision = columnRouteDecision(route.route, 'modify');
+  if (!decision.proceed) {
+    return {
+      ok: false, stage: 'route', route, errors: [route.reason],
+      ...(decision.redirect ? { redirect: decision.redirect } : {}),
+      ...(decision.offer ? { offer: decision.offer } : {}),
+    };
+  }
+
+  // Re-read live: a cache never drives a write (guardrail §6).
+  const [dictRows, docRows] = await Promise.all([
+    metaQuery('sys_dictionary', {
+      query: `name=${tableName}^element=${el}`,
+      fields: 'element,name,internal_type,column_label,max_length,default_value,reference,mandatory',
+      max: 1,
+    }),
+    metaQuery('sys_documentation', { query: `name=${tableName}^element=${el}`, fields: 'element,name,label,hint,help', max: 1 }).catch(() => []),
+  ]);
+  const current = dictRows[0]
+    ? { ...dictRows[0], column_label: docRows[0]?.label ?? dictRows[0].column_label, hint: docRows[0]?.hint ?? '', help: docRows[0]?.help ?? '' }
+    : null;
+  if (!current) {
+    return {
+      ok: false, stage: 'preflight', route: route.route,
+      errors: [`${tableName} has no column "${el}". Adding one is dba_add_field; this changes a column that already exists.`],
+    };
+  }
+
+  const { name: _ignored, ...requested } = change;
+  const split = classifyColumnChange(current, { ...requested, name: el });
+
+  if (split.unknown.length) {
+    return { ok: false, stage: 'spec', route: route.route, table: tableName, column: el, errors: split.unknown.map((u) => u.reason) };
+  }
+  if (split.refused.length) {
+    /*
+     * The refusal is the feature, not a gap in it. It names the real operation
+     * so the caller can go through the gate rather than around it, and it does
+     * NOT apply the safe part of a mixed request — a half-applied change the
+     * caller believes was whole is worse than a clean refusal.
+     */
+    return {
+      ok: false,
+      stage: 'gated',
+      route: route.route,
+      table: tableName,
+      column: el,
+      irreversible: true,
+      refused: split.refused,
+      wouldHaveApplied: split.safe,
+      statement: `${split.refused.map((r) => `Changing ${el}'s ${r.option} is ${r.operation}`).join('; ')}. `
+               + 'These create no rollback context on any database engine, are refused by default, and are not part '
+               + 'of modify. Nothing was changed — including the safe parts of this request, which are not applied '
+               + 'on their own so that a partial change cannot be mistaken for the whole one.',
+      doNotWorkAround: 'Do not offer to edit the Fluent source by hand as an alternative, and do not substitute a '
+        + 'different change that happens to be permitted. Take the named operation through its gate.',
+      requiredNext: split.refused.map((r) => `${r.operation} — dba_classify_operation and dba_preflight state what it requires`),
+    };
+  }
+  if (!split.safe.length) {
+    return {
+      ok: true, stage: 'no-change', route: route.route, table: tableName, column: el,
+      noop: split.noop,
+      note: `${el} already holds every value requested; nothing was written and nothing was installed.`,
+    };
+  }
+
+  emit({ type: 'dba_preflight', table: tableName });
+  const pre = await preflight({ operation: 'modify_column', table: tableName, field: el });
+  if (pre.verdict !== 'go') return { ok: false, stage: 'preflight', route: route.route, blockers: pre.blockers, preflight: pre };
+
+  const fluentType = TYPE_FOR_INTERNAL[current.internal_type] ?? 'string';
+  const set = emitColumnOptions(split.safe, {
+    label: current.column_label ?? '',
+    hint: current.hint ?? '',
+    help: current.help ?? '',
+  }, fluentType);
+
+  const file = route.sourceFile;
+  const original = await fsp.readFile(file, 'utf8');
+  let edit;
+  try {
+    edit = modifyColumn(original, { column: el, set });
+  } catch (err) {
+    return { ok: false, stage: 'source', route: route.route, errors: [err.message] };
+  }
+  if (!edit.changed) {
+    return { ok: false, stage: 'source', route: route.route, errors: [edit.reason] };
+  }
+
+  if (dryRun) {
+    return {
+      ok: true, stage: 'dry-run', route: route.route, table: tableName, column: el,
+      file, applied: split.safe, sourceBefore: edit.before, sourceAfter: edit.after,
+      source: edit.text, preflight: pre, installed: false,
+    };
+  }
+
+  await fsp.writeFile(file, edit.text, 'utf8');
+  emit({ type: 'dba_source_edited', file });
+
+  emit({ type: 'dba_building' });
+  const built = await buildWorkspace();
+  if (!built.ok) {
+    // Put the source back exactly as it was, the same way addField does.
+    await fsp.writeFile(file, original, 'utf8');
+    const restored = (await fsp.readFile(file, 'utf8')) === original;
+    return {
+      ok: false, stage: 'build', route: route.route, diagnostics: extractDiagnostics(built), source: edit.text,
+      sourceRestored: restored,
+      message: 'now-sdk build failed; nothing was installed and the source was restored to its previous state.',
+    };
+  }
+
+  emit({ type: 'dba_tier_check' });
+  const tiers = await assertTiersAgree();
+  emit({ type: 'dba_tiers_agree', host: tiers.host });
+
+  emit({ type: 'dba_installing' });
+  const installed = await installWorkspace({ timeoutMs: INSTALL_BOUND_MS });
+
+  // A red install is only a claim (§44) — the read-back decides, on both paths.
+  emit({ type: 'dba_verifying' });
+  cacheClear('dba:');
+  const verification = await verifyColumnChange(tableName, el, split.safe, file);
+
+  if (!installed.ok && !verification.ok) {
+    return { ok: false, stage: 'install', route: route.route, diagnostics: extractDiagnostics(installed), file, verification };
+  }
+
+  return {
+    ok: verification.ok,
+    stage: verification.ok ? 'verified' : 'verification-failed',
+    route: route.route,
+    table: tableName,
+    column: el,
+    file,
+    applied: split.safe,
+    ...(split.noop.length ? { unchanged: split.noop } : {}),
+    installedTo: tiers.host,
+    preflight: pre,
+    verification,
+    permanence: pre.permanence ?? null,
+    reversibility: `Every attribute changed here can be set back to its previous value with another modify — the `
+      + `previous values are recorded above and in the audit ledger. This is NOT true of the changes modify `
+      + `refuses: narrowing and retyping destroy data and cannot be undone.`,
+    ...(installed.ok ? {} : {
+      installReportedFailure: true,
+      installTimedOut: installed.timedOut === true,
+      installDiagnostics: extractDiagnostics(installed),
+      reconciliation: installed.timedOut
+        ? `The install did not answer within ${INSTALL_BOUND_MS / 60000} minutes, so the instance was read back `
+          + 'instead of waiting. The read-back is the authority — it was NOT retried, because a retry would re-apply '
+          + 'whatever the server had already done.'
+        : 'The SDK reported a failure and the read-back found the change live. The read-back is the authority; do '
+          + 'not retry without reading back first.',
+    }),
+    wholeAppNote: 'now-sdk install deploys the ENTIRE application (trap #8).',
+  };
+}
+
+/**
+ * Read the changed column back, and check that source and instance AGREE.
+ *
+ * Same two-part contract as `verifyColumn`: the values must be live on the
+ * instance AND declared in the source, because a change present on only one
+ * side is undone by the next install or never shipped at all.
+ *
+ * `label` and `hint` are stored on `sys_documentation`, not `sys_dictionary` —
+ * measured on dev428633, `sys_dictionary` has no `hint` column and its
+ * `column_label` is a `documentation_field` backed by that table. Reading the
+ * label from the dictionary alone would report a stale value as agreement.
+ */
+export async function verifyColumnChange(tableName, element, applied, file) {
+  const [dictRows, docRows] = await Promise.all([
+    metaQuery('sys_dictionary', {
+      query: `name=${tableName}^element=${element}`,
+      fields: 'element,name,internal_type,column_label,max_length,default_value',
+      max: 1,
+    }),
+    metaQuery('sys_documentation', { query: `name=${tableName}^element=${element}`, fields: 'element,name,label,hint,help', max: 1 }).catch(() => []),
+  ]);
+  const got = dictRows[0] || null;
+  const doc = docRows[0] || null;
+
+  const onInstance = {
+    label: doc?.label ?? got?.column_label ?? null,
+    hint: doc?.hint ?? null,
+    help: doc?.help ?? null,
+    default: got?.default_value ?? null,
+    maxLength: got?.max_length != null ? Number(got.max_length) : null,
+  };
+
+  const problems = [];
+  const checked = [];
+  if (!got) problems.push(`${element} is absent from ${tableName}'s dictionary on the instance`);
+  else {
+    for (const change of applied) {
+      const actual = onInstance[change.option];
+      const agrees = change.option === 'maxLength'
+        // The platform may widen further than asked (a minimum for the type);
+        // it must never end up NARROWER than requested.
+        ? Number(actual) >= Number(change.to)
+        : String(actual ?? '') === String(change.to ?? '');
+      checked.push({ option: change.option, requested: change.to, onInstance: actual, agrees });
+      if (!agrees) problems.push(`${change.option} reads ${JSON.stringify(actual)} on the instance, expected ${JSON.stringify(change.to)}`);
+    }
+  }
+
+  const sourceText = await fsp.readFile(file, 'utf8').catch(() => '');
+  const inSource = columnsInSchema(sourceText).includes(element);
+  const agree = Boolean(got) && inSource;
+
+  return {
+    ok: problems.length === 0 && agree,
+    table: tableName,
+    column: element,
+    checked,
+    onInstance,
+    inSource,
+    sourceAndInstanceAgree: agree,
+    ...(problems.length ? { problems } : {}),
+    ...(agree ? {} : {
+      divergence: inSource
+        ? 'The source declares the column and the instance does not have it — the install did not ship it.'
+        : 'The instance has the column and the source does not declare it — the next install would REMOVE it.',
+    }),
+  };
+}
 
 /* ── the augment path: adding a column to an out-of-scope table ───────────── */
 

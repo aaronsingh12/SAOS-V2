@@ -78,7 +78,7 @@ export default function Dashboard() {
           <div className="card-title">PDI connection</div>
           <div className="field">
             <label className="label">Instance URL</label>
-            <input className="input mono" placeholder="https://dev12345.service-now.com" value={conn.instanceUrl}
+            <input className="input mono" placeholder="https://<your-instance>.service-now.com" value={conn.instanceUrl}
               onChange={(e) => setConn({ ...conn, instanceUrl: e.target.value.trim() })} />
           </div>
           <div className="field">

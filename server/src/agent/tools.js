@@ -43,6 +43,7 @@ import {
   augmentTable as dbaAugmentTable,
   addField as dbaAddField,
   classifyColumnTarget as dbaClassifyColumnTarget,
+  modifyField as dbaModifyField,
 } from '../servicenow/dba-authoring.js';
 import {
   setFieldValue as dbaSetFieldValue,
@@ -1856,6 +1857,47 @@ export const TOOLS = [
       required: ['table', 'field'],
     },
     execute: ({ table: t, field }) => dbaAddField(t, field || {}),
+  },
+  {
+    name: 'dba_modify_field',
+    description:
+      'Change a column that already exists on a table THIS APPLICATION OWNS. Covers the SAFE half of "modify" and '
+      + 'only that half: label, hint, help, default, and WIDENING maxLength. None of these touch stored data — a default '
+      + 'applies to rows created after it and leaves existing rows alone — and every one of them can be set back by '
+      + 'calling this again with the previous value. '
+
+      + 'Like dba_add_field it edits the Fluent source and reinstalls, never sys_dictionary, and verifies TWO things '
+      + 'afterwards: the new values are live on the instance, and source and instance agree. '
+      + 'It REFUSES the dangerous half and names it instead: NARROWING maxLength is decrease_column_width, changing '
+      + 'the type is change_column_type, renaming is rename_column — all three are irreversible, create no rollback '
+      + 'context, and are gated separately. A request that mixes safe and refused changes is refused WHOLE, so a '
+      + 'partial change is never mistaken for the whole one. Do not work around a refusal by editing the .now.ts by '
+      + 'hand, and do not substitute a different change that happens to be permitted. '
+      + 'To ADD a column use dba_add_field; to remove one use dba_drop_field; dba_column_route says which path a '
+      + 'table is on — the routing is the same for all three verbs.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        field: { type: 'string', description: 'The existing column to change.' },
+        label: { type: 'string' },
+        hint: { type: 'string', description: 'Field hint (tooltip). Stored on sys_documentation.' },
+        help: { type: 'string', description: 'Field help text. Stored on sys_documentation.' },
+        default: { type: 'string', description: 'New default value. Applies to NEW rows only.' },
+        max_length: { type: 'number', description: 'New maxLength. Must be LARGER than the current one; narrowing is refused.' },
+      },
+      required: ['table', 'field'],
+    },
+    execute: ({ table: t, field, label, hint, help, default: def, max_length }) =>
+      dbaModifyField(t, {
+        name: field,
+        ...(label !== undefined ? { label } : {}),
+        ...(hint !== undefined ? { hint } : {}),
+        ...(help !== undefined ? { help } : {}),
+        ...(def !== undefined ? { default: def } : {}),
+        ...(max_length !== undefined ? { maxLength: max_length } : {}),
+      }),
   },
   {
     name: 'dba_drop_field',

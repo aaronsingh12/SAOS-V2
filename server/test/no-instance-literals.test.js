@@ -55,12 +55,57 @@ function sourceFiles(dir, out = []) {
 }
 
 /**
+ * Cut a `//` line comment WITHOUT cutting the `//` in a URL scheme.
+ *
+ * ── H-1, and why the naive version could not see the bug it existed for ──────
+ *
+ * This was `line.replace(/\/\/.*$/, '')`. `https://` contains `//`, so every
+ * connection URL in the tree was truncated at its scheme before the hostname
+ * regex ever ran:
+ *
+ *   const H = 'https://dev123456.service-now.com';   as the scanner saw it:
+ *   const H = 'https:                                -> zero hostname matches
+ *
+ * The scan could therefore only ever catch a SCHEME-LESS hostname — and a
+ * hardcoded connection string always has a scheme. It reported the tree clean
+ * because it could not see, which is worse than not scanning: false assurance
+ * about the exact bug class that caused the dev442675 incident. Its own
+ * self-check missed this because the probe it planted was also scheme-less.
+ *
+ * So the cut is now made by a walk that knows two things the regex did not:
+ *
+ *   - a `//` inside a string literal is not a comment. That is what puts
+ *     'https://host' in front of the regex intact.
+ *   - a `//` immediately preceded by `:` is a scheme separator, not a comment,
+ *     even unquoted (a template chunk, a concatenation).
+ *
+ * Still deliberately not a JS parser. A false NEGATIVE is a missed literal that
+ * the deploy-time guards (assertTiersAgree / assertAppBinding) still catch; a
+ * false POSITIVE would make the suite unrunnable and get the scan deleted.
+ */
+function stripLineComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\') { i += 1; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+    if (c === '/' && line[i + 1] === '/') {
+      if (line[i - 1] === ':') continue;   // `https://…`, not a comment
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+/**
  * Strip comments and skip anything that is not executable.
  *
- * Deliberately simple: it removes `//` tails, whole-line `*` continuations and
- * `/* … *\/` on one line. A false NEGATIVE here is a missed literal, which the
- * deploy-time guards still catch; a false POSITIVE would make the suite
- * unrunnable and get the scan deleted.
+ * Removes `//` tails (see stripLineComment), whole-line `*` continuations and
+ * `/* … *\/` on one line.
  */
 function executableLines(text) {
   const out = [];
@@ -80,7 +125,7 @@ function executableLines(text) {
       if (end === -1) { line = line.slice(0, start); inBlock = true; break; }
       line = line.slice(0, start) + line.slice(end + 2);
     }
-    line = line.replace(/\/\/.*$/, '');
+    line = stripLineComment(line);
     if (!line.trim()) return;
     out.push({ n: i + 1, line });
   });
@@ -136,12 +181,70 @@ test('the only scope literal in executable source is this project\'s canonical s
     `a scope literal other than the canonical ${canonical} appears in executable source`);
 });
 
+/* ── the self-check ───────────────────────────────────────────────────────── */
+
+/*
+ * The three scans above, run over a string instead of the tree, so the probe
+ * and the real scan cannot drift apart.
+ */
+const HOSTNAME_RE = /\b[a-z0-9-]+\.service-now\.com\b/i;
+const SYSID_RE = /['"`][0-9a-f]{32}['"`]/i;
+
+function scanText(text) {
+  const hits = { hostname: [], sysId: [] };
+  for (const { line } of executableLines(text)) {
+    if (HOSTNAME_RE.test(line)) hits.hostname.push(line.trim());
+    const m = line.match(SYSID_RE);
+    if (m) hits.sysId.push(m[0]);
+  }
+  return hits;
+}
+
 test('the scan actually reads files — a scan that matches nothing proves nothing', () => {
   // A green result is only meaningful if the scanner found source to scan.
   const total = SCAN_DIRS.reduce((n, d) => n + sourceFiles(d).length, 0);
   assert.ok(total > 40, `only ${total} source files scanned — the walker is not finding the tree`);
-  // And it must be able to see a violation when one exists.
-  const probe = executableLines('const h = "dev123456.service-now.com";\n// const c = "dev999999.service-now.com";');
-  assert.equal(probe.length, 1);
-  assert.match(probe[0].line, /dev123456/);
+});
+
+test('the scan can see a planted violation in every shape one really takes (H-1)', () => {
+  /*
+   * The version of this probe that shipped with the bug planted only a BARE
+   * hostname, which is the one shape `//`-stripping could not destroy — so the
+   * self-check passed while the scan was blind to every real connection string.
+   * The probe now plants all three shapes, and the schemed URL is the one that
+   * matters: it is how a hardcoded instance is actually written.
+   */
+  const schemed = scanText(`const base = 'https://dev123456.service-now.com';`);
+  assert.deepEqual(schemed.hostname, [`const base = 'https://dev123456.service-now.com';`],
+    'a schemed connection URL must be caught — this is the shape H-1 was blind to');
+
+  const bare = scanText(`const host = "dev123456.service-now.com";`);
+  assert.equal(bare.hostname.length, 1, 'a scheme-less hostname must still be caught');
+
+  const sysId = scanText(`const scopeId = 'deadbeefdeadbeefdeadbeefdeadbeef';`);
+  assert.deepEqual(sysId.sysId, [`'deadbeefdeadbeefdeadbeefdeadbeef'`], 'a quoted sys_id must be caught');
+
+  // Schemed URL and sys_id planted on the SAME line, as a real config object is.
+  const both = scanText(`const cfg = { url: 'https://dev123456.service-now.com', scope: 'deadbeefdeadbeefdeadbeefdeadbeef' };`);
+  assert.equal(both.hostname.length, 1);
+  assert.equal(both.sysId.length, 1);
+});
+
+test('comments are still exempt — including comments that mention an instance', () => {
+  // The exemption is the reason the scan is tolerated at all: this repo records
+  // the instance a measurement was taken on. Breaking it would get the scan
+  // deleted, so it is asserted rather than assumed.
+  const line = scanText(`// measured on dev999999.service-now.com, sys_id 'deadbeefdeadbeefdeadbeefdeadbeef'`);
+  assert.deepEqual(line.hostname, []);
+  assert.deepEqual(line.sysId, []);
+
+  const block = scanText(`/* measured on dev999999.service-now.com */`);
+  assert.deepEqual(block.hostname, []);
+
+  const trailing = scanText(`const x = 1;   // dev999999.service-now.com`);
+  assert.deepEqual(trailing.hostname, []);
+
+  // A comment AFTER live code on the same line must not hide the code.
+  const mixed = scanText(`const u = 'https://dev123456.service-now.com';  // the bound instance`);
+  assert.equal(mixed.hostname.length, 1);
 });

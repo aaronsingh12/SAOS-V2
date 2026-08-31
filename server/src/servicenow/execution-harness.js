@@ -127,6 +127,51 @@ export function assertQualifiedName(qualified) {
   return qualified;
 }
 
+/*
+ * ── M-1: WHY THERE IS A SECOND RETURN CHANNEL ───────────────────────────────
+ *
+ * MEASURED on dev428633, 2026-08-31, after a trivial one-shot probe "timed out"
+ * at 93.7s against a ~2s baseline. The job was not slow and the scheduler was
+ * not asleep. Instrumenting the generated script with gs.info showed:
+ *
+ *   NFQ… scope=x_2002152_nwforge
+ *   NFQ… isValid=true canCreate=true canWrite=true canRead=true
+ *   NFQ… afterSet name=[null] value=[null]      <-- the write did NOTHING
+ *   NFQ… insert=48997ce573cfc390a40ef7303ab8b747 lastErr=null
+ *   NFQ… reread name=[null] value=[null]
+ *
+ * The job ran in UNDER FIVE SECONDS. What failed was the return channel:
+ *
+ *   1. A `sysauto_script` created over the Table API is born in the REST
+ *      session's current application, which is this app's scope — and the scope
+ *      cannot be overridden on the insert (trap #69; client.js proves it by
+ *      refusing). So the job runs SCOPED.
+ *   2. `sys_user_preference` is owned by `global` with `update_access = false`.
+ *      A scoped script's field writes to it are DISCARDED IN SILENCE:
+ *      `canWrite()` answers true, `setValue` is a no-op, `insert()` returns a
+ *      real sys_id and `getLastErrorMessage()` is null. Every signal says
+ *      success; the row lands with an empty name and an empty value.
+ *   3. The harness then polled for `name=<sinkName>`, never matched, and timed
+ *      out blaming the scheduler — the opposite of the truth.
+ *   4. Cleanup queried by that same name, found nothing, and reported
+ *      `sinkDeleted: true, leftovers: []` while a blank-named row STAYED on the
+ *      instance. The leak was invisible for the same reason the payload was.
+ *
+ * So the wrapper now (a) says out loud that it started, (b) PROVES the sink row
+ * round-tripped instead of trusting `insert()`, and (c) falls back to syslog —
+ * the one channel a scoped script demonstrably can write — when it did not.
+ * syslog cannot be deleted over REST, which is why it was rejected as the
+ * primary channel in §32 and why it is still only the fallback: the ordinary
+ * path leaves nothing behind, and the fallback trades a few undeletable log
+ * lines for an answer instead of a wrong diagnosis and a silent leak.
+ */
+
+/** syslog.message is 4000 chars (measured); chunk well under it. */
+const LOG_CHUNK = 3000;
+
+/** Markers the wrapper emits and the poller reads. Short, and unique per run. */
+const MARK = { start: 'NFSTART', sink: 'NFSINK', report: 'NFRPT' };
+
 /**
  * Wrap a caller's script so its result comes back as one deletable row.
  *
@@ -135,21 +180,88 @@ export function assertQualifiedName(qualified) {
  * because failing to report IS the failure the harness times out on.
  */
 export function wrapScript({ body, sinkName, token }) {
+  const T = jsLiteral(token);
   return [
-    `var report = { token: ${jsLiteral(token)} };`,
+    `var report = { token: ${T} };`,
     'var __t0 = new Date().getTime();',
+    // Executed-at-all marker. It is emitted BEFORE the body so that "the job
+    // never ran" and "the job ran and could not report" stop looking alike.
+    "var __scope = 'unknown';",
+    "try { __scope = String(gs.getCurrentScopeName()); } catch (e0) { __scope = 'unreadable'; }",
+    `gs.info(${T} + ' ${MARK.start} scope=' + __scope);`,
     'try {',
     body,
     '  report.ok = true;',
     '} catch (e) { report.ok = false; report.error = String(e); }',
     'report.elapsedMs = new Date().getTime() - __t0;',
+    'report.scope = __scope;',
+    'var __json = JSON.stringify(report);',
     "var __sink = new GlideRecord('sys_user_preference');",
     '__sink.initialize();',
     `__sink.name = ${jsLiteral(sinkName)};`,
-    '__sink.value = JSON.stringify(report).substring(0, 60000);',
+    '__sink.value = __json.substring(0, 60000);',
     '__sink.system = true;',
-    '__sink.insert();',
+    'var __sinkId = __sink.insert();',
+    // insert() returning an id proves nothing: a cross-scope write is dropped
+    // field by field and still yields a row. Read it back and compare.
+    'var __sinkOk = false;',
+    'try {',
+    "  var __v = new GlideRecord('sys_user_preference');",
+    `  __sinkOk = !!__sinkId && __v.get(__sinkId) && String(__v.getValue('name')) === ${jsLiteral(sinkName)};`,
+    '} catch (e2) { __sinkOk = false; }',
+    `gs.info(${T} + ' ${MARK.sink} ' + (__sinkOk ? 'ok' : 'blocked') + ' id=' + __sinkId);`,
+    'if (!__sinkOk) {',
+    `  var __n = Math.ceil(__json.length / ${LOG_CHUNK});`,
+    '  if (__n < 1) { __n = 1; }',
+    '  for (var __i = 0; __i < __n; __i++) {',
+    `    gs.info(${T} + ' ${MARK.report} ' + (__i + 1) + '/' + __n + ' ' + __json.substr(__i * ${LOG_CHUNK}, ${LOG_CHUNK}));`,
+    '  }',
+    '}',
   ].join('\n');
+}
+
+/**
+ * Reassemble a report from the syslog fallback channel.
+ *
+ * Returns what was observed rather than throwing, because a PARTIAL set of
+ * chunks is itself a useful state: it means the job ran and reported, and the
+ * harness simply has not seen every row yet.
+ */
+export function readLogChannel(rows, token) {
+  const out = { started: false, scope: null, sinkStatus: null, straySinkId: null, report: null, chunks: 0, expected: null };
+  const parts = new Map();
+  for (const row of rows || []) {
+    const msg = String(row?.message ?? '');
+    const at = msg.indexOf(token);
+    if (at === -1) continue;
+    const tail = msg.slice(at + token.length).trim();
+
+    if (tail.startsWith(MARK.start)) {
+      out.started = true;
+      out.scope = /scope=(\S+)/.exec(tail)?.[1] ?? null;
+      continue;
+    }
+    if (tail.startsWith(MARK.sink)) {
+      const m = /^\S+\s+(ok|blocked)(?:\s+id=([0-9a-f]{32}))?/.exec(tail);
+      if (m) {
+        out.sinkStatus = m[1];
+        if (m[1] === 'blocked' && m[2]) out.straySinkId = m[2];
+      }
+      continue;
+    }
+    if (tail.startsWith(MARK.report)) {
+      const m = /^\S+\s+(\d+)\/(\d+)\s?([\s\S]*)$/.exec(tail);
+      if (!m) continue;
+      out.expected = Number(m[2]);
+      parts.set(Number(m[1]), m[3]);
+    }
+  }
+  out.chunks = parts.size;
+  if (out.expected && parts.size === out.expected) {
+    const joined = Array.from({ length: out.expected }, (_, i) => parts.get(i + 1) ?? '').join('');
+    try { out.report = JSON.parse(joined); } catch { out.report = { ok: false, error: 'The syslog fallback channel carried a payload that was not JSON.', raw: joined.slice(0, 500) }; }
+  }
+  return out;
 }
 
 const TABLE_RE = /^[a-z0-9_]+$/i;
@@ -265,6 +377,8 @@ export async function runServerScript({
   let report = null;
   let sinkId = null;
   let created = false;
+  let channel = null;          // 'preference' | 'syslog'
+  let observed = { started: false, scope: null, sinkStatus: null, straySinkId: null, chunks: 0, expected: null };
 
   try {
     emit({ type: 'harness_job_creating', label, job: jobId });
@@ -286,27 +400,65 @@ export async function runServerScript({
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await sleep(pollMs);
-      const rows = await table.query('sys_user_preference', {
-        query: `name=${sinkName}`, fields: 'sys_id,value', limit: 1, display: 'false',
+
+      // Both channels are read every pass. The preference sink is the ordinary
+      // one and wins when it is there; syslog answers when a scoped write was
+      // silently dropped, and — either way — tells us whether the job STARTED.
+      const [rows, logs] = await Promise.all([
+        table.query('sys_user_preference', {
+          query: `name=${sinkName}`, fields: 'sys_id,value', limit: 1, display: 'false',
+        }).catch(() => []),
+        table.query('syslog', {
+          query: `messageLIKE${token}`, fields: 'sys_id,message', limit: 60, display: 'false',
+        }).catch(() => []),
+      ]);
+
+      observed = readLogChannel(logs, token);
+
+      if (rows.length) {
+        sinkId = rows[0].sys_id;
+        channel = 'preference';
+        try { report = JSON.parse(rows[0].value); } catch {
+          report = { ok: false, error: 'The job reported a value that was not JSON.', raw: String(rows[0].value).slice(0, 500) };
+        }
+        break;
+      }
+      if (observed.report) {
+        channel = 'syslog';
+        report = observed.report;
+        break;
+      }
+      emit({
+        type: 'harness_waiting',
+        remainingMs: Math.max(0, deadline - Date.now()),
+        started: observed.started,
+        ...(observed.expected ? { reportChunks: `${observed.chunks}/${observed.expected}` } : {}),
       });
-      if (!rows.length) {
-        emit({ type: 'harness_waiting', remainingMs: Math.max(0, deadline - Date.now()) });
-        continue;
-      }
-      sinkId = rows[0].sys_id;
-      try { report = JSON.parse(rows[0].value); } catch {
-        report = { ok: false, error: 'The job reported a value that was not JSON.', raw: String(rows[0].value).slice(0, 500) };
-      }
-      break;
     }
   } finally {
+    /*
+     * A sink row whose NAME was dropped by a cross-scope write is invisible to
+     * a name query — that is how the old cleanup reported "no leftovers" while
+     * leaving one behind on every run. The script logs the sys_id `insert()`
+     * returned, so the orphan is deletable even though nothing can find it by
+     * name. Measured: three of these were on the instance and were removed.
+     */
+    if (!sinkId && observed.straySinkId) sinkId = observed.straySinkId;
     // Cleanup is proven, not assumed: both rows are deleted and then read back.
     if (sinkId) {
       await table.remove('sys_user_preference', sinkId).catch(() => {});
+      /*
+       * Read back BY SYS_ID, not by name. The old check queried the name, which
+       * a blank-named orphan can never match — so it answered "deleted" without
+       * having looked at the row it was supposed to have deleted. A cleanup
+       * check that cannot fail is not a check.
+       */
+      const stillThere = await table.get('sys_user_preference', sinkId, 'false').catch(() => null);
       const left = await table.query('sys_user_preference', {
         query: `name=${sinkName}`, fields: 'sys_id', limit: 1, display: 'false',
       }).catch(() => []);
-      cleanup.sinkDeleted = left.length === 0;
+      cleanup.sinkDeleted = stillThere == null && left.length === 0;
+      if (stillThere) cleanup.leftovers.push(`sys_user_preference:${sinkId}`);
       if (left.length) cleanup.leftovers.push(`sys_user_preference:${sinkName}`);
 
       // The sink is written with `system = true`, which makes it CONFIGURATION
@@ -341,19 +493,60 @@ export async function runServerScript({
   }
 
   if (!report) {
+    /*
+     * A timeout must NAME its cause. The version of this message that shipped
+     * asserted "the scheduler is not claiming the job at all", which was
+     * measurably wrong — the job had run in under five seconds and the return
+     * channel was what failed (M-1). A confident wrong diagnosis sends the next
+     * person to investigate the scheduler for an hour.
+     */
+    const seconds = Math.round(timeoutMs / 1000);
+    const cause = observed.started
+      ? (observed.sinkStatus === 'blocked' || observed.expected ? 'return-channel-blocked' : 'no-report')
+      : 'not-started';
+    const message = {
+      'not-started': `The scheduled job never reported within ${seconds}s and never logged that it started, so as `
+        + 'far as this harness can tell it did not run. It was created and then deleted. On this instance a one-shot '
+        + 'job starts within a few seconds, so this points at the scheduler not claiming the job.',
+      'return-channel-blocked': `The job RAN — it logged its start${observed.scope ? ` in scope ${observed.scope}` : ''} — `
+        + `but its report did not come back within ${seconds}s. The sink row was ${observed.sinkStatus === 'blocked' ? 'written and came back empty' : 'not readable'}`
+        + `${observed.expected ? `, and only ${observed.chunks} of ${observed.expected} fallback log chunks arrived` : ''}. `
+        + 'This is a RETURN-CHANNEL failure, not a scheduling one: do not conclude anything about the scheduler, and '
+        + 'do not conclude anything about what the script was asked to read.',
+      'no-report': `The job RAN — it logged its start${observed.scope ? ` in scope ${observed.scope}` : ''} — but produced `
+        + `no report within ${seconds}s, on either channel. It was created and then deleted.`,
+    }[cause];
+
     return {
       ok: false,
       timedOut: true,
+      cause,
+      started: observed.started,
+      scope: observed.scope,
       job: jobId,
       report: null,
       cleanup,
-      message:
-        `The scheduled job never reported within ${Math.round(timeoutMs / 1000)}s. It was created and then ` +
-        'deleted; nothing ran that this harness can account for. On this instance a one-shot job starts ' +
-        'within a few seconds, so a timeout here means the scheduler is not claiming the job at all.',
+      message,
     };
   }
-  return { ok: report.ok === true, timedOut: false, job: jobId, report, cleanup };
+  return {
+    ok: report.ok === true,
+    timedOut: false,
+    cause: null,
+    started: true,
+    scope: report.scope ?? observed.scope ?? null,
+    channel: channel ?? 'preference',
+    job: jobId,
+    report,
+    cleanup,
+    ...(channel === 'syslog'
+      ? {
+        channelNote: 'The report came back through the syslog fallback: this job ran in an application scope, and a '
+          + 'scoped script\'s writes to the global sys_user_preference table are discarded in silence. The result is '
+          + 'complete; the fallback log rows cannot be deleted over REST.',
+      }
+      : {}),
+  };
 }
 
 /**

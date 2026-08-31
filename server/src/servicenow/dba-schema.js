@@ -336,8 +336,19 @@ export async function getReferences(name) {
     })),
     inboundCount: inboundRows.length,
     inboundTruncated: inboundRows.truncated === true,
+    /*
+     * C-1: this number was reported as a total off a paging loop that stopped
+     * at a short page — 3999 of 4401, asserted complete. The count is now
+     * reconciled against /api/now/stats inside metaQuery, and the reconciliation
+     * is surfaced HERE rather than left in the primitive, because this is the
+     * layer whose output a caller quotes.
+     */
+    inboundComplete: inboundRows.complete === true,
+    inboundExpectedTotal: inboundRows.expectedTotal ?? null,
+    ...(inboundRows.incompleteReason ? { inboundIncompleteReason: inboundRows.incompleteReason } : {}),
+    ...(inboundRows.countDriftNote ? { inboundCountDrift: inboundRows.countDrift, inboundCountDriftNote: inboundRows.countDriftNote } : {}),
     ...(inboundRows.truncated
-      ? { inboundNote: 'The inbound scan hit its ceiling — the count is a FLOOR. Do not report it as the total number of references.' }
+      ? { inboundNote: 'The inbound scan did not complete — the count is a FLOOR. Do not report it as the total number of references.' }
       : {}),
     note: 'Inbound references are the implicit relationships: a reference field IS the relationship, with no '
         + 'sys_relationship record involved. Explicit relationships come from dba_get_relationships.',
@@ -679,6 +690,66 @@ export async function listChoices(name, element) {
  * that do exist and states plainly that zero means "no index DEFINITION
  * RECORD", not "no index".
  */
+/**
+ * The unavailable path, in the SAME SHAPE as the success path.
+ *
+ * ── M-2 ──────────────────────────────────────────────────────────────────────
+ *
+ * This used to return only { table, available, reason, note }, so a caller
+ * following the documented contract — "`complete` is false, always" — read
+ * `idx.complete` as `undefined` on this branch. `undefined` is falsy, so
+ * `if (idx.complete === false)` silently stopped being true exactly when the
+ * answer was least trustworthy. An honest "unavailable" is a KNOWN state and
+ * must not be spelled with undefined fields.
+ *
+ * `indexes` is null and not `[]` on purpose: an empty array here would be the
+ * false zero that boundary B-1 exists to prevent, and a caller that iterates it
+ * would report a table as unindexed on the strength of a timeout.
+ *
+ * Pure, so the shape contract is testable without an instance or a harness.
+ */
+export function unavailableIndexes(name, chain, run) {
+  // M-1 — "the harness never answered" and "sys_index answered nothing" are
+  // different failures with different next steps, so they are not flattened
+  // into one undifferentiated unavailable.
+  const harnessFailed = run?.timedOut === true;
+  return {
+    table: name,
+    available: false,
+    complete: false,
+    failure: harnessFailed ? 'harness-unavailable' : 'script-error',
+    scannedTables: chain,
+    definitionRecordCount: null,
+    indexes: null,
+    reason: harnessFailed
+      ? `The index read did not report back before the timeout (${run?.cause ?? 'timeout'}).`
+      : (run?.report?.error || 'The index read did not complete.'),
+    ...(harnessFailed
+      ? {
+        harness: {
+          available: false,
+          cause: run?.cause ?? 'timeout',
+          started: run?.started === true,
+          job: run?.job ?? null,
+          detail: run?.message ?? null,
+        },
+        harnessNote: 'The server-side execution harness did not deliver a result, so this is a HARNESS failure, not '
+          + 'a finding about this table. Nothing was learned about its indexes either way.',
+      }
+      : {}),
+    source: 'sys_index via a server-side script — not reached on this call',
+    completeness:
+      'UNAVAILABLE. Even on the success path this tool is never complete (sys_index holds index DEFINITION RECORDS, '
+      + 'not the physical indexes the platform maintains), and on this path it read nothing at all.',
+    zeroMeans:
+      `Nothing was read, so there is no count to interpret. This is NOT "${name} has no indexes" and NOT "no index `
+      + 'definition record exists" — it is an unknown. To see the real indexes, use the platform UI: System '
+      + 'Definition > Database Indexes. Do not report this table as unindexed.',
+    note: 'sys_index cannot be read over REST on this instance (403, API-level ACL) and sys_index_ii does not '
+        + 'exist, so there is no fallback path — this is an unknown, not an empty index list.',
+  };
+}
+
 export async function listIndexes(name, { includeInherited = false } = {}) {
   if (!/^[a-z0-9_]+$/i.test(String(name || ''))) {
     throw Object.assign(new Error(`"${name}" is not a valid table name.`), { status: 400 });
@@ -706,22 +777,13 @@ export async function listIndexes(name, { includeInherited = false } = {}) {
   ].join('\n');
 
   const run = await runServerScript({ body, label: `dba indexes ${name}`, timeoutMs: 60_000 });
-  if (!run?.report?.ok) {
-    return {
-      table: name,
-      available: false,
-      reason: run?.timedOut
-        ? 'The index read did not report back before the timeout.'
-        : (run?.report?.error || 'The index read did not complete.'),
-      note: 'sys_index cannot be read over REST on this instance (403, API-level ACL) and sys_index_ii does not '
-          + 'exist, so there is no fallback path — this is an unknown, not an empty index list.',
-    };
-  }
+  if (!run?.report?.ok) return unavailableIndexes(name, chain, run);
   const indexes = run.report.indexes || [];
   return {
     table: name,
     available: true,
     complete: false,
+    failure: null,
     scannedTables: chain,
     definitionRecordCount: indexes.length,
     indexes,

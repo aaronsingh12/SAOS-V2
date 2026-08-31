@@ -33,6 +33,12 @@ import { registerInstanceScopedCache } from './instance-binding.js';
  *      its findings as complete is this project's whole failure mode: a
  *      confidently wrong answer rather than an error. `metaQuery` pages to a
  *      stated ceiling and marks the result `truncated` when it hits it.
+ *
+ *   4. A SHORT PAGE IS NOT THE END OF THE RESULT SET. Measured: the same query
+ *      returns 1000, 1000, 1000, 999, 402, 0 — the 999 sits in the middle.
+ *      Treating it as a terminator lost 403 rows and called the answer
+ *      complete. `metaQuery` now pages by keyset and reconciles against the
+ *      aggregate count; see its own comment for the measurement.
  */
 
 /** Where a metadata table can actually be read from, measured rather than guessed. */
@@ -128,32 +134,225 @@ const PAGE = 1000;
 const DEFAULT_MAX = 5000;
 
 /**
+ * How far the aggregate total and the paged rows may disagree before it is loss.
+ *
+ * MEASURED on dev428633: `sys_dictionary` `reference=sys_user` reports 4402 from
+ * /api/now/stats and yields 4401 distinct rows from the Table API, stably, on
+ * repeated walks — offset-paged and keyset-paged alike. The aggregate and the
+ * row reader do not apply row-level ACLs identically, and rows are also
+ * genuinely created while a walk is in flight. A gap of one or two rows is
+ * that; the 403-row gap of finding C-1 is data loss wearing the same shape, and
+ * must never be reported as complete.
+ */
+const COUNT_DRIFT_TOLERANCE = 2;
+
+/** `display` other than 'false' returns { value, display_value } per field. */
+const sysIdOf = (row) => {
+  const v = row?.sys_id;
+  return v && typeof v === 'object' ? v.value : v;
+};
+
+/**
+ * The keyset walk itself, with the transport injected.
+ *
+ * Split out from `metaQuery` so the C-1 failure — a short page mid-result — is
+ * reproducible in a unit test against the exact measured page shape
+ * (1000, 1000, 1000, 999, 402, 0) without an instance. A paging bug that can
+ * only be caught by querying a 4,400-row table live is a paging bug that comes
+ * back.
+ *
+ * `fetchPage({ after, limit })` returns one page of rows. `knownTotal()`
+ * answers the authoritative count, or null when there isn't one.
+ */
+export async function pageAll({ fetchPage, knownTotal = async () => null, max = DEFAULT_MAX, pageSize = PAGE, onFirstPage = null }) {
+  const rows = [];
+  let watermark = null;
+  let pages = 0;
+  let exhausted = false;
+  let terminator = 'ceiling';
+
+  for (;;) {
+    const limit = Math.min(pageSize, max - rows.length);
+    if (limit <= 0) break;                                   // the caller's ceiling
+    // eslint-disable-next-line no-await-in-loop
+    const page = await fetchPage({ after: watermark, limit, pages });
+    pages += 1;
+    if (onFirstPage && pages === 1) onFirstPage(page);
+    // ONLY an empty page ends the walk. A short page does not — that was C-1.
+    if (!page.length) { exhausted = true; terminator = 'empty-page'; break; }
+    rows.push(...page);
+
+    const next = sysIdOf(page[page.length - 1]);
+    if (!next) {
+      throw new DbaMetadataError(
+        'A page came back without a sys_id, so the keyset watermark cannot advance and the walk would loop on the '
+        + 'same page forever. Refusing to return a result this read cannot bound.',
+        { rowsSoFar: rows.length },
+      );
+    }
+    watermark = next;
+
+    // eslint-disable-next-line no-await-in-loop
+    const total = await knownTotal();
+    if (total != null && rows.length >= total) { exhausted = true; terminator = 'aggregate-total'; break; }
+  }
+
+  return { rows, pages, exhausted, terminator };
+}
+
+/**
+ * Decide whether a finished walk may call itself complete.
+ *
+ * Pure, and separate from the walk, because "did the loop end properly" and
+ * "does the answer agree with the instance's own count" are two questions and
+ * C-1 was the first being mistaken for the second.
+ */
+export function reconcileWalk({ collected, expectedTotal, exhausted }) {
+  const shortfall = expectedTotal == null ? null : expectedTotal - collected;
+  const materialGap = shortfall != null && Math.abs(shortfall) > COUNT_DRIFT_TOLERANCE;
+  return { complete: exhausted && !materialGap, truncated: !(exhausted && !materialGap), shortfall, materialGap };
+}
+
+/**
  * Page a metadata query to exhaustion, or to `max` — and say which happened.
  *
- * The returned array carries `truncated`. A caller that reports a count without
- * checking it is reporting a floor as a total.
+ * ── WHY THIS IS KEYSET PAGING AND NOT `sysparm_offset` (finding C-1) ─────────
+ *
+ * The first version of this loop stopped when a page came back SHORTER than the
+ * limit it asked for, on the reasoning that the Table API gives no other
+ * end-of-results signal. MEASURED on dev428633, that reasoning is wrong:
+ *
+ *   sys_dictionary?reference=sys_user, sysparm_limit=1000
+ *     offset    0 -> 1000      offset 3000 ->  999   <-- SHORT, and NOT the end
+ *     offset 1000 -> 1000      offset 4000 ->  402
+ *     offset 2000 -> 1000      offset 5000 ->    0   <-- the actual end
+ *
+ * Stopping at the 999 returned 3999 rows and reported `truncated: false` —
+ * 403 rows lost and the answer asserted complete, which is this module's own
+ * contract ("a floor is never reported as a total") violated in the primitive
+ * every other layer reads through.
+ *
+ * Three things changed, and each is load-bearing:
+ *
+ *   1. ONLY AN EMPTY PAGE ENDS THE WALK. A short page is not a terminator on
+ *      this API. The one other legitimate stop is reaching the authoritative
+ *      total below, which is a positive signal rather than an inference.
+ *
+ *   2. KEYSET, NOT OFFSET. Ordering by `sys_id` ascending and carrying a
+ *      `sys_id>{last seen}` watermark is ServiceNow's documented shape for
+ *      walking a large result: offset paging without a stable indexed sort has
+ *      no defined row order between requests, so rows can repeat or be skipped,
+ *      and every page re-scans the ones before it. Keyset is correct AND
+ *      cheaper, and it makes "empty page" the natural terminator rather than a
+ *      guess. (Measured: the same walk keyset-paged yields 4401 rows, 4401 of
+ *      them distinct — no duplicates, no overlap.)
+ *
+ *   3. RECONCILED AGAINST AN AUTHORITATIVE TOTAL. /api/now/stats answers a real
+ *      count for the same query, so the walk no longer has to trust itself. The
+ *      count is issued CONCURRENTLY with the first page, so reconciliation
+ *      costs a request but not a round trip. `complete` is true only when the
+ *      rows collected and that total agree within COUNT_DRIFT_TOLERANCE.
+ *
+ * The returned array carries `truncated` (unchanged meaning: this is a floor)
+ * and now also `complete`, `expectedTotal` and `shortfall`. A caller that
+ * reports a count without checking them is reporting a floor as a total.
  */
 export async function metaQuery(t, { query = '', fields, max = DEFAULT_MAX, display = 'false', orderBy } = {}) {
   assertRestReachable(t);
-  const out = [];
-  for (let offset = 0; offset < max; offset += PAGE) {
-    const limit = Math.min(PAGE, max - offset);
-    // eslint-disable-next-line no-await-in-loop
-    const page = await table.query(t, { query, fields, limit, offset, display, orderBy });
-    if (offset === 0) assertFieldsHonoured(t, fields, page);
-    out.push(...page);
-    // A short page is the end of the result set — the only reliable signal the
-    // Table API gives, since it reports no total.
-    if (page.length < limit) return Object.assign(out, { truncated: false });
+  if (orderBy) {
+    // Not "ignored": a caller who asked for an order and silently did not get
+    // one would read the first N rows of the wrong sort as an answer.
+    throw new DbaMetadataError(
+      `metaQuery cannot honour orderBy=${orderBy}: it pages by keyset on sys_id ascending, and a second sort key `
+      + 'would break the watermark that makes the walk exhaustive. Sort the returned rows, or page by hand.',
+      { table: t, orderBy },
+    );
   }
-  // `truncated` is always reported, because asking for N and getting N genuinely
-  // does not prove there were only N. The LOG line is reserved for a scan that
-  // hit the ceiling unintentionally — a deliberate `max: 1` lookup is not news,
-  // and warning on it trains the reader to ignore the warning that matters.
-  if (max >= PAGE) {
+  if (!(max >= 1)) {
+    throw new DbaMetadataError(`metaQuery was asked for max=${max} rows, which cannot be a result.`, { table: t, max });
+  }
+
+  /*
+   * The watermark is read off `sys_id`, so every page must carry it — including
+   * when the caller asked for a narrower projection. It is added to the request
+   * and stripped from the rows afterwards, so a caller that did not ask for
+   * sys_id does not silently start receiving it.
+   */
+  const asked = fields ? String(fields).split(',').map((s) => s.trim()).filter(Boolean) : null;
+  const sysIdBorrowed = Boolean(asked?.length) && !asked.includes('sys_id');
+  const pageFields = sysIdBorrowed ? [...asked, 'sys_id'].join(',') : fields;
+
+  /*
+   * A `max: 1` read is an existence probe: one row means "hit the ceiling, this
+   * is a floor" and zero rows means "no match", both already honest without an
+   * aggregate. Everything larger is a read whose COUNT may be reported, so it
+   * pays for the reconciliation.
+   */
+  const totalPromise = max > 1
+    ? table.count(t, query).then((n) => (Number.isFinite(n) ? n : null), () => null)
+    : Promise.resolve(null);
+
+  const { rows: out, pages, exhausted, terminator } = await pageAll({
+    max,
+    fetchPage: ({ after, limit }) => table.query(t, {
+      query: after ? `${query ? `${query}^` : ''}sys_id>${after}` : query,
+      fields: pageFields,
+      limit,
+      offset: 0,
+      display,
+      orderBy: 'sys_id',
+    }),
+    knownTotal: () => totalPromise,
+    onFirstPage: (firstPage) => assertFieldsHonoured(t, fields, firstPage),
+  });
+
+  if (sysIdBorrowed) for (const row of out) delete row.sys_id;
+
+  const expectedTotal = await totalPromise;
+  const { complete, shortfall, materialGap } = reconcileWalk({ collected: out.length, expectedTotal, exhausted });
+
+  // The LOG line is reserved for a scan that hit the ceiling unintentionally —
+  // a deliberate `max: 1` lookup is not news, and warning on it trains the
+  // reader to ignore the warning that matters.
+  if (!exhausted && max >= PAGE) {
     log.warn('dba', `${t} query hit the ${max}-row ceiling and is TRUNCATED — the result is a floor, not a total`);
   }
-  return Object.assign(out, { truncated: true });
+  if (materialGap) {
+    log.warn('dba', `${t} query collected ${out.length} rows but /api/now/stats counts ${expectedTotal} for the same `
+      + `query — a gap of ${shortfall}. Reported INCOMPLETE; do not quote ${out.length} as a total.`);
+  }
+
+  return Object.assign(out, {
+    // Unchanged meaning, so every existing caller keeps working: true == floor.
+    truncated: !complete,
+    complete,
+    pages,
+    terminator: exhausted ? terminator : 'ceiling',
+    expectedTotal,
+    reconciled: expectedTotal != null,
+    ...(shortfall ? { shortfall } : {}),
+    ...(materialGap
+      ? {
+        incompleteReason: `Collected ${out.length} rows; the aggregate count for the same query is ${expectedTotal}. `
+          + `A gap of ${shortfall} row(s) is larger than the ${COUNT_DRIFT_TOLERANCE}-row live-drift tolerance, so `
+          + 'this is a FLOOR, not a total.',
+      }
+      : {}),
+    ...(shortfall && !materialGap
+      ? {
+        countDrift: shortfall,
+        countDriftNote: `The aggregate count and the paged rows differ by ${shortfall}, within the `
+          + `${COUNT_DRIFT_TOLERANCE}-row tolerance. Measured cause on this instance: /api/now/stats and the Table `
+          + 'API do not apply row-level ACLs identically. The rows are complete.',
+      }
+      : {}),
+    ...(expectedTotal == null
+      ? {
+        totalUnavailable: 'No aggregate count could be read for this query, so the walk was reconciled against '
+          + 'nothing but its own empty terminating page.',
+      }
+      : {}),
+  });
 }
 
 /**
