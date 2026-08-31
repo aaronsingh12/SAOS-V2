@@ -38,6 +38,7 @@ import {
   preflight as dbaPreflight,
 } from '../servicenow/dba-impact.js';
 import { appendMutation, mutationsForSession } from '../memory/ledger.js';
+import { createTable as dbaCreateTable } from '../servicenow/dba-authoring.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -1598,6 +1599,46 @@ export const TOOLS = [
         ? { recorded: true, session: sessionId, operation, table: t ?? null, why: why ?? null }
         : { recorded: false, error: 'The audit entry could not be written to the local ledger.' };
     },
+  },
+
+  /* ── DBA Layer 3 — Schema Authoring. The first DBA tool that writes. ────── */
+  {
+    name: 'dba_preview_table_source',
+    description:
+      'Validate a table spec and show the Fluent source it would generate, WITHOUT writing or installing anything. '
+      + 'Use this to check a spec before asking for the real thing. Reports every rule the spec breaks at once: the '
+      + '30-character name cap, the scope prefix, unsupported column types, a reference column with no target, a '
+      + 'choice column with no choices, a display column that does not exist.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: { spec: { type: 'object', description: 'The table spec. See dba_create_table.' } }, required: ['spec'] },
+    execute: ({ spec }) => dbaCreateTable(spec || {}, () => {}, { dryRun: true }),
+  },
+  {
+    name: 'dba_create_table',
+    description:
+      'Create a custom table on the instance through the ServiceNow SDK: spec -> validate -> preflight -> generate '
+      + 'Fluent source -> now-sdk build (offline, free) -> install -> READ BACK -> report. '
+      + 'Schema is never written through the Table API: REST is a global-tier writer and silently demotes sys_scope '
+      + 'to global, so a "scoped" table created that way is a global one that looks right. '
+      + 'The table name must start with the application scope prefix and is capped at 30 characters. '
+      + 'allowWebServiceAccess defaults ON — without it the Table API answers 403 even with correct ACLs. '
+      + 'NOTE: now-sdk install deploys the ENTIRE application, not just this table, so every other artifact in the '
+      + 'workspace ships too and its sys_updated_on moves. The result reports the read-back field by field; a green '
+      + 'install is a claim, the read-back is the evidence.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spec: {
+          type: 'object',
+          description: 'name (scope-prefixed), label, extends, display, fields[{name,type,label,maxLength,mandatory,'
+                     + 'reference,choices,default,unique}], acls[{operation,roles,field,condition}], index, autoNumber, '
+                     + 'allowWebServiceAccess. Column types: string, integer, boolean, reference, choice, datetime, decimal.',
+        },
+      },
+      required: ['spec'],
+    },
+    execute: ({ spec }) => dbaCreateTable(spec || {}),
   },
 ];
 

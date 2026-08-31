@@ -1492,6 +1492,14 @@ declare global {
                         table: 'sys_hub_action_instance_v2'
                         id: '3bcc8c7bffa8403b9d5e65de5245ca1f'
                     }
+                    x_2196302_nwforge_asset_acl_read_table_0: {
+                        table: 'sys_security_acl'
+                        id: 'b8465aa7efc04634a742124444f53f81'
+                    }
+                    x_2196302_nwforge_asset_acl_write_table_1: {
+                        table: 'sys_security_acl'
+                        id: '61c13d043b3945f79be4542c07d8aae3'
+                    }
                 }
                 composite: [
                     {
@@ -1608,6 +1616,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_index'
+                        id: '0fbaa70e1ed34923ab965fee84322a50'
+                        key: {
+                            logical_table_name: 'x_2196302_nwforge_asset'
+                            col_name_string: 'u_name'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: '0fdbcb22ec3c4054909d2429563fb05c'
                         deleted: true
@@ -1646,6 +1662,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: '19ec8cb0d26247e18163f5998599bed0'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_status'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_output'
                         id: '2099b72d75914793a0a69ee53be97379'
                         deleted: true
@@ -1661,6 +1685,17 @@ declare global {
                             name: 'var__m_sys_hub_flow_output_52af92abe985449dab59f36f8561a8b5'
                             element: 'taskSysId'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '2393cd3dfe7549a29902929d5d94cc7c'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_status'
+                            value: 'active'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -1680,6 +1715,14 @@ declare global {
                             name: 'var__m_sys_hub_flow_input_af90366362d04879b7ab39f6dc66bcc1'
                             element: 'taskSysId'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '26bac78b72024c09b68e57df470f232d'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_quantity'
                         }
                     },
                     {
@@ -1711,6 +1754,15 @@ declare global {
                     },
                     {
                         table: 'sys_documentation'
+                        id: '3307a8c168f74352ad364a951a15caf6'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_name'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
                         id: '3385d69110de403ea5b68e059eb8b392'
                         deleted: true
                         key: {
@@ -1727,6 +1779,14 @@ declare global {
                             name: 'var__m_sys_hub_flow_output_af90366362d04879b7ab39f6dc66bcc1'
                             element: 'notified'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '36a62396b3064c329a99328748645862'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_owner'
                         }
                     },
                     {
@@ -1780,6 +1840,17 @@ declare global {
                         key: {
                             model: '81909828f0db45c99ae91abae7fd380c'
                             element: 'was_created'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '4a8e9797d3434a948e2b4c7e88ebc3d0'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_status'
+                            value: 'retired'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -1849,6 +1920,19 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_security_acl_role'
+                        id: '60bb1fce369949cb94c2275bdbfc345f'
+                        key: {
+                            sys_security_acl: '61c13d043b3945f79be4542c07d8aae3'
+                            sys_user_role: {
+                                id: '6be3f114c4f747efb84b3a4b2efdb718'
+                                key: {
+                                    name: 'admin'
+                                }
+                            }
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: '61f816b24ee64fa19e3ff6c31983b6c9'
                         deleted: true
@@ -1864,6 +1948,14 @@ declare global {
                         key: {
                             model: '724901780a6d4508bb397e78c6ed5ac4'
                             element: 'taskNumber'
+                        }
+                    },
+                    {
+                        table: 'sys_choice_set'
+                        id: '6d83e30c874c409e82b0f4c724af1d5b'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_status'
                         }
                     },
                     {
@@ -1883,6 +1975,17 @@ declare global {
                             name: 'var__m_sys_hub_flow_output_338052a712714820bdfb56ab74c14c1d'
                             element: 'isValid'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '745f71adad7447e4a47be05996ef84d4'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_status'
+                            value: 'lost'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -1967,6 +2070,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: '9490879befc44b02ba0e12efb5af5a47'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_status'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: '96785a86f8d34efb8f736705e0fd9aef'
                         key: {
@@ -1999,6 +2111,21 @@ declare global {
                         key: {
                             model: 'af90366362d04879b7ab39f6dc66bcc1'
                             element: 'managerEmail'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: 'a3705c1d852e47c4a3affa0e920c78eb'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'ua_table_licensing_config'
+                        id: 'a5bdf93e283a4856ae1ae29adc7fe9c8'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
                         }
                     },
                     {
@@ -2065,6 +2192,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: 'acb2fe85563a4b109a90e1dbbe4d7363'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_archived'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_output'
                         id: 'aea45c9a678a4d82b2515c8a239b2999'
                         key: {
@@ -2101,6 +2237,21 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: 'b2c1b7d87940459ab893acaca834075d'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_name'
+                        }
+                    },
+                    {
+                        table: 'sys_db_object'
+                        id: 'b49be5556f2f4c199bb510e9b0f4cee2'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: 'b49bf5483c5f49e8a7539ad398cd3ba9'
                         deleted: false
@@ -2126,6 +2277,15 @@ declare global {
                         key: {
                             model: 'dff4be211fbd4ee8977866b8af71f975'
                             element: 'targetTaskTable'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'bb24d385f6584b3b85ab9fd5d68f8138'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_quantity'
+                            language: 'en'
                         }
                     },
                     {
@@ -2162,6 +2322,15 @@ declare global {
                         key: {
                             name: 'var__m_sys_hub_flow_output_5f71545a40184eda9b64654f7da65aa7'
                             element: 'notified'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'c27b645e7f9348dab2bfd0a894259a80'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_owner'
                             language: 'en'
                         }
                     },
@@ -2208,6 +2377,19 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_security_acl_role'
+                        id: 'cd5a34072ab54e9faf498286e60b4a39'
+                        key: {
+                            sys_security_acl: 'b8465aa7efc04634a742124444f53f81'
+                            sys_user_role: {
+                                id: 'e870b2306e6a4fc8bcef3719887ebf70'
+                                key: {
+                                    name: 'itil'
+                                }
+                            }
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: 'cd8e5b203b7748bda0512992b4d6c686'
                         key: {
@@ -2222,6 +2404,14 @@ declare global {
                         key: {
                             model: '29539900aa1f43849d402ad70bec0404'
                             element: 'incidentRecordSysId'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: 'd43ca1cecf934eeeb7847fbb7ece905c'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'u_archived'
                         }
                     },
                     {
@@ -2260,6 +2450,15 @@ declare global {
                         key: {
                             model: '724901780a6d4508bb397e78c6ed5ac4'
                             element: 'user'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'e60a6c3f46b240cf901ef7b103b566fa'
+                        key: {
+                            name: 'x_2196302_nwforge_asset'
+                            element: 'NULL'
+                            language: 'en'
                         }
                     },
                     {

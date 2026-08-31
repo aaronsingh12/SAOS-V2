@@ -5108,3 +5108,148 @@ fixed overhead.
 | 104 | **Schema rules applied to data operations** | "never edit this platform table directly" blocking an ordinary record delete | Every useful table on a PDI is OOTB, so this blocks everything and the gate gets routed around. Tag each operation with what it acts on and gate schema rules on that |
 | 105 | **A dependency report that does not publish its blind spots** | a clean impact report for a table that three flows depend on | Flow triggers are a gzip blob (trap #11) and are unqueryable by table; dynamic names are unfindable by any search. List what was scanned AND what was not, in the report itself, every time |
 | 106 | **A bounded check reporting an unbounded verdict** | "clean" from a diagnostic that looked at 500 of 400,000 rows | Say `clean-within-sample` and state the bound. A diagnostic that scans everything gets turned off; one that silently samples gets believed |
+
+---
+
+## 41. Database Administration — Phase 3, Schema Authoring (scoped-scratch)
+
+Phase 3 was deliberately scoped to a custom table in our own application: no
+OOTB table was touched, and the augment path is generated and build-checked
+only, never deployed. What the phase actually produced is a working authoring
+pipeline, three SDK facts the docs did not supply, and **one finding that
+invalidates part of every live result in this document**.
+
+### The finding: the SDK and the Table API were bound to DIFFERENT INSTANCES
+
+```
+REST / Table API   server/data/settings.json      dev428633.service-now.com
+SDK  / now-sdk     credential alias "snada-pdi"   dev442675.service-now.com
+```
+
+The PDI was replaced at some point and only `settings.json` was moved. So the
+end-to-end run did this:
+
+```
+[  0.0s] dba_preflight        name is free on dev428633 — true, and irrelevant
+[  1.1s] dba_source_written
+[  1.1s] dba_building
+[ 36.3s] dba_installing       now-sdk install → SUCCESS, real activation
+[177.2s] dba_verifying
+         → "The install reported success but no sys_db_object row named
+            x_2196302_nwforge_asset exists. The table was NOT created."
+```
+
+Every layer behaved correctly. The build was valid — `dist/` contains the
+dictionary XML, six `sys_dictionary` rows, the `sys_choice` set and the
+`sys_documentation` labels. The install genuinely succeeded. The table genuinely
+exists. It is simply **on dev442675**, and the read-back runs against
+dev428633, where there is no table and — the confirming detail — **no
+`sys_update_xml` rows either**. Corroborated independently: the `lastInstall`
+record in `server/data/fluent-state.json` from 2026-08-20 carries
+`rollbackUrl: https://dev442675.service-now.com/...`. The SDK tier has always
+pointed there.
+
+This is the most expensive shape of confidently-wrong this repo has hit, because
+it is not a bug in either tier and **neither tier can detect it alone**. The
+REST half sees a table that does not exist. The SDK half sees a successful
+install. Only comparing the two hostnames reveals it, and nothing was comparing
+them.
+
+It also means: **§8's "Phase 1 proof — what is live right now", and every other
+live SDK claim in this document written before 2026-08-31, describes dev442675,
+not the currently bound instance.** The Table-API measurements in §38-§40 are
+dev428633 and are unaffected.
+
+#### The guard
+
+`assertTiersAgree()` refuses the install, with both hostnames and the alias
+named:
+
+> REFUSING TO INSTALL: the two halves of NowHelpAssist are bound to DIFFERENT
+> INSTANCES. The Table API reads and verifies against "dev428633.service-now.com"
+> (server/data/settings.json), but the ServiceNow SDK would install to
+> "dev442675.service-now.com" (credential alias "snada-pdi"). An install would
+> succeed, report activation, and put the artifacts on the other instance —
+> where the read-back cannot see them.
+
+It runs **after** the offline build (so it does not reject specs that were never
+going to install) and **before** the install (because the install is the thing
+that becomes untrue). It throws rather than warns.
+
+⚠️ **The same exposure exists in `fluent.js deploy()`**, which every flow, SLA
+and catalog-policy install goes through. That path is untouched by this phase
+and still installs without checking.
+
+### Three SDK facts the docs did not supply
+
+Read off `node_modules/@servicenow/sdk-core/dist/db/Table.d.ts` in this
+workspace, on the pinned 4.10.1 — not from the docs site, not from memory.
+
+**1. The Table must be a NAMED EXPORT whose name equals the table's.** The first
+generated source emitted a bare `Table({...})` and the build refused it:
+
+```
+TS213: Table definition should be exported as a named export with the name
+       'x_2196302_nwforge_asset'
+```
+
+This is precisely what the offline build is for (§5: build is free and reaches
+nothing), and why nothing installs before one passes. The failed build also
+removed its own generated source, verified — a failed authoring attempt
+provably leaves nothing for the next install to pick up.
+
+**2. `index` IS available on 4.10.1** — as a Table *option*,
+`index: [{ name?, unique, element }]`, not a separate `Index()` artifact. The
+runbook said to verify Index support and fall back to guided platform steps if
+absent; no fallback is needed for index CREATION.
+
+**3. `augments` is available on 4.10.1** too, so the table-augments pattern for
+OOTB tables exists on this version. It is generated here and **not proven** —
+labelled as such in the code rather than presented as working.
+
+### The pipeline
+
+`spec → validate → preflight → generate → build (offline) → tier check → install
+→ read back → report`. Nothing in it is model-generated: a table spec is
+structured input and the Fluent source is DERIVED from it in code, which is why
+17 offline tests can assert the emitted source exactly rather than sample it.
+
+Spec validation front-loads the rules the SDK and platform enforce later and
+more obscurely: the 30-character name cap (reported with how much room the scope
+prefix actually leaves — 12 characters here), the scope prefix, unsupported
+column types, a reference column with no target, a choice column with no
+choices, a display column that is not in the schema, duplicate columns.
+`allowWebServiceAccess` defaults **on**, because §1.7's 403-with-correct-ACLs is
+otherwise indistinguishable from a permissions problem, and because a table NHA
+cannot read back is a table NHA cannot verify it created.
+
+`$id` keys are namespaced by the table name (trap #1). Confirmed in the build
+output: all 199 new lines in `generated/keys.ts` sit under
+`x_2196302_nwforge_asset*`, with no bare keys and no collisions.
+
+### One defect in the validator, caught by its own negative tests
+
+The name regex was `^[a-z][a-z0-9_]*[a-z0-9]$`, which requires at least TWO
+characters — so a legal single-letter column was rejected as "not a valid column
+name", and that message then **masked every other error in the same spec**.
+Three negative test cases were all reporting the wrong cause. Fixed to
+`^[a-z]([a-z0-9_]*[a-z0-9])?$`; each case now names its real problem.
+
+### Status
+
+The pipeline is proven up to and including a valid offline build and a
+successful install; the read-back is proven to work by correctly refusing to
+confirm a table that is not there. **End-to-end verification against the bound
+instance is NOT done** and cannot be until the SDK is repointed at dev428633.
+The generated source and `keys.ts` are kept: they match what is actually on
+dev442675, and deleting them would create a drift instead of removing one.
+
+`npm test` — **1032 pass, 0 fail**. 22 DBA tools, exactly one mutating.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 107 | **Two tiers bound to different instances** | `now-sdk install` reports success with real activation, and the artifact is absent from every read-back | NHA binds to "the instance" twice — `settings.json` for REST, a stored SDK credential alias for the CLI — and nothing keeps them in step. Replace a PDI and update one, and every install lands on the old one, correctly, forever. Neither tier can see this alone: compare the two hostnames before installing, and refuse |
+| 108 | **A Fluent Table must be a named export matching its own name** | `TS213` naming a table you did define | A bare `Table({...})` compiles as far as the type checker and is rejected by the build. `export const <table_name> = Table({...})`. Cheap to hit, free to catch — the offline build is the reason it never reached an instance |
+| 109 | **A validator regex that quietly requires two characters** | three unrelated negative tests all reporting "not a valid column name" | `^[a-z][a-z0-9_]*[a-z0-9]$` has no single-character match. The wrong error did not just fire — it MASKED the real ones, so the spec's actual problems were invisible. Make the tail optional, and check that each negative case reports the cause you meant to test |
