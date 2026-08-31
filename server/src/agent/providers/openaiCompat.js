@@ -12,6 +12,18 @@ import { withRetry, retryable, isRetryableStatus, isColdStart } from './retry.js
 const DEFAULTS = {
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
   ollama: { baseUrl: 'http://localhost:11434/v1', model: 'llama3.1' },
+  /*
+   * OpenRouter is OpenAI-compatible, VERIFIED against the live API rather
+   * than assumed: POST https://openrouter.ai/api/v1/chat/completions with
+   * `Authorization: Bearer <key>`, same request and response shape.
+   *
+   * The model default is deliberately EMPTY. OpenRouter fronts ~400 models
+   * under volatile `vendor/model` ids (measured: 396 on the day this was
+   * written), so a hardcoded default is trap #28 — a platform list that goes
+   * stale silently — and would fail as an opaque upstream 4xx rather than as
+   * a setting nobody chose. The provider refuses with instructions instead.
+   */
+  openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: '' },
 };
 
 /**
@@ -193,7 +205,7 @@ async function warmUp({ url, headers, model }) {
   log.warn('llm', `warm-up request finished in ${Date.now() - started}ms (status ${res.status}) — model should now be resident`);
 }
 
-export async function chat({ provider, apiKey, baseUrl, model, system, history, tools, maxTokens = 4096, decoding }) {
+export async function chat({ provider, apiKey, baseUrl, model, system, history, tools, maxTokens = 4096, decoding, extraHeaders = null }) {
   const d = DEFAULTS[provider] || DEFAULTS.openai;
   const url = `${(baseUrl || d.baseUrl).replace(/\/$/, '')}/chat/completions`;
   const resolvedModel = model || d.model;
@@ -243,6 +255,10 @@ export async function chat({ provider, apiKey, baseUrl, model, system, history, 
   }
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  // Provider-specific extras (OpenRouter's optional attribution headers). Kept
+  // as a parameter rather than a branch so this module stays provider-shaped
+  // rather than provider-aware.
+  if (extraHeaders) for (const [k, v] of Object.entries(extraHeaders)) if (v) headers[k] = v;
 
   const data = await withRetry(
     `${provider} chat`,

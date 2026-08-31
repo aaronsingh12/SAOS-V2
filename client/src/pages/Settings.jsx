@@ -7,6 +7,10 @@ const HINTS = {
   anthropic: { model: 'claude-sonnet-4-6', baseUrl: 'api.anthropic.com (fixed)', key: true },
   openai: { model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', key: true },
   ollama: { model: 'llama3.1 (tool-capable model required)', baseUrl: 'http://localhost:11434/v1', key: false },
+  // No default model: OpenRouter fronts hundreds of vendor/model ids and one
+  // has to be chosen. The picker below loads them live rather than shipping a
+  // list that goes stale.
+  openrouter: { model: 'vendor/model — pick from the live list', baseUrl: 'https://openrouter.ai/api/v1', key: true },
 };
 
 export default function Settings() {
@@ -16,6 +20,8 @@ export default function Settings() {
   const [autoApprove, setAutoApprove] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // OpenRouter's catalogue, fetched only when that provider is selected.
+  const [orModels, setOrModels] = useState(null);
 
   useEffect(() => {
     api.get('/system/settings').then((s) => {
@@ -25,6 +31,14 @@ export default function Settings() {
     }).catch((e) => setError(e.message));
     api.get('/agent/memory/status').then(setMemory).catch(() => {});
   }, []);
+
+  // Loaded only when OpenRouter is the selected provider, and only once —
+  // it is ~400 entries and irrelevant to every other provider.
+  useEffect(() => {
+    if (llm.provider !== 'openrouter' || orModels) return;
+    api.get('/agent/openrouter/models').then(setOrModels)
+      .catch((e) => setOrModels({ ok: false, models: [], error: e.message }));
+  }, [llm.provider, orModels]);
 
   const hint = HINTS[llm.provider];
 
@@ -51,6 +65,7 @@ export default function Settings() {
             <option value="anthropic">Anthropic (Claude)</option>
             <option value="openai">OpenAI</option>
             <option value="ollama">Ollama (local)</option>
+            <option value="openrouter">OpenRouter</option>
           </select>
         </div>
         {hint.key && (
@@ -68,9 +83,28 @@ export default function Settings() {
           </div>
         )}
         <div className="field">
-          <label className="label">Model</label>
+          <label className="label">
+            Model
+            {llm.provider === 'openrouter' && orModels?.ok && (
+              <span className="badge green" style={{ marginLeft: 8 }}>{orModels.count} available</span>
+            )}
+          </label>
           <input className="input mono" placeholder={hint.model} value={llm.model}
+            list={llm.provider === 'openrouter' ? 'openrouter-models' : undefined}
             onChange={(e) => setLlm({ ...llm, model: e.target.value })} />
+          {/*
+            A datalist rather than a select: OpenRouter's catalogue is large and
+            changes, and typing an id that the list has not caught up with must
+            still work. The list is a convenience, never a constraint.
+          */}
+          {llm.provider === 'openrouter' && orModels?.ok && (
+            <datalist id="openrouter-models">
+              {orModels.models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </datalist>
+          )}
+          {llm.provider === 'openrouter' && orModels && !orModels.ok && (
+            <div className="hint">{orModels.error}</div>
+          )}
         </div>
         <div className="field">
           <label className="label">

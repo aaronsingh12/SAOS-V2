@@ -54,6 +54,11 @@ export const DECODING_SENT = {
   anthropic: { temperature: true, seed: false },
   openai: { temperature: true, seed: true },
   ollama: { temperature: true, seed: true },
+  // Same body as OpenAI's, so the same parameters go out. Whether the model
+  // BEHIND OpenRouter honours a seed is a property of that model, not of
+  // OpenRouter — which is why SEED_HONOURED leaves it unmeasured rather than
+  // claiming anything on ~400 backends' behalf.
+  openrouter: { temperature: true, seed: true },
 };
 
 /**
@@ -63,6 +68,10 @@ export const DECODING_SENT = {
 export const SEED_HONOURED = {
   anthropic: null,
   openai: null,
+  // Unmeasurable as a single value: OpenRouter routes to hundreds of different
+  // models and providers, and the answer differs per model. `null` is the only
+  // honest entry.
+  openrouter: null,
   // Measured 2026-08-18 against gpt-oss:120b-cloud on both the /v1 and the
   // native path. A locally-pulled model may differ; a *-cloud model does not.
   ollama: false,

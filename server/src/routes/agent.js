@@ -105,6 +105,32 @@ agentRouter.delete('/sessions/:id', (req, res) => {
  * ------------------------------------------------------------------ */
 
 /** Mode + the exact pull command, so the UI banner never has to guess. */
+/*
+ * OpenRouter's model list, proxied so the picker is populated LIVE.
+ *
+ * Measured: GET https://openrouter.ai/api/v1/models is public (no key), returns
+ * { data: [{ id, name, context_length, pricing, ... }] }, and held 396 entries
+ * the day this was written. Shipping a hardcoded list of those would be trap
+ * #28 — a platform list that goes stale silently.
+ *
+ * Failure is reported, never substituted: if the fetch fails the UI is told so
+ * and the user can still type an id by hand.
+ */
+agentRouter.get('/openrouter/models', async (_req, res) => {
+  try {
+    const r = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(15_000) });
+    if (!r.ok) throw new Error(`openrouter.ai answered ${r.status}`);
+    const body = await r.json();
+    const models = (body.data || [])
+      .map((m) => ({ id: m.id, name: m.name, contextLength: m.context_length ?? null }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    res.json({ ok: true, count: models.length, models });
+  } catch (err) {
+    log.warn('agent', `could not load the OpenRouter model list: ${err.message}`);
+    res.json({ ok: false, count: 0, models: [], error: `Could not load the model list (${err.message}). Type a vendor/model id instead.` });
+  }
+});
+
 agentRouter.get('/memory/status', async (_req, res) => {
   const avail = await embeddingsAvailable();
   res.json({
