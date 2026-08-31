@@ -27,6 +27,5 @@ export const x_2002152_nwforge_test_demo = Table({
             },
         }),
         u_assigned_to: ReferenceColumn({ label: "Assigned To", referenceTable: "sys_user" }),
-        user_age: IntegerColumn({ label: "User Age" }),
     },
 })

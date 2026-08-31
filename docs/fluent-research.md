@@ -5934,3 +5934,113 @@ instance in agreement.
 | 123 | **A capability gap reported as an unsupported operation** | "that process isn't supported through the current mutation APIs" for something the platform supports fine | The refusal to REST-insert was the right instinct; the missing half was the correct path. When a tool refuses, check whether it is refusing a bad METHOD or a bad GOAL — and route, rather than dead-end |
 | 124 | **A schema block matched by regex** | an edit that truncates the file at the first nested `}` | A choice column nests `choices: { … }`. Match braces, skip string literals, and refuse outright on a shape you do not recognise — a corrupted source surfaces as a build error pointing at code nobody wrote |
 | 125 | **A destructive gate that demands ceremony for a no-op** | dropping a column that does not exist tells you to enable irreversible operations first | Check that the target EXISTS before computing requirements. Sending someone to open the most dangerous switch in the app to perform nothing is how that switch stops being taken seriously |
+
+---
+
+## 47. Fixing in-scope column drops — routing, the gate, and the missing floor
+
+§46 closed the ADD side of in-scope column authoring. The REMOVE side still had
+the same dead-end and two problems of its own.
+
+### The routing did not carry to drops
+
+`dba_column_route` correctly called `x_2002152_nwforge_test_demo`
+`in_scope_source` for an add — and a remove on the same column dead-ended into
+hand-written steps: open the `.now.ts`, delete the line, run `now-sdk install`.
+The exact dead-end §46 removed, surviving on the other half of the operation.
+
+That is not a fallback. NowForge owns the table and has the capability; telling
+a user to do it by hand is a capability failure wearing the costume of guidance.
+Worse, it routes them *past* the protection rather than through it — the export,
+the typed confirmation and the audit trail exist precisely because nothing can
+undo a drop.
+
+`dropField` now routes first and gates always. Verified live:
+
+| asked | result |
+|---|---|
+| `user_age` on the in-scope table | `in_scope_source`, **gated**, refused: escalation, snapshot, typedConfirmation, impactAcknowledged |
+| `service` (does not exist) | `nothing-to-remove` — no ceremony for a no-op |
+| `incident.x_2002152_nwforge_triage_note` | `augment` route, still fully gated |
+
+The refusal carries a `doNotWorkAround` field in as many words: *"Do not offer to
+edit the Fluent source by hand as an alternative."* The agent prompt gained the
+matching rule, and a test asserts it is there — a rule nobody can find is a rule
+nobody follows.
+
+### The 15-minute silent hang
+
+`INSTALL_TIMEOUT_MS` is **15 minutes**. Measured whole-app installs on this
+instance are 249s, 343s and 47s+. So a stalled install and a slow one were
+indistinguishable for a quarter of an hour, with nothing to tell success from
+stall.
+
+The default is a CEILING, not a floor for answering. `installWorkspace` now
+takes a `timeoutMs`, and every DBA authoring path passes **8 minutes** —
+comfortably above every measured install, far below the ceiling.
+
+It is not a failure threshold. §44 measured the server completing a request the
+client had abandoned, so cutting the client short decides **when to go and
+look**, not when to give up. On timeout the path reads the instance back and the
+read-back decides, reported distinctly:
+
+> The install did not answer within 8 minutes, so the instance was read back
+> instead of waiting. The read-back is the authority — it was NOT retried,
+> because a retry would re-apply whatever the server had already done.
+
+### Acceptance, live
+
+Under the operator escalation, with export + typed phrase + impact ack:
+
+```json
+{ "ok": true, "stage": "verified", "route": "in_scope_source",
+  "target": "x_2002152_nwforge_test_demo.user_age",
+  "readBack": "…user_age is absent from the instance",
+  "irreversible": true,
+  "sourceReconciliation": { "applicable": true, "reconciled": true,
+    "note": "The column was removed from the Fluent source so the next install cannot re-create it." },
+  "sourceDivergence": null }
+```
+
+Source declared the column before: **true**. After: **false**. The escalation was
+closed again immediately, and the run is in the instance-scoped ledger.
+
+Then the part that proves the reconciliation actually holds — an offline build
+of the reconciled source:
+
+```
+offline build ok: true
+build output still containing user_age: none — the next install cannot resurrect it
+```
+
+Final state, instance against source:
+
+```
+instance: ["u_assigned_to","u_name","u_priority","u_status"]
+source  : ["u_assigned_to","u_name","u_priority","u_status"]
+agree   : true
+```
+
+### The asymmetry, said at the right moment
+
+Adding a column is additive and safe; removing it is an irreversible drop. Those
+are not two halves of one operation and pretending otherwise sets a user up to
+be surprised. `addField` now returns it at ADD time, when it is cheap to hear:
+
+> Adding `user_age` was additive and safe. REMOVING it later is drop_column — an
+> irreversible operation that creates no rollback context on any engine, and is
+> gated behind an operator escalation, an export, a typed confirmation and an
+> acknowledged impact report. Add freely; remove deliberately.
+
+A test asserts the two tool descriptions stay asymmetric — that `dba_add_field`
+never picks up the word "irreversible" and `dba_drop_field` never loses it.
+
+`npm test` — **1115 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 126 | **Routing added on one half of an operation** | adds route correctly, removes dead-end to manual steps for the same table | Routing is a property of the TARGET, not of the verb. When a router is introduced, walk every operation that touches the same object — the untouched half keeps the old behaviour and looks like a different bug |
+| 127 | **Manual instructions offered in place of a gate** | "open the .now.ts, delete the line, run now-sdk install" as a helpful answer to a refusal | A refusal is not a dead-end to route around. Hand-editing bypasses the export, the confirmation and the audit trail that exist because the operation cannot be undone. Say what the gate needs and stop |
+| 128 | **A timeout ceiling used as a floor for answering** | an install that stalls is indistinguishable from one that is slow, for 15 minutes | The default timeout is how long before giving up; it is not how long to wait before LOOKING. Bound it just above measured normal, then read back — and never retry, because the server may have finished what the client abandoned |

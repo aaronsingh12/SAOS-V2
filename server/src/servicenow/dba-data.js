@@ -8,6 +8,7 @@ import { diffWrite } from './write-verify.js';
 import { preflight, classifyOperation, analyzeImpact } from './dba-impact.js';
 import { getDbaContext } from './dba-context.js';
 import { findTableSource, removeColumn } from './dba-source.js';
+import { classifyColumnTarget } from './dba-authoring.js';
 import { log } from '../logging.js';
 
 /**
@@ -576,6 +577,103 @@ async function reconcileSourceAfterDrop(operation, tableName, field) {
   } catch (err) {
     return { applicable: true, reconciled: false, error: err.message };
   }
+}
+
+/* ── removing a column: routed, gated, and never a set of instructions ────── */
+
+/**
+ * `dba.dropField` — the remove side of in-scope column authoring.
+ *
+ * ── THE TWO FAILURES THIS FIXES ──────────────────────────────────────────────
+ *
+ * 1. Routing did not carry to drops. `classifyColumnTarget` correctly called a
+ *    table `in_scope_source` for an ADD, and a remove on the same column
+ *    dead-ended into hand-written steps — "open the .now.ts, delete the line,
+ *    run now-sdk install". That is the exact dead-end the add-side fix removed,
+ *    surviving on the other half of the operation. NowForge owns the table; it
+ *    has the capability; telling a user to do it by hand is not a fallback, it
+ *    is a capability failure wearing the costume of guidance.
+ *
+ * 2. It is an IRREVERSIBLE operation and did not say so. A column drop creates
+ *    no rollback context on any engine. It must announce itself as gated and
+ *    run the E2 gate — refuse by default, and under an operator escalation
+ *    demand an export, a typed phrase naming the target, and an acknowledged
+ *    impact report. Narrating manual steps around a gate is worse than the
+ *    dead-end: it routes a person past the protection rather than through it.
+ *
+ * So this routes first, then gates, and does neither silently. It never returns
+ * instructions in place of doing the work.
+ */
+export async function dropField({
+  table: tableName,
+  field,
+  snapshotId = null,
+  typedConfirmation = null,
+  impactAcknowledged = false,
+  why = null,
+} = {}, ctx = {}) {
+  if (!tableName || !field) {
+    return { ok: false, stage: 'spec', errors: ['dropField needs both a table and a field.'] };
+  }
+
+  const route = await classifyColumnTarget(tableName);
+
+  /*
+   * Routing decides WHERE the drop happens, never WHETHER it is gated. Every
+   * branch below still goes through destructiveGate.
+   */
+  if (route.route === 'create_table') {
+    return {
+      ok: false, stage: 'route', route: route.route,
+      reason: `${tableName} does not exist on this instance, so there is no column to remove.`,
+    };
+  }
+  if (route.route === 'unmanaged_in_scope') {
+    return {
+      ok: false, stage: 'route', route: route.route,
+      reason: `${tableName} is in this application's scope but no Fluent source declares it. A column could be `
+            + 'dropped from the instance, but there is no source to reconcile, so the table would stay unmanaged and '
+            + 'the next install could not account for the change. Adopt the table into source first.',
+      offer: 'adopt-into-source',
+    };
+  }
+
+  const target = `${tableName}.${field}`;
+  const gate = await destructiveGate({
+    operation: 'drop_column', table: tableName, field,
+    snapshotId, typedConfirmation, impactAcknowledged,
+  });
+
+  // "There is nothing there" is a complete answer and needs no ceremony.
+  if (gate.nothingToRemove) return { ok: false, stage: 'nothing-to-remove', route: route.route, gate, reason: gate.reason };
+
+  if (!gate.ok) {
+    return {
+      ok: false,
+      stage: 'gated',
+      route: route.route,
+      target,
+      irreversible: true,
+      gate,
+      /*
+       * The message a refusal must carry. It states what the operation IS, what
+       * is missing, and what would satisfy it — and explicitly does not offer
+       * manual source edits as a way around, because the gate is the point.
+       */
+      statement: `Removing ${target} is an IRREVERSIBLE schema change: dropping a column creates no rollback context `
+               + 'on any database engine, and no delete-recovery mechanism covers schema. It is refused by default. '
+               + `Outstanding: ${gate.unmet.map((u) => u.requirement).join(', ')}.`,
+      doNotWorkAround: 'Do not offer to edit the Fluent source by hand as an alternative. NowForge performs this '
+        + 'operation itself once the gate is satisfied; hand-editing would bypass the export, the confirmation and '
+        + 'the audit trail that exist precisely for an operation that cannot be undone.',
+    };
+  }
+
+  const result = await executeIrreversible(
+    { operation: 'drop_column', table: tableName, field, snapshotId, typedConfirmation, impactAcknowledged, why },
+    ctx,
+  );
+  return { ...result, route: route.route, target };
 }
 
 /* ── audit ────────────────────────────────────────────────────────────────── */

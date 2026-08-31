@@ -57,6 +57,23 @@ import { log } from '../logging.js';
 
 const DBA_DIR = path.join(WORKSPACE_DIRS.workspace, 'src/fluent/dba');
 
+/*
+ * WHEN TO STOP WAITING AND GO AND LOOK.
+ *
+ * Measured whole-app installs on the bound instance: 249s establishing the
+ * application, 343s creating a table, 47s+ adding a column. The SDK's own
+ * default is 15 MINUTES, which is a ceiling — and a stalled install under it is
+ * indistinguishable from a slow one for a quarter of an hour.
+ *
+ * This is comfortably above every measured install and far below that ceiling.
+ * It is NOT a failure threshold: cutting the client short does not cancel the
+ * deployment (§44 measured the server completing a request the client had
+ * abandoned), so on timeout the caller reads the instance back and lets the
+ * read-back decide. Never a retry — a retry re-applies whatever landed.
+ */
+const INSTALL_BOUND_MS = 8 * 60 * 1000;
+
+
 /* ── spec validation, pure ────────────────────────────────────────────────── */
 
 /** §1.7, enforced at authoring time rather than discovered at build time. */
@@ -432,7 +449,7 @@ export async function addField(tableName, field, emit = () => {}, { dryRun = fal
   emit({ type: 'dba_tiers_agree', host: tiers.host });
 
   emit({ type: 'dba_installing' });
-  const installed = await installWorkspace();
+  const installed = await installWorkspace({ timeoutMs: INSTALL_BOUND_MS });
 
   // A red install is only a claim (§44) — the read-back decides, on both paths.
   emit({ type: 'dba_verifying' });
@@ -454,11 +471,25 @@ export async function addField(tableName, field, emit = () => {}, { dryRun = fal
     preflight: pre,
     verification,
     permanence: pre.permanence ?? null,
+    /*
+     * The asymmetry, stated when it is cheap to hear rather than when it bites.
+     * Adding is free and additive; removing is a gated irreversible drop. A user
+     * told this at add time can decide; told it at remove time, they have
+     * already committed.
+     */
+    asymmetry: `Adding ${el} was additive and safe. REMOVING it later is drop_column — an irreversible operation `
+             + 'that creates no rollback context on any engine, and is gated behind an operator escalation, an '
+             + 'export, a typed confirmation and an acknowledged impact report. Add freely; remove deliberately.',
     ...(installed.ok ? {} : {
       installReportedFailure: true,
+      installTimedOut: installed.timedOut === true,
       installDiagnostics: extractDiagnostics(installed),
-      reconciliation: 'The SDK reported a failure and the read-back found the column live. The read-back is the '
-        + 'authority; do not retry without reading back first.',
+      reconciliation: installed.timedOut
+        ? `The install did not answer within ${INSTALL_BOUND_MS / 60000} minutes, so the instance was read back `
+          + 'instead of waiting. The read-back is the authority — it was NOT retried, because a retry would re-apply '
+          + 'whatever the server had already done.'
+        : 'The SDK reported a failure and the read-back found the column live. The read-back is the authority; do '
+          + 'not retry without reading back first.',
     }),
     wholeAppNote: 'now-sdk install deploys the ENTIRE application (trap #8).',
   };
@@ -691,7 +722,7 @@ export async function augmentTable(spec, emit = () => {}, { dryRun = false } = {
   emit({ type: 'dba_tiers_agree', host: tiers.host });
 
   emit({ type: 'dba_installing' });
-  const installed = await installWorkspace();
+  const installed = await installWorkspace({ timeoutMs: INSTALL_BOUND_MS });
 
   /*
    * A RED INSTALL IS ALSO ONLY A CLAIM.
@@ -870,7 +901,7 @@ export async function createTable(spec, emit = () => {}, { dryRun = false } = {}
   emit({ type: 'dba_tiers_agree', host: tiers.host });
 
   emit({ type: 'dba_installing' });
-  const installed = await installWorkspace();
+  const installed = await installWorkspace({ timeoutMs: INSTALL_BOUND_MS });
 
   // A red install is only a claim too — see augmentTable. A deployment timeout
   // is the client giving up on a request the server went on to complete, so the
@@ -1002,7 +1033,7 @@ export async function removeAuthoredTable(name, emit = () => {}) {
     await fsp.writeFile(file, existed, 'utf8');
     return { ok: false, stage: 'build', diagnostics: extractDiagnostics(built), restored: true };
   }
-  const installed = await installWorkspace();
+  const installed = await installWorkspace({ timeoutMs: INSTALL_BOUND_MS });
   log.info('dba', `removeAuthoredTable(${name}) install ok=${installed.ok}`);
   return { ok: installed.ok, stage: installed.ok ? 'removed' : 'install', file };
 }

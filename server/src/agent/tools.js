@@ -53,6 +53,7 @@ import {
   executeIrreversible as dbaExecuteIrreversible,
   snapshotBeforeDestruction as dbaSnapshot,
   deleteRecoveryStatement as dbaRecoveryStatement,
+  dropField as dbaDropField,
 } from '../servicenow/dba-data.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
@@ -1855,6 +1856,42 @@ export const TOOLS = [
       required: ['table', 'field'],
     },
     execute: ({ table: t, field }) => dbaAddField(t, field || {}),
+  },
+  {
+    name: 'dba_drop_field',
+    description:
+      'Remove a column, routed and GATED. This is the remove side of dba_add_field and it is NOT symmetric with it: '
+      + 'adding a column is additive and safe, dropping one is IRREVERSIBLE — it creates no rollback context on any '
+      + 'database engine and no delete-recovery mechanism covers schema. '
+      + 'Refused by default. Proceeding needs the operator escalation in Settings (which no tool can set), a '
+      + 'pre-export snapshotId from dba_snapshot, a typed confirmation phrase naming table.column, and an '
+      + 'acknowledged impact report — call it with no confirmations first and it will tell you exactly what is '
+      + 'missing. On a table this application owns it also removes the column from the Fluent source, so the next '
+      + 'install cannot re-create it. '
+      + 'NEVER answer a refusal by telling the user to edit the .now.ts file and reinstall by hand: that bypasses the '
+      + 'export, the confirmation and the audit trail. Report what the gate needs and stop.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        field: { type: 'string' },
+        snapshot_id: { type: 'string', description: 'From dba_snapshot. Required to proceed.' },
+        typed_confirmation: { type: 'string', description: 'The exact phrase the gate names.' },
+        impact_acknowledged: { type: 'boolean' },
+        why: { type: 'string' },
+      },
+      required: ['table', 'field'],
+    },
+    execute: ({ table: t, field, snapshot_id, typed_confirmation, impact_acknowledged, why }, ctx) =>
+      dbaDropField({
+        table: t,
+        field,
+        snapshotId: snapshot_id || null,
+        typedConfirmation: typed_confirmation || null,
+        impactAcknowledged: impact_acknowledged === true,
+        why,
+      }, ctx || {}),
   },
   {
     name: 'dba_augment_table',

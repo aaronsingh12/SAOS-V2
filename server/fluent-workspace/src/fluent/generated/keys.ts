@@ -2039,6 +2039,7 @@ declare global {
                     {
                         table: 'sys_dictionary'
                         id: '708e4e435a97452ba94170c603ff6bf9'
+                        deleted: true
                         key: {
                             name: 'x_2002152_nwforge_test_demo'
                             element: 'user_age'
@@ -2196,6 +2197,7 @@ declare global {
                     {
                         table: 'sys_documentation'
                         id: '9700d379e5b54116b747017f6b48d44d'
+                        deleted: true
                         key: {
                             name: 'x_2002152_nwforge_test_demo'
                             element: 'user_age'

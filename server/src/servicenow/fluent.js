@@ -1440,8 +1440,21 @@ export async function buildWorkspace() {
 }
 
 /** Install the workspace. Serialized against every other build/install. */
-export async function installWorkspace() {
-  return serialize(() => withMaterializedConfig(() => runSdk(['install'], INSTALL_TIMEOUT_MS)));
+/**
+ * Install the workspace. Serialized against every other build/install.
+ *
+ * `timeoutMs` exists because the default is a CEILING, not a floor for
+ * answering. Measured whole-app installs on this instance take 249-344s; the
+ * 15-minute default therefore means a stalled install spins for a quarter of an
+ * hour with nothing to tell a stall from slow progress.
+ *
+ * A caller that intends to READ BACK afterwards should pass a tighter bound.
+ * Cutting the client short does not cancel the deployment — §44 measured the
+ * server completing a request the client had given up on — so the bound is a
+ * decision about when to go and LOOK, not about when to give up.
+ */
+export async function installWorkspace({ timeoutMs = INSTALL_TIMEOUT_MS } = {}) {
+  return serialize(() => withMaterializedConfig(() => runSdk(['install'], timeoutMs)));
 }
 
 export { extractDiagnostics };

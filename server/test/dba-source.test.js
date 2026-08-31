@@ -147,3 +147,44 @@ test('dba_add_field says plainly that it never writes to sys_dictionary', () => 
   assert.match(d, /never by writing to sys_dictionary/);
   assert.match(d, /source and instance now agree/);
 });
+
+/* ── the drop side: routed, gated, bounded ────────────────────────────────── */
+
+test('dba_drop_field is registered, mutating, and needs only table+field to ASK', () => {
+  const t = TOOLS.find((x) => x.name === 'dba_drop_field');
+  assert.ok(t, 'dba_drop_field must exist — a drop that dead-ends into manual steps is the bug this fixes');
+  assert.equal(t.mutating, true);
+  // Asking what the gate needs must not require already having satisfied it.
+  assert.deepEqual(t.inputSchema.required, ['table', 'field']);
+  for (const opt of ['snapshot_id', 'typed_confirmation', 'impact_acknowledged']) {
+    assert.ok(opt in t.inputSchema.properties, `${opt} must be offerable`);
+    assert.ok(!t.inputSchema.required.includes(opt), `${opt} must not be required just to ask`);
+  }
+});
+
+test('the drop tool forbids substituting manual source edits for its own capability', () => {
+  const d = TOOLS.find((t) => t.name === 'dba_drop_field').description;
+  assert.match(d, /NEVER answer a refusal by telling the user to edit the \.now\.ts file/);
+  assert.match(d, /IRREVERSIBLE/);
+  assert.match(d, /no rollback context/);
+});
+
+test('add and drop are described asymmetrically, because they are', () => {
+  // The honest framing, set at add time: adding is free, removing is gated.
+  const add = TOOLS.find((t) => t.name === 'dba_add_field').description;
+  const drop = TOOLS.find((t) => t.name === 'dba_drop_field').description;
+  assert.match(add, /Additive only/);
+  assert.doesNotMatch(add, /irreversible/i);
+  assert.match(drop, /not symmetric/i);
+});
+
+test('the agent is instructed never to hand out .now.ts edit steps', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const url = await import('node:url');
+  const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
+  const prompts = fs.readFileSync(path.join(root, 'src', 'agent', 'prompts.js'), 'utf8');
+  assert.match(prompts, /NEVER hand the user manual \.now\.ts edit steps/);
+  assert.match(prompts, /dba_drop_field/);
+  assert.match(prompts, /NOT a dead-end to route around/);
+});
