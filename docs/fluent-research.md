@@ -4687,3 +4687,157 @@ value that would have shown this in a minute rather than a morning.
 | 92 | **`finish_reason: "load"` arrives on a 200 with a non-empty `messages` array** | §29's conclusion — "a cold start" — applied to a request that had been warmed up three times | `load` means the request produced no generation; it does not prove the model was loading. Treat it as "the upstream had nothing to say about this request" and check the request first. A user-less conversation reproduces it on a warm model |
 | 93 | **A diagnostic that only reaches stderr does not exist** | the one block that answers "degenerate request or unlucky upstream?" is gone by the time anyone asks | Persist guard dumps where compaction cannot reach them — `tool_events`, not `messages`. Bound the raw body; a failure path is the worst place for an unbounded write |
 | 94 | **A payload serialised outside the retry closure makes every retry a replay** | three "attempts" that are one attempt sent three times, and a flaky-upstream reading of a deterministic bug | Decide inside the retried function what is being sent. Identical bytes may well be correct — but it should be a choice the function makes, not a property of where a `const` happened to sit |
+
+---
+
+## 38. Database Administration — Phase 0 foundations
+
+The DBA module's dependency order is fixed: Schema Intelligence (read) → Impact
+& Safety → Authoring → Data ops. Phase 0 builds none of those. It builds the one
+service every later layer has to quote: **what can this instance actually
+recover?** Getting that wrong is not a bug, it is a promise to a user that a
+deleted record can be brought back when it cannot.
+
+Everything below is measured on **dev428633** (2026-08-31). Note the instance
+id — earlier sections in this document were written against dev442675, which is
+no longer the bound PDI.
+
+### The rollback matrix is conditional, and every condition had to be measured
+
+Runbook §1.5 states the recovery rules but each one is gated on an instance
+fact. Four probes, four surprises.
+
+#### 1. `glide.db.rdbms` answers `gs.getProperty` and has no `sys_properties` row
+
+```
+gs.getProperty('glide.db.rdbms')      ->  "mysql"    (server-side script)
+sys_properties  name=glide.db.rdbms   ->  NO ROW     (Table API)
+sys_properties  nameLIKErdbms         ->  auxdb.db.rdbms = "mysql"   <- the AUXILIARY db
+```
+
+The engine is load-bearing — MySQL/MariaDB gets rollback *and* delete recovery,
+Oracle rollback only, SQL Server neither — so this is the difference between
+offering a recovery window and refusing to. A REST search for the property finds
+only `auxdb.db.rdbms`, which is the auxiliary database's engine. Here they
+happen to agree, so reading it would have been **right by luck**, and wrong on
+any instance where they differ.
+
+`stats.do` was tried as an alternative and does not carry the engine: 200,
+21,216 bytes, zero matches for mysql/mariadb/oracle/sqlserver/rdbms/jdbc.
+
+So engine detection costs one execution-harness round trip (~2s wall, measured
+`elapsedMs: 35` server-side). It is cached for an hour, and when it fails it
+returns `null` — never a default. `recoveryVerdict` degrades to `unknown` and
+tells the caller to treat every delete as irreversible.
+
+#### 2. Delete recovery is PARTIAL here, and a boolean would have to lie about it
+
+`sys_plugins` is 403 over REST. `v_plugin` is readable and carries the same
+state:
+
+| plugin | id | state |
+|---|---|---|
+| Delete Recovery | `com.glide.delete_recovery` | **active** |
+| Delete Recovery: Partial Undelete Support | `com.glide.delete_recovery.partial_undelete` | **active** |
+| Restore Deleted Records | `com.snc.undelete` | **INACTIVE** |
+
+§1.5 requires both for record-delete recovery. Deletes on this instance *are*
+being captured — `sys_delete_recovery` holds rows in state `finished` ("Ready
+for Recovery"), the newest created 2026-08-30, one of them from a
+`/api/now/table/sys_user/…` DELETE — but the plugin providing the restore path
+is not installed.
+
+"Recoverable?" is therefore **three-state**, not two: `full` / `partial` /
+`none`, and `partial` is the state this instance is in. A boolean would have to
+round it either to "yes, 7 days" (false — nothing can restore it) or to "no"
+(false — the data is captured and one plugin activation away). The verdict
+string says exactly that, and the offline suite asserts the partial state never
+reports a `windowDays`.
+
+The 7-day figure itself stays labelled as documentation: there is **no**
+delete-recovery retention property on this instance to measure it against.
+
+#### 3. Rollback retention is per-category, not the single 10 days §1.5 implies
+
+```
+glide.rollback.expiration_days_scripts_bg     10     background scripts
+glide.rollback.expiration_days_app_install    15
+glide.rollback.expiration_days_plugin         15
+glide.rollback.expiration_days_redact          3
+glide.rollback.expiration_days_inst_preview    1
+```
+
+Quoting "10 days" at someone whose change was a plugin activation understates
+their window by a third; quoting it after a redact overstates it by more than 3x.
+
+#### 4. `security_admin` does not exist on this instance
+
+`sys_user_role` where `name=security_admin` returns **zero rows**, while `admin`
+is one of only two directly-held roles (the other is
+`snc_required_script_writer_permission`; 124 roles total, 122 inherited). So the
+runbook's "requires `security_admin` elevation" cannot be implemented as a role
+check here. The context service reports the measurement and refuses to infer an
+elevation capability from a role that is not there — the route this repo
+actually established is in `docs/role-elevation-gate*.md`.
+
+### Four different shapes of "no" for one question: where are the indexes?
+
+`dba.listIndexes` looked like the easiest Layer 1 tool. It is the hardest, and
+each candidate source fails differently:
+
+| source | result |
+|---|---|
+| `sys_index` | **403** `Failed API level ACL Validation` — closed to REST even for admin |
+| `sys_index_ii` | **400** `Invalid table` — does not exist on this instance |
+| `v_db_index` | **200, zero rows** — unfiltered *and* for `table=incident`. Readable and inert |
+| `sys_package` (to reach it via the parent) | **403** — the read-the-parent trick does not rescue it |
+
+`sys_index` **is** readable from a server-side script. Measured shape, 18
+columns:
+
+```
+logical_table_name   the readable table name   <- query on this
+table                a sys_id reference to sys_db_object
+col_name_string      the indexed column
+index_col_name       sys_id of the column record
+unique_index         "0" / "1"
+access_method        "btree"
+```
+
+So the index path is the execution harness, not REST, and `sys_index_ii` should
+not be looked for at all. This is recorded in `dba-metadata.js` as a `REACH`
+table so a caller gets "this needs the server-side path" instead of a 403 it
+will misread as bad credentials — trap #51 in our own code, again.
+
+### What Phase 0 ships
+
+- `server/src/servicenow/dba-metadata.js` — the metadata client. Pages to a
+  stated ceiling and marks the result `truncated` (the Table API returns exactly
+  `sysparm_limit` rows with no indication there were more); enforces trap #4 by
+  comparing returned keys against requested ones; carries the `REACH` table.
+- `server/src/servicenow/dba-context.js` — engine, plugins, retention, identity,
+  scope, and the three-state recovery verdict.
+- Two read-only agent tools, `dba_context` and `dba_raw_metadata`.
+- 13 offline tests. `npm test` — **991 pass, 0 fail**.
+
+The audit store is **reused, not rebuilt**: `mutation_ledger` already records
+who/what/old/new/when/instance/actor, and a second parallel log would be the
+architecture the runbook's rule 2 forbids.
+
+### One defect this phase found in its own code
+
+The truncation warning fired on `max: 1` identity lookups — asking for one row
+and getting one row genuinely does not prove there was only one, so
+`truncated: true` is correct, but logging a scan-ceiling WARNING for a
+deliberate single-row read trains the reader to ignore the warning that matters.
+The flag is still always reported; the log line is now reserved for reads that
+hit the ceiling unintentionally.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 95 | **`glide.db.rdbms` has no `sys_properties` row** | a REST search for the database engine finds `auxdb.db.rdbms` and nothing else | The property answers `gs.getProperty` server-side only. `auxdb.db.rdbms` is the AUXILIARY database — on this instance it agrees, so reading it is right by luck. Detect the engine through a server script, and return `null` rather than a default when that fails |
+| 96 | **One question, four different shapes of "no"** | `sys_index` 403, `sys_index_ii` 400, `v_db_index` 200-with-zero-rows, `sys_package` 403 | A 403 on a metadata table is an API-level ACL, not a credential problem, and no credential fixes it; a readable view that is always empty is worse, because it looks like an answer. Record reachability per table and route to the server-side path instead of retrying REST |
+| 97 | **Delete Recovery active + Restore Deleted Records inactive** | deletes are captured in `sys_delete_recovery` marked "Ready for Recovery", and nothing on the instance can restore them | Recoverability is three-state. A boolean must round this either to "7-day window" (nothing can restore it) or to "not recoverable" (the data is captured and one plugin away). Say which of the two halves is missing |
+| 98 | **Rollback retention is per-category** | "contexts purge after 10 days", quoted at every change | 10 is `scripts_bg` only: app_install 15, plugin 15, redact 3, inst_preview 1. Read `glide.rollback.expiration_days_*` and quote the row that matches the operation |

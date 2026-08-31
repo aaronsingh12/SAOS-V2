@@ -14,6 +14,8 @@ import { createApplication, vendorPrefix, suggestScopeName, validateScopeName, s
 import { startImpersonation, endImpersonation, switchImpersonation, impersonationStatus } from './impersonation-ops.js';
 import { whoReallyDid, impersonationAuditForSession, impersonationAuditForTarget } from '../memory/impersonation-audit.js';
 import { writeAsCurrentIdentity } from './impersonated-write.js';
+import { getDbaContext } from '../servicenow/dba-context.js';
+import { metaQuery } from '../servicenow/dba-metadata.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
 
@@ -1210,6 +1212,78 @@ export const TOOLS = [
       if (sys_id) return whoReallyDid(sys_id);
       if (target) return { target_sys_id: target, entries: impersonationAuditForTarget(target) };
       return { session: sessionId, entries: impersonationAuditForSession(sessionId) };
+    },
+  },
+
+  /* ── Database Administration, Phase 0 — context and raw metadata ───────────
+   *
+   * Both are read-only. The DBA module's dependency order is fixed (Schema
+   * Intelligence -> Impact & Safety -> Authoring -> Data ops) and nothing that
+   * writes schema exists yet, deliberately.
+   */
+  {
+    name: 'dba_context',
+    description:
+      'Report what the CONNECTED instance can actually recover, before promising anything about a delete or a schema '
+      + 'change. Returns the database engine, the state of the Delete Recovery / Restore Deleted Records plugins, the '
+      + 'per-category rollback retention in days, the identity and roles NowHelpAssist holds, the application scope, '
+      + 'and the destructive-operation policy. '
+      + 'CALL THIS BEFORE telling a user whether anything is reversible. The recovery verdict is three-state on '
+      + 'purpose: "full", "partial" and "none" are different answers and rounding "partial" to either one is a lie. '
+      + 'If the engine reports unknown, treat every delete as irreversible — never fill it in from memory.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        refresh: { type: 'boolean', description: 'Re-measure instead of using the cached context.' },
+        probe_engine: {
+          type: 'boolean',
+          description: 'Default true. Engine detection costs one server-side script execution (~2s) because '
+                     + 'glide.db.rdbms has no sys_properties row and is only readable via gs.getProperty. Pass false '
+                     + 'to skip it — the engine then reports unknown rather than a remembered value.',
+        },
+      },
+      required: [],
+    },
+    execute: ({ refresh, probe_engine }) =>
+      getDbaContext({ refresh: Boolean(refresh), probeEngine: probe_engine !== false }),
+  },
+  {
+    name: 'dba_raw_metadata',
+    description:
+      'Read the sys_* metadata tables that ARE the ServiceNow schema (sys_db_object, sys_dictionary, sys_choice, '
+      + 'sys_glide_object, sys_relationship, sys_number, sys_security_acl, sys_update_version, and so on) with paging '
+      + 'and two guards the plain Table API does not give you: '
+      + '(1) requesting a column that does not exist FAILS LOUDLY instead of silently omitting it, so an absent key '
+      + 'never reads as an empty value; (2) the result says whether it was truncated, so a page is never mistaken for '
+      + 'a total. '
+      + 'Some metadata tables are unreachable over REST on this instance and this tool says so by name rather than '
+      + 'returning a permissions error: sys_index and sys_package are 403 (API-level ACL), sys_index_ii does not '
+      + 'exist, and v_db_index is readable but always empty. Use get_table_schema for ordinary "what fields does this '
+      + 'table have" questions; this is for reading the metadata records themselves.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string', description: 'The metadata table to read, e.g. sys_dictionary, sys_db_object, sys_glide_object.' },
+        query: { type: 'string', description: 'Encoded query, e.g. name=incident^elementISNOTEMPTY. Check every field you reference exists — unknown fields are dropped from a query silently.' },
+        fields: { type: 'string', description: 'Comma-separated columns. Requesting one that does not exist is an error here, which is the point.' },
+        max: { type: 'number', description: 'Row ceiling for this read. Default 5000.' },
+      },
+      required: ['table'],
+    },
+    execute: async ({ table: t, query, fields, max }) => {
+      const rows = await metaQuery(t, { query, fields, max: Math.min(max || 5000, 10000) });
+      return {
+        table: t,
+        query: query || '',
+        count: rows.length,
+        truncated: rows.truncated === true,
+        ...(rows.truncated
+          ? { truncatedNote: `This is the first ${rows.length} rows, not the total. Narrow the query or raise max before reporting a count.` }
+          : {}),
+        rows,
+      };
     },
   },
 ];
