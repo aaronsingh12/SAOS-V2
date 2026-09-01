@@ -3,6 +3,7 @@ import { getSettings, saveSettings, publicSettings, clearConnection } from '../c
 import { testConnection, resetAuthCache } from '../servicenow/client.js';
 import { getSchema, referenceLookup, tableLookup, clearSchemaCaches, getTableHierarchy } from '../servicenow/schema.js';
 import { capability, cachedCapability } from '../servicenow/fluent.js';
+import { bindingStatus, invalidateBindingStatus } from '../servicenow/binding-status.js';
 
 export const systemRouter = Router();
 
@@ -40,6 +41,32 @@ systemRouter.get('/health', (_req, res) => {
   });
 });
 
+/**
+ * The header readout: bound instance, active scope, and a truthful status.
+ *
+ * Separate from /health on purpose. /health answers in ~2ms because every page
+ * gates on it; this one reads the instance to compare sources against it, so it
+ * is polled more slowly and cached briefly rather than being made part of the
+ * hot path every route already waits on.
+ */
+systemRouter.get('/binding', async (req, res) => {
+  try {
+    res.json(await bindingStatus({ refresh: req.query.refresh === '1' }));
+  } catch (err) {
+    // Never 500 the header into blankness — an unreadable status is itself a
+    // status, and saying so beats a pill that silently disappears.
+    res.json({
+      instance: { host: null, url: null, connected: false },
+      scope: { scope: null, name: null, sys_id: null },
+      binding: { ok: false, reason: err.message },
+      sync: { state: 'unknown', detail: err.message, tables: [] },
+      deploying: false,
+      status: { state: 'unknown', label: 'status unavailable', tone: 'warn' },
+      checkedAt: new Date().toISOString(),
+    });
+  }
+});
+
 systemRouter.get('/settings', (_req, res) => res.json(publicSettings()));
 
 systemRouter.post('/settings', (req, res) => {
@@ -52,6 +79,8 @@ systemRouter.post('/settings', (req, res) => {
   if (llm && llm.apiKey === '') delete llm.apiKey;
   saveSettings({ connection, llm, agent });
   if (connection) { resetAuthCache(); clearSchemaCaches(); }
+  // A new binding must not be described by the old one's cached verdict.
+  invalidateBindingStatus();
   res.json(publicSettings());
 });
 

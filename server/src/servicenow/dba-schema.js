@@ -491,6 +491,42 @@ const CUSTOM_PREFIX = /^(u_|x_)/;
  *   - `sys_update_version` survives deletion of the update record, which
  *     `sys_update_xml` does not.
  */
+/**
+ * The half of `classify` that a `sys_db_object` row already answers.
+ *
+ * Split out for the Tables browser, which classifies hundreds of rows at once.
+ * The full `classify` costs TWO extra queries per table (customization records
+ * and update versions); running it across a list would be a thousand round
+ * trips to render one page.
+ *
+ * What the row alone settles: a custom NAME prefix and the scope. What it
+ * cannot settle is whether a platform table has been CUSTOMIZED — so this
+ * returns `customized: null` and `customizationChecked: false`, and a
+ * platform-named table is reported as `ootb` rather than `core-ootb`.
+ *
+ * That distinction is the point. `core-ootb` is a claim that the customization
+ * check ran and found nothing; `ootb` is "platform-named, not yet checked".
+ * Collapsing them would let a list badge assert a check it never performed —
+ * the same false-clean the index reader refuses a zero for.
+ */
+export function classifyFromRow(row) {
+  if (!row?.name) return null;
+  const named = CUSTOM_PREFIX.test(row.name);
+  const global = row.sys_scope === 'global';
+  return {
+    table: row.name,
+    category: named ? (global ? 'custom-global' : 'custom-in-scope') : 'ootb',
+    scope: row.sys_scope ?? null,
+    customPrefix: named,
+    customized: null,
+    customizationChecked: false,
+    note: named
+      ? null
+      : 'Platform-named. Whether it has been CUSTOMIZED was not checked here — open the table to run the full '
+        + 'classification, which distinguishes core-ootb from ootb-customized.',
+  };
+}
+
 export async function classify(name) {
   const row = await tableRow(name);
   if (!row) return { table: name, exists: false };
@@ -532,6 +568,8 @@ export async function classify(name) {
     scope: row.sys_scope,
     package: row.sys_package,
     customized,
+    // The list badge reports `customizationChecked: false`; this path ran it.
+    customizationChecked: true,
     customizationAuthors: [...new Set(customizations.map((c) => c.author_type).filter(Boolean))],
     evidence,
     safeToModify,

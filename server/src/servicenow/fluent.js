@@ -480,6 +480,9 @@ export async function readInstallVersionRecords(namePattern, { max = 500 } = {})
 let queueTail = Promise.resolve();
 let queueDepth = 0;
 
+/** Live depth of the build/install queue — >0 means a deploy is in flight. */
+export const deployQueueDepth = () => queueDepth;
+
 function serialize(job) {
   queueDepth += 1;
   const run = queueTail.then(job, job);
@@ -532,13 +535,16 @@ function migrateLegacyState(raw) {
   return writeRawState(next);
 }
 
+/** The host every per-instance record is filed under. */
+export const boundHost = () => boundInstance().host;
+
 export function readInstanceState(host) {
   const raw = migrateLegacyState(readRawState());
   if (!host) return {};
   return raw.byInstance?.[host] ?? {};
 }
 
-function writeInstanceState(host, patch) {
+export function writeInstanceState(host, patch) {
   const raw = migrateLegacyState(readRawState());
   const byInstance = { ...(raw.byInstance || {}) };
   byInstance[host] = { ...(byInstance[host] || {}), ...patch };
@@ -1453,8 +1459,43 @@ export async function buildWorkspace() {
  * server completing a request the client had given up on — so the bound is a
  * decision about when to go and LOOK, not about when to give up.
  */
-export async function installWorkspace({ timeoutMs = INSTALL_TIMEOUT_MS } = {}) {
-  return serialize(() => withMaterializedConfig(() => runSdk(['install'], timeoutMs)));
+/*
+ * F1 — state the SDK model cannot express, re-applied after every deploy.
+ *
+ * The dependency points ONE WAY on purpose: the installer knows a hook exists,
+ * not what it does. post-install-state.js registers itself, exactly as
+ * instance-binding.js lets a cache register itself for the instance switch.
+ * Importing it here would be a cycle — it needs readInstanceState from this file.
+ */
+const postInstallHooks = new Set();
+
+export function registerPostInstallHook(fn) {
+  postInstallHooks.add(fn);
+  return () => postInstallHooks.delete(fn);
+}
+
+export async function installWorkspace({ timeoutMs = INSTALL_TIMEOUT_MS, emit = () => {} } = {}) {
+  const result = await serialize(() => withMaterializedConfig(() => runSdk(['install'], timeoutMs)));
+
+  /*
+   * Runs on BOTH paths, deliberately. A red install is only a claim (§44) — the
+   * server may have completed a request the client abandoned — so an install
+   * that REPORTED failure can still have re-applied the app from source and
+   * reverted an out-of-model flag. Skipping the reconciler on failure would
+   * leave exactly that case undetected, which is the drift F1 exists to close.
+   */
+  const reconciliation = [];
+  for (const hook of postInstallHooks) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      reconciliation.push(await hook({ emit }));
+    } catch (err) {
+      // A hook that throws must not turn a completed install into an exception.
+      log.error('fluent', `a post-install hook threw: ${err.message}`);
+      reconciliation.push({ ran: false, error: err.message });
+    }
+  }
+  return reconciliation.length ? { ...result, reconciliation } : result;
 }
 
 export { extractDiagnostics };

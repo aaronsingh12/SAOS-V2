@@ -5,6 +5,10 @@ import { metaQuery, cacheClear } from './dba-metadata.js';
 import { preflight } from './dba-impact.js';
 import { buildWorkspace, installWorkspace, WORKSPACE_DIRS, extractDiagnostics, assertTiersAgree, readInstallVersionRecords, resolveScopeId } from './fluent.js';
 import { findTableSource, insertColumn, modifyColumn, columnsInSchema } from './dba-source.js';
+// Imported for its REGISTRATION side effect: it hooks the post-install state
+// reconciler onto installWorkspace, so an install cannot silently revert an
+// out-of-SDK-model flag (F1). Nothing here calls it directly.
+import './post-install-state.js';
 import { log } from '../logging.js';
 
 /**
@@ -95,6 +99,88 @@ const NAME_RE = /^[a-z]([a-z0-9_]*[a-z0-9])?$/;
  * obscurely. Failing at the spec is the difference between "name too long" and
  * a build diagnostic pointing at generated source the caller never wrote.
  */
+/**
+ * The rules a caller must plan against — A4, stated as DATA rather than prose.
+ *
+ * The tool schema and the preflight both read this, so the constraints a spec
+ * will be judged by are the same ones the caller was told about. A constraint
+ * discovered by failing into it is a constraint that was documented badly.
+ */
+/** The live, instance-derived constraints — the scope is read, never assumed. */
+export async function liveTableConstraints() {
+  return tableSpecConstraints(await currentScope());
+}
+
+export function tableSpecConstraints(scope = null) {
+  return {
+    namePrefix: scope ? `${scope}_` : null,
+    maxNameLength: MAX_TABLE_NAME,
+    charactersLeftForName: scope ? Math.max(0, MAX_TABLE_NAME - scope.length - 1) : null,
+    namePattern: 'lowercase letters, digits and underscores; starts with a letter, ends with a letter or digit',
+    columnTypes: Object.keys(COLUMN_EMITTERS),
+    typeSynonyms: TYPE_SYNONYMS,
+    extendsDefault: null,
+    extendsNote: 'Tables are STANDALONE by default. `extends` is opt-in and is only set when the caller asks for it '
+      + '— an unrequested `extends: "task"` silently inherits ~40 columns, a display value and platform business '
+      + 'rules the caller never asked for.',
+    autoNormalized: ['scope prefix', 'name length', 'unambiguous type synonyms'],
+    normalizationNote: 'These are corrected automatically and REPORTED, so the approval gate shows the spec that '
+      + 'will actually be built. Nothing is renamed silently.',
+  };
+}
+
+/**
+ * A3 — apply the safe corrections, and say what was corrected.
+ *
+ * Pure. Returns the corrected spec plus a list of what changed, so `createTable`
+ * can put the corrections in front of the user at the approval gate. The point
+ * is that a caller should not have to round-trip through a rejection to learn a
+ * rule the tool could simply have applied — but equally, a rename the user
+ * never sees is a rename they cannot object to.
+ */
+export function normalizeTableSpec(spec = {}, { scope } = {}) {
+  const corrections = [];
+  const out = { ...spec };
+
+  let name = String(spec.name || '').trim().toLowerCase();
+  const given = name;
+
+  if (scope && name && !name.startsWith(`${scope}_`)) {
+    // A bare `emp_assets` is what a caller naturally writes; the prefix is a
+    // platform requirement, not a design decision they made.
+    name = `${scope}_${name.replace(/^_+/, '')}`;
+    corrections.push({ what: 'name', from: given, to: name, why: `a scoped table name must start with "${scope}_"` });
+  }
+  if (name.length > MAX_TABLE_NAME) {
+    const prefix = scope ? `${scope}_` : '';
+    const room = Math.max(1, MAX_TABLE_NAME - prefix.length);
+    const stem = name.slice(prefix.length).slice(0, room).replace(/[^a-z0-9]+$/, '');
+    const shortened = `${prefix}${stem}`;
+    corrections.push({
+      what: 'name', from: name, to: shortened,
+      why: `table names are capped at ${MAX_TABLE_NAME} characters`,
+    });
+    name = shortened;
+  }
+  if (name !== given) out.name = name;
+
+  const fields = Array.isArray(spec.fields) ? spec.fields : [];
+  out.fields = fields.map((f) => {
+    const raw = String(f?.type ?? '').trim().toLowerCase();
+    const canonical = TYPE_SYNONYMS[raw];
+    if (canonical && canonical !== raw) {
+      corrections.push({
+        what: `fields.${f?.name ?? '(unnamed)'}.type`, from: f?.type, to: canonical,
+        why: `"${raw}" is an unambiguous synonym for "${canonical}"`,
+      });
+      return { ...f, type: canonical };
+    }
+    return raw && raw !== f?.type ? { ...f, type: raw } : f;
+  });
+
+  return { spec: out, corrections };
+}
+
 export function validateTableSpec(spec = {}, { scope } = {}) {
   const errors = [];
   const name = String(spec.name || '').trim().toLowerCase();
@@ -192,14 +278,50 @@ ${choices}
             },
         })`;
   },
-  datetime: (f) => `GlideDateTimeColumn({ label: ${lit(f.label)}${f.mandatory ? ', mandatory: true' : ''} })`,
+  /*
+   * A1 — `GlideDateTimeColumn` DOES NOT EXIST.
+   *
+   * That name was emitted here for every `datetime` column and
+   * `@servicenow/sdk/core` does not export it — measured against the installed
+   * sdk-core, whose 50 real `*Column` exports include `DateTimeColumn` and
+   * `DateColumn` and nothing called `GlideDateTimeColumn` anywhere in the
+   * package. So a date-typed column could never be authored: the build failed
+   * on a reference to a factory that was never imported because it does not
+   * exist, and the failure pointed at generated source nobody wrote.
+   *
+   * `date` was then recorded as "not supported", which was false — it was
+   * unbuilt, the same mistake as §46/§47/H-2 one layer down. `DateColumn` is a
+   * documented export and is emitted here.
+   *
+   * `sdk-column-types.test.js` now asserts every name in IMPORTS_FOR against
+   * the SDK's own typings, so a factory that does not exist fails offline
+   * instead of at install time.
+   */
+  date: (f) => `DateColumn({ label: ${lit(f.label)}${f.mandatory ? ', mandatory: true' : ''}${f.default != null ? `, default: ${lit(String(f.default))}` : ''} })`,
+  datetime: (f) => `DateTimeColumn({ label: ${lit(f.label)}${f.mandatory ? ', mandatory: true' : ''}${f.default != null ? `, default: ${lit(String(f.default))}` : ''} })`,
   decimal: (f) => `DecimalColumn({ label: ${lit(f.label)}${f.mandatory ? ', mandatory: true' : ''} })`,
 };
 
 const IMPORTS_FOR = {
   string: 'StringColumn', integer: 'IntegerColumn', boolean: 'BooleanColumn',
   reference: 'ReferenceColumn', choice: 'StringColumn',
-  datetime: 'GlideDateTimeColumn', decimal: 'DecimalColumn',
+  date: 'DateColumn', datetime: 'DateTimeColumn', decimal: 'DecimalColumn',
+};
+
+/**
+ * Type synonyms this layer will silently canonicalise — A3.
+ *
+ * Only where there is exactly ONE sensible reading. `text` is deliberately
+ * absent: it could mean a short string or a multi-line text field, and guessing
+ * between them would author the wrong column and call it a correction.
+ */
+const TYPE_SYNONYMS = {
+  date_time: 'datetime', 'date-time': 'datetime', timestamp: 'datetime',
+  glide_date_time: 'datetime', glide_date: 'date',
+  bool: 'boolean', int: 'integer', number: 'integer', long: 'integer',
+  float: 'decimal', double: 'decimal', currency: 'decimal',
+  str: 'string', varchar: 'string',
+  ref: 'reference',
 };
 
 /**
@@ -211,6 +333,10 @@ const IMPORTS_FOR = {
  * table's own name, which is unique by construction because the platform will
  * not allow two tables to share one.
  */
+/** The column types this layer emits, and the SDK factory each one uses. */
+export const COLUMN_TYPES = Object.keys(COLUMN_EMITTERS);
+export const columnFactoryFor = (type) => IMPORTS_FOR[type] ?? null;
+
 export function idKey(tableName, suffix) {
   return `${tableName}_${suffix}`;
 }
@@ -630,6 +756,7 @@ const EXPECTED_INTERNAL_TYPE = {
   boolean: 'boolean',
   reference: 'reference',
   choice: 'string',
+  date: 'glide_date',
   datetime: 'glide_date_time',
   decimal: 'decimal',
 };
@@ -1387,11 +1514,35 @@ async function currentScope() {
  */
 export async function createTable(spec, emit = () => {}, { dryRun = false } = {}) {
   const scope = await currentScope();
-  const check = validateTableSpec(spec, { scope });
+  const constraints = tableSpecConstraints(scope);
+
+  /*
+   * A3 — correct what is safely correctable BEFORE validating, so a caller does
+   * not round-trip through a rejection to learn the scope prefix. A2 — then
+   * validate the whole spec at once and return EVERY violation, never the first
+   * one: a tool that rejects one rule at a time turns a five-field table into
+   * five failed attempts, and the model burns a turn on each.
+   */
+  const { spec: normalizedSpec, corrections } = normalizeTableSpec(spec, { scope });
+  const check = validateTableSpec(normalizedSpec, { scope });
   if (!check.ok) {
-    return { ok: false, stage: 'spec', errors: check.errors };
+    return {
+      ok: false,
+      stage: 'spec',
+      errors: check.errors,
+      errorCount: check.errors.length,
+      ...(corrections.length ? { corrections } : {}),
+      constraints,
+      note: 'Every violation in the spec is listed above — this is the complete set, not the first failure. '
+        + 'Fix them together and call once more.',
+    };
   }
   const t = check.normalized;
+  if (corrections.length) {
+    // Surfaced, never silent: the approval gate shows the spec that will be
+    // built, so a rename is something the user can object to.
+    emit({ type: 'dba_spec_normalized', corrections });
+  }
 
   emit({ type: 'dba_preflight', table: t.name });
   const pre = await preflight({ operation: 'create_table', table: t.name });
@@ -1411,7 +1562,7 @@ export async function createTable(spec, emit = () => {}, { dryRun = false } = {}
   const file = path.join(DBA_DIR, `${t.name}.now.ts`);
 
   if (dryRun) {
-    return { ok: true, stage: 'dry-run', table: t.name, file, source, preflight: pre, installed: false };
+    return { ok: true, stage: 'dry-run', table: t.name, file, source, preflight: pre, installed: false, ...(corrections.length ? { corrections } : {}), constraints };
   }
 
   await fsp.mkdir(DBA_DIR, { recursive: true });
@@ -1470,8 +1621,12 @@ export async function createTable(spec, emit = () => {}, { dryRun = false } = {}
     }),
     table: t.name,
     file,
+    ...(corrections.length ? { corrections, correctionsNote: 'The spec was normalized before building; these are the changes the approval gate showed.' } : {}),
+    standalone: !t.extends,
+    ...(t.extends ? { extends: t.extends, extendsNote: 'This table EXTENDS another because the spec asked it to. Extension is never a default.' } : {}),
     preflight: pre,
     verification: verified,
+    verifiedBy: 'independent read of sys_db_object and sys_dictionary over the Table API — not the SDK that installed it',
     installedTo: tiers.host,
     wholeAppNote: 'now-sdk install deploys the ENTIRE application, not just this table (trap #8). Every other '
                 + 'artifact in the workspace was shipped too, and their sys_updated_on moved.',

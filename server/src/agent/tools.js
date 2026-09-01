@@ -44,6 +44,7 @@ import {
   addField as dbaAddField,
   classifyColumnTarget as dbaClassifyColumnTarget,
   modifyField as dbaModifyField,
+  liveTableConstraints as dbaTableConstraints,
 } from '../servicenow/dba-authoring.js';
 import {
   setFieldValue as dbaSetFieldValue,
@@ -1640,22 +1641,47 @@ export const TOOLS = [
       + 'The table name must start with the application scope prefix and is capped at 30 characters. '
       + 'allowWebServiceAccess defaults ON — without it the Table API answers 403 even with correct ACLs. '
       + 'NOTE: now-sdk install deploys the ENTIRE application, not just this table, so every other artifact in the '
-      + 'workspace ships too and its sys_updated_on moves. The result reports the read-back field by field; a green '
-      + 'install is a claim, the read-back is the evidence.',
+      + 'workspace ships too and its sys_updated_on moves. '
+      + 'VERIFICATION IS INDEPENDENT: the result reports a read-back of sys_db_object and sys_dictionary over the '
+      + 'Table API — a different transport from the SDK that installed it. A green install is a claim; that '
+      + 'read-back is the evidence. '
+      + 'The whole spec is validated in ONE pass and every violation comes back together, so fix them all and call '
+      + 'again rather than one at a time. Safe corrections (scope prefix, 30-char cap, unambiguous type synonyms) '
+      + 'are applied automatically and REPORTED in `corrections`, so the approval gate shows the spec that will '
+      + 'actually be built — nothing is renamed silently. '
+      + 'Tables are STANDALONE by default; only set `extends` when the user asked for it.',
     mutating: true,
     inputSchema: {
       type: 'object',
       properties: {
         spec: {
           type: 'object',
-          description: 'name (scope-prefixed), label, extends, display, fields[{name,type,label,maxLength,mandatory,'
-                     + 'reference,choices,default,unique}], acls[{operation,roles,field,condition}], index, autoNumber, '
-                     + 'allowWebServiceAccess. Column types: string, integer, boolean, reference, choice, datetime, decimal.',
+          description: 'name (scope-prefixed, max 30 chars — the prefix is applied and the name trimmed for you if '
+                     + 'needed), label, display, fields[{name,type,label,maxLength,mandatory,reference,choices,'
+                     + 'default,unique}], acls[{operation,roles,field,condition}], index, autoNumber, '
+                     + 'allowWebServiceAccess, and `extends` ONLY if the user asked to extend another table. '
+                     + 'Column types: string, integer, boolean, reference, choice, date, datetime, decimal. '
+                     + 'Synonyms accepted and canonicalised: date_time/timestamp/glide_date_time -> datetime, '
+                     + 'glide_date -> date, bool -> boolean, int/number/long -> integer, float/double/currency -> '
+                     + 'decimal, str/varchar -> string, ref -> reference. "text" is NOT accepted: say string or '
+                     + 'pick a real type, because it could mean either.',
         },
       },
       required: ['spec'],
     },
     execute: ({ spec }) => dbaCreateTable(spec || {}),
+  },
+  {
+    name: 'dba_table_constraints',
+    description:
+      'The rules a table spec is judged by, read live from the bound instance: the required scope prefix, the '
+      + '30-character name cap and how much of it the prefix consumes, the column types this layer can emit, the '
+      + 'type synonyms it will canonicalise for you, and what it normalizes automatically. Read this BEFORE '
+      + 'composing a dba_create_table spec so the spec is planned against the constraints instead of failing into '
+      + 'them. Read-only.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: {} },
+    execute: () => dbaTableConstraints(),
   },
 
   /* ── DBA Layer 4 — data operations and the irreversible gate. ───────────── */

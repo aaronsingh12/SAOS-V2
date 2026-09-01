@@ -7,6 +7,7 @@ import { flowsRouter } from './routes/flows.js';
 import { agentRouter } from './routes/agent.js';
 import { slaRouter } from './routes/sla.js';
 import { accessRouter } from './routes/access.js';
+import { dbaRouter } from './routes/dba.js';
 import { auditRouter } from './routes/audit.js';
 import { applicationsRouter } from './routes/applications.js';
 import { transportRouter } from './routes/transport.js';
@@ -20,6 +21,9 @@ import { getSettings } from './config/store.js';
 // so no path can save a connection without per-instance state being flushed (B6).
 import { boundInstance } from './servicenow/instance-binding.js';
 import { DB_PATH } from './memory/db.js';
+// Registration side effect: hooks the post-install state reconciler onto every
+// deploy, so an install cannot silently revert an out-of-SDK-model flag (F1).
+import './servicenow/post-install-state.js';
 
 const app = express();
 app.use(cors());
@@ -34,6 +38,8 @@ app.use('/api/flows', flowsRouter);
 app.use('/api/agent', agentRouter);
 app.use('/api/sla', slaRouter);
 app.use('/api/access', accessRouter);
+// Phase T1: the Tables pane. Read-only — see routes/dba.js.
+app.use('/api/dba', dbaRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/applications', applicationsRouter);
 app.use('/api/transport', transportRouter);

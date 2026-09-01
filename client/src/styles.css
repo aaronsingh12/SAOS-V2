@@ -88,6 +88,17 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.on { background: var(--verdigris); box-shadow: 0 0 6px var(--verdigris); }
+/* Header status dots. Same three tones the rest of the app already uses, so a
+   warning in the topbar reads as the same severity as a warning in a card. */
+.dot.warn { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.dot.bad { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.dot.busy { background: var(--blue); box-shadow: 0 0 6px var(--blue); animation: dot-pulse 1.2s ease-in-out infinite; }
+@keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.instance-pill.status-ok { color: var(--verdigris); }
+.instance-pill.status-warn { color: var(--amber); }
+.instance-pill.status-bad { color: var(--red); }
+.instance-pill.status-busy { color: var(--blue); }
+@media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
 .content { padding: 22px; overflow-y: auto; flex: 1; }
 
 /* ── Layout helpers ── */
