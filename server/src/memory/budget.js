@@ -74,7 +74,7 @@ import { estimateTextTokens } from './tokens.js';
  * iteration of a 15-iteration tool loop, and nothing in this product needs a
  * conversation that long. Raising it is safe if a session ever justifies it.
  */
-export const SANE_CONTEXT_CAP = 32_000;
+export const SANE_CONTEXT_CAP = 60_000;
 
 /**
  * Room reserved for the answer, and deliberately more than we ask for.
