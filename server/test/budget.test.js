@@ -105,15 +105,64 @@ test('the budget subtracts the fixed overhead the request actually carries', asy
   assert.equal(loaded.budget, loaded.ceiling - loaded.fixed - loaded.headroom);
 });
 
-test('the history budget is a real share of the window, not 4% of it', async () => {
+/* ------------------------------------------------------------------ *
+ * WI-BUDGET-1 T4 — THE REGRESSION GUARD ASSERTS AGAINST THE LIVE ARTIFACT
+ *
+ * This test used to run on a fixture: `'x'.repeat(20_586)` and one fake tool,
+ * a frozen snapshot of the D-7 shape (37 tools, 12,548 fixed). It asserted
+ * `budget > 10_000` and passed continuously while the real prompt and registry
+ * grew to 30,868 fixed and drove the live budget onto the 4,000 floor — worse
+ * than the 5,452 this very test calls the defect.
+ *
+ * That is trap #59 arriving inside the guard written to prevent it: a snapshot
+ * of a growing system goes stale by staying correct. A test that defends a
+ * budget must measure what the adapter will actually send, so the artifact
+ * growing past the line is what fails.
+ *
+ * The fixture version is kept below under an honest name — it pins the
+ * ARITHMETIC (does the subtraction happen at all), which is a different claim
+ * from "does today's request fit".
+ * ------------------------------------------------------------------ */
+
+test('T4: the LIVE prompt and registry leave a real share of the window for history', async () => {
+  showReturns(131_072);
+  const system = buildSystemPrompt({});
+  const { budget, fixed, ceiling, headroom, starved } = await computeBudget({
+    system, tools: TOOLS, maxTokens: 4096,
+  });
+
+  assert.equal(starved, false,
+    `the envelope is over-full: fixed ${fixed} + headroom ${headroom} >= ceiling ${ceiling}`);
+  // The measured old value was 5,452, and the floor it later collapsed to was
+  // 4,000. Anything in that region is the defect, not a tuning choice.
+  assert.ok(budget > 10_000,
+    `history budget is ${budget} against live fixed ${fixed}; the thrash starts around 5,452 and the floor is 4,000`);
+  // The floor must be headroom nobody is standing on. A budget sitting exactly
+  // on MIN_HISTORY_TOKENS means the subtraction went negative and was absorbed.
+  assert.notEqual(budget, 4_000, 'the budget is on the floor — the floor is not an allowance');
+});
+
+test('T4: the test measures the same fixed cost computeBudget does', async () => {
+  // No fixture-derived magic numbers anywhere in this file's live assertions:
+  // the expected value is recomputed from the same two artifacts the adapter
+  // serialises, so the two cannot drift apart silently.
+  showReturns(131_072);
+  const system = buildSystemPrompt({});
+  const { fixed } = await computeBudget({ system, tools: TOOLS });
+  const independently = estimateTextTokens(system) + estimateTextTokens(JSON.stringify(TOOLS));
+  assert.equal(fixed, independently,
+    'the budget must be measured from the serialised system prompt and the serialised registry');
+});
+
+test('the budget arithmetic subtracts a fixed overhead at all (constructed)', async () => {
+  // NOT the regression guard — see T4 above. This pins the SHAPE of the
+  // subtraction on synthetic inputs, so a refactor that stopped counting the
+  // tool schemas fails here even if the live registry happens to be small.
   showReturns(131_072);
   const system = 'x'.repeat(20_586);
   const tools = [{ name: 'a', description: 'y'.repeat(23_330), inputSchema: {} }];
   const { budget } = await computeBudget({ system, tools });
-
-  // The measured old value was 5,452 on exactly this input. Anything in that
-  // region is the defect, not a tuning choice.
-  assert.ok(budget > 10_000, `history budget regressed to ${budget}; the thrash starts around 5,452`);
+  assert.ok(budget > 10_000, `constructed budget regressed to ${budget}`);
 });
 
 test('a small model caps the budget below our own ceiling', async () => {
