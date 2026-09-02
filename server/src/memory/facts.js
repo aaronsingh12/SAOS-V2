@@ -1,5 +1,6 @@
 import { getDb } from './db.js';
 import { getSettings } from '../config/store.js';
+import { log } from '../logging.js';
 
 /**
  * A-3/A-4 — the instance knowledge ledger.
@@ -301,11 +302,51 @@ const KIND_HEADING = {
 };
 
 /**
+ * The ceiling on how many facts one block may carry.
+ *
+ * WI-BUDGET-1 — this was 40, against a ledger of 56, and the cut was SILENT.
+ *
+ * `listFacts` orders by (kind, key), so kinds sort decision, mapping,
+ * preference, trap and a `.slice(0, 40)` took every decision and mapping and
+ * then stopped 20 traps into an alphabetical list. Measured 2026-09-02: 16
+ * traps were absent from every system prompt this project has ever sent, and
+ * they were the back half of the alphabet rather than the unimportant half —
+ * `priority-is-calculated` (the fact plan-check.js exists to enforce, and the
+ * one that spent two live approvals on 2026-08-24), `rest-silently-drops-
+ * field-writes`, `unknown-field-writes-accepted`, `sys-scope-insert-is-a-husk`
+ * (the basis of operating rule 21) and `ui-policy-action-not-writable-over-
+ * rest` (the basis of rule 14) among them.
+ *
+ * That is the ledger's own failure mode turned on the ledger: an absence that
+ * reads as "not measured". The block asserts these facts "override your priors
+ * … none of them will produce an error to warn you when violated", which is
+ * a promise the truncation quietly broke.
+ *
+ * 200 is a bound, not a target — it exists so a runaway ledger cannot silently
+ * become the whole request. When it DOES bite it is loud in two places: a line
+ * inside the block, so the model knows the list it is reading is partial, and
+ * a warning in the log, so a human does. Never a bare slice again.
+ */
+export const FACT_BLOCK_LIMIT = 200;
+
+/**
  * The fact block. `kinds` lets the codegen path take the subset that is
  * actionable while writing a flow, without the conversational preferences.
+ *
+ * NOT retrieval-selected, deliberately — see WI-BUDGET-1 T3. Selecting facts
+ * by lexical overlap with the turn was built and measured against seven
+ * realistic prompts and did not hold: "Add a field called warranty_expiry to
+ * the incident table" ranked two ACL traps top and surfaced none of the three
+ * field-write traps that request is actually about, and no single threshold
+ * both kept ACL traps out of a catalog turn and returned anything at all for
+ * an impersonation turn. Dropping a trap the model needed costs more than the
+ * tokens, so the ledger ships whole until a selector can be shown to keep the
+ * relevant fact.
  */
-export function factBlock({ instance, kinds = FACT_KINDS, limit = 40 } = {}) {
-  const facts = listFacts({ instance }).filter((f) => kinds.includes(f.kind)).slice(0, limit);
+export function factBlock({ instance, kinds = FACT_KINDS, limit = FACT_BLOCK_LIMIT } = {}) {
+  const eligible = listFacts({ instance }).filter((f) => kinds.includes(f.kind));
+  const facts = eligible.slice(0, limit);
+  const omitted = eligible.length - facts.length;
   if (!facts.length) return '';
 
   const byKind = new Map();
@@ -318,6 +359,23 @@ export function factBlock({ instance, kinds = FACT_KINDS, limit = 40 } = {}) {
     'INSTANCE KNOWLEDGE LEDGER — facts this project has MEASURED, not guessed.',
     'Each one cost a real debugging cycle. Treat them as established: they override your priors about how ServiceNow "usually" behaves, and none of them will produce an error to warn you when violated.',
   ];
+  /*
+   * IN-BAND, because the model is the one reasoning off this list. A truncated
+   * ledger that presents itself as whole invites exactly the inference the
+   * ledger exists to prevent — "this behaviour is not in the traps, so it is
+   * not a trap". Said out loud, absence stops being evidence.
+   */
+  if (omitted > 0) {
+    log.warn('memory',
+      `fact ledger TRUNCATED: ${omitted} of ${eligible.length} fact(s) were cut by the ${limit}-fact limit and are `
+      + 'not in this prompt. Raise FACT_BLOCK_LIMIT or prune the ledger — a silently short ledger reads as a short '
+      + 'list of traps.');
+    parts.push(
+      `
+TRUNCATED: ${omitted} further fact(s) exist in this ledger and are NOT shown here. This list is `
+      + 'INCOMPLETE — a behaviour missing from it has not been ruled out, and absence here is not evidence.',
+    );
+  }
   for (const kind of FACT_KINDS) {
     const list = byKind.get(kind);
     if (!list?.length) continue;
