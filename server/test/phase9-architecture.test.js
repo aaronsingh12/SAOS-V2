@@ -298,6 +298,16 @@ test('B17 — no test-only bypass exists in any production path', () => {
     'meetings/audio-store.js',    // the audio root directory
     'meetings/supervisor.js',     // the process spawner
     'memory/db.js',               // the database handle
+    /*
+     * SESSION 1 / WI-3 — the SDK capability probe (`_setCapabilityProbeForTests`)
+     * and its cache contents (`_setCapCacheForTests`). Both replace an INPUT:
+     * what the probe answers and what the cache currently holds. Neither can
+     * approve, execute, skip a verification or relax a check — discovery still
+     * reads the value through the same `cachedCapability()` and the same
+     * status ladder. Without them the stale-while-revalidate rule could only be
+     * asserted by waiting 30 s against a real CLI.
+     */
+    'servicenow/fluent.js',       // the SDK capability probe and its cache
   ].sort(), `a new test seam appeared: ${seams.join(', ')}`);
 
   // And none of them sits on a control path.

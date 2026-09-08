@@ -6,7 +6,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSettings } from '../config/store.js';
-import { sdkAuthEnv, boundInstance, parseSdkInstanceEcho, instanceKeyFrom } from './instance-binding.js';
+import {
+  sdkAuthEnv, boundInstance, parseSdkInstanceEcho, instanceKeyFrom, registerInstanceScopedCache,
+} from './instance-binding.js';
 import { chatOnce } from '../agent/providers/index.js';
 import { codegenDecoding } from '../agent/decoding.js';
 import {
@@ -962,8 +964,73 @@ function parseAuthList(stdout) {
 }
 
 let capCache = { at: 0, value: null };
-const CAP_TTL_MS = 30_000;
+export const CAP_TTL_MS = 30_000;
 let capRefreshing = null;
+
+/*
+ * SESSION 1 / WI-3 — STALENESS IS NOT IGNORANCE.
+ *
+ * MEASURED 2026-09-08. `cachedCapability()` returned null the moment its TTL
+ * expired, for the ~8 s a refresh takes, while it still HELD the last probe.
+ * Discovery reads null as `unknown`; unknown is never available; so on every
+ * refresh every SDK capability vanished from the planner prompt, and the
+ * planner — offered only REST — produced a VALID plan to `create_record` on a
+ * flow table. The Application Builder read the same window as REQUIRES_SDK.
+ *
+ * The rule now: a value the probe already established is served while the
+ * next probe runs, and it is DOWNGRADED to unknown only when a probe actually
+ * fails (throws) — never because the clock moved. A cold process is unknown
+ * until its first probe, which `primeCapability()` runs at boot and which the
+ * per-instance flush re-runs after a switch, so the window is start-up only.
+ *
+ * `capProbe` is the seam the offline suite injects; in production it is the
+ * real probe, FORCED so the refresh cannot be answered from the cache it is
+ * trying to renew.
+ */
+let capProbe = null;
+const realProbe = () => capability({ force: true });
+
+function refreshCapability() {
+  if (capRefreshing) return capRefreshing;
+  // The probe STARTS now, synchronously — a caller that observes "a refresh
+  // was triggered" must be able to observe it without yielding.
+  let started;
+  try { started = Promise.resolve((capProbe ?? realProbe)()); } catch (err) { started = Promise.reject(err); }
+  capRefreshing = started
+    .then((value) => {
+      if (value) capCache = { at: Date.now(), value };
+      return value ?? null;
+    })
+    .catch((err) => {
+      // A probe that FAILED is the one thing that may take a known value away.
+      log.warn('fluent', `the SDK capability probe failed — SDK availability is UNKNOWN until the next probe succeeds: ${err.message}`);
+      capCache = { at: Date.now(), value: null, error: err.message };
+      return null;
+    })
+    .finally(() => { capRefreshing = null; });
+  return capRefreshing;
+}
+
+/** Run the probe now rather than on the first request that needs it. Resolves to the value (or null on failure). */
+export function primeCapability() {
+  return refreshCapability();
+}
+
+/** Test seams. `null` restores the real probe / an empty cache. */
+export function _setCapabilityProbeForTests(fn) { capProbe = typeof fn === 'function' ? fn : null; capRefreshing = null; }
+export function _setCapCacheForTests(next) { capCache = next ?? { at: 0, value: null }; capRefreshing = null; }
+
+/*
+ * A probe result is a fact about ONE instance. Switching the binding flushes
+ * it (so the old host's answer is never served against the new one) and
+ * starts the new host's probe immediately, rather than leaving it to whichever
+ * request happens to arrive first.
+ */
+registerInstanceScopedCache('sdk-capability', () => {
+  capCache = { at: 0, value: null };
+  capRefreshing = null;
+  refreshCapability();
+});
 
 /**
  * The cached probe, or null — never a wait.
@@ -982,13 +1049,11 @@ let capRefreshing = null;
  * broken" are different answers and only one of them prints fix commands.
  */
 export function cachedCapability() {
-  if (capCache.value && Date.now() - capCache.at < CAP_TTL_MS) return capCache.value;
-  if (!capRefreshing) {
-    capRefreshing = capability()
-      .catch(() => null)
-      .finally(() => { capRefreshing = null; });
-  }
-  return null;
+  const fresh = Boolean(capCache.value) && Date.now() - capCache.at < CAP_TTL_MS;
+  if (!fresh) refreshCapability();
+  // Stale-while-revalidate: the last known value, or null only when nothing
+  // was ever established (cold) or the last probe FAILED.
+  return capCache.value ?? null;
 }
 
 /**

@@ -30,6 +30,7 @@ import { DB_PATH } from './memory/db.js';
 // Registration side effect: hooks the post-install state reconciler onto every
 // deploy, so an install cannot silently revert an out-of-SDK-model flag (F1).
 import './servicenow/post-install-state.js';
+import { primeCapability } from './servicenow/fluent.js';
 
 const app = express();
 app.use(cors());
@@ -114,6 +115,15 @@ if (!LOOPBACK.has(HOST)) {
 // chat turn with something unrecognisable.
 getDb();
 const seeded = seedLedger();
+
+/*
+ * SESSION 1 / WI-3 — the first SDK probe runs at boot, not on the first
+ * request that happens to need it. Non-blocking: it costs ~8 s of CLI
+ * start-up and the listener does not wait for it. Until it completes the SDK
+ * capabilities are honestly UNKNOWN; after it they stay known across every
+ * TTL refresh (stale-while-revalidate in fluent.js).
+ */
+primeCapability();
 
 /*
  * The transcription queue is in memory, so a restart mid-meeting would leave
