@@ -64,6 +64,12 @@ const nowIso = () => new Date().toISOString();
 async function requestApproval({ sessionId, step, plan, emit, signal, dataflow = null }) {
   const approvalId = crypto.randomUUID();
   const nonce = crypto.randomBytes(32).toString('base64url');
+  /*
+   * SESSION 1 / WI-2 — register the pending entry BEFORE the card is emitted.
+   * Same gate, same nonce, same resolver as the turn loop; an answer given
+   * from inside the emit callback used to find nothing and wait five minutes.
+   */
+  const decisionPending = awaitApprovalDecision(sessionId, approvalId, nonce, signal);
   emit({
     type: 'approval_required',
     approvalId,
@@ -114,7 +120,7 @@ async function requestApproval({ sessionId, step, plan, emit, signal, dataflow =
       : null,
   });
   log.warn('plan', `approval required for step ${step.id} (${step.operation}) — waiting for the user`);
-  const decision = await awaitApprovalDecision(sessionId, approvalId, nonce, signal);
+  const decision = await decisionPending;
   emit({ type: 'approval_resolved', approvalId, approved: decision.approved, source: decision.source, at: decision.at });
   return decision;
 }

@@ -533,12 +533,23 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, taskId 
         // elevation context, nonce-bound exactly like every other mutation.
         const approvalId = crypto.randomUUID();
         const nonce = crypto.randomBytes(32).toString('base64url');
+        /*
+         * SESSION 1 / WI-2 — REGISTER BEFORE THE CARD IS VISIBLE.
+         *
+         * `awaitApproval` puts the pending entry in place synchronously, inside
+         * its Promise executor. Emitting first meant an answer given from the
+         * emit callback itself found nothing to resolve, and the gate waited
+         * out its five-minute timer. Measured 2026-09-08: two exact
+         * five-minute gaps for two cards. The card, the nonce and the resolver
+         * are unchanged; only the order is.
+         */
+        const decisionPending = awaitApproval(state, approvalId, nonce, signal);
         emit({
           type: 'approval_required', approvalId, nonce, name: call.name, input: call.input,
           warning: elevationPayload.note, elevation: elevationPayload,
         });
         log.warn('gate', `elevation approval required: ${call.name} on ${descriptor.table} — waiting for the user`);
-        const decision = await awaitApproval(state, approvalId, nonce, signal);
+        const decision = await decisionPending;
         if (decision.source === 'cancelled') {
           // NOT `approval_resolved`. Nothing was resolved — the card was still
           // waiting when the turn was stopped, and rendering it as a decision
@@ -2541,6 +2552,9 @@ ${skillNote}` : text);
           // from the CSPRNG: an approval token that can be guessed is the same
           // hole as no token, worn differently.
           const nonce = crypto.randomBytes(32).toString('base64url');
+          // SESSION 1 / WI-2 — the pending entry exists before the card does.
+          // See the elevation gate above for the measured defect.
+          const decisionPending = awaitApproval(state, approvalId, nonce, signal);
           emit({
             type: 'approval_required', approvalId, nonce, name: call.name, input: call.input,
             warning: planWarning?.message || null,
@@ -2572,7 +2586,7 @@ ${skillNote}` : text);
             impersonationApproval,
           });
           log.warn('gate', `approval required: ${call.name}${impersonationApproval?.elevated ? ' — ELEVATED (admin target)' : ''} — waiting for the user`);
-          const decision = await awaitApproval(state, approvalId, nonce, signal);
+          const decision = await decisionPending;
           /*
            * Phase 0 — SAFE POINT 6: cancelled while the card was waiting.
            *

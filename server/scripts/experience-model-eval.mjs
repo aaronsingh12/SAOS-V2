@@ -91,6 +91,7 @@ for (const d of DOMAINS) {
     const tracker = beginTurn({ sessionId, goal: d.ask, skills: S.skillSnapshot(skills) });
     const frames = [];
     let rejected = 0;
+    let unanswered = 0;
     const started = Date.now();
 
     const emit = (evt) => {
@@ -100,10 +101,20 @@ for (const d of DOMAINS) {
        * REJECT every card, through the real gate, with the real nonce. Nothing
        * is written, the refusal is attributed honestly, and the turn continues
        * exactly as it would if a person had clicked Reject.
+       *
+       * SESSION 1 / WI-2 — THE ANSWER IS CHECKED, NOT ASSUMED. Until the gate
+       * registered its pending entry before emitting the card, this call
+       * returned `no-such-approval`, the turn waited out the five-minute
+       * timer, and this counter still said "rejected". A card the gate did not
+       * accept an answer for is counted as UNANSWERED, and the summary says so.
+       * Every run of this script before 2026-09-08 reported timeouts as
+       * rejections; that historical evidence is not rewritten here, it is
+       * labelled below.
        */
       if (evt.type === 'approval_required') {
-        rejected += 1;
-        resolveApproval(sessionId, evt.approvalId, false, APPROVAL_SOURCES.USER_CLICK, evt.nonce);
+        const r = resolveApproval(sessionId, evt.approvalId, false, APPROVAL_SOURCES.USER_CLICK, evt.nonce);
+        if (r?.ok) rejected += 1;
+        else { unanswered += 1; console.log(`   !! the gate did not accept the answer for ${evt.name}: ${r?.reason ?? 'unknown'} — this card will TIME OUT`); }
       }
     };
 
@@ -207,7 +218,7 @@ for (const d of DOMAINS) {
 
     rows.push({
       label, ms, correct, skillOk, invented, dropped, liveUnsourced, unsupported,
-      falseSuccess, planOk, statusOk, leaked, rejected,
+      falseSuccess, planOk, statusOk, leaked, rejected, unanswered,
       tools: toolSeqs.size, events: durable.events.length, status: durable.status,
       expected, announced,
     });
@@ -215,7 +226,7 @@ for (const d of DOMAINS) {
     console.log(
       `[${correct ? ' OK ' : 'FAIL'}] ${label.padEnd(24)} ${String(ms).padStart(6)}ms  `
       + `${String(toolSeqs.size).padStart(2)} tool(s)  ${String(durable.events.length).padStart(2)} event(s)  `
-      + `${durable.status.padEnd(10)} ${rejected ? `${rejected} rejected  ` : ''}`
+      + `${durable.status.padEnd(10)} ${rejected ? `${rejected} rejected  ` : ''}${unanswered ? `${unanswered} UNANSWERED (timed out)  ` : ''}`
       + `${skillOk ? '' : `SKILLS expected[${expected.join(',')}] announced[${announced.join(',')}]  `}`
       + `${invented ? `INVENTED ${invented}  ` : ''}${dropped ? `DROPPED ${dropped}  ` : ''}`
       + `${liveUnsourced ? `UNSOURCED ${liveUnsourced}  ` : ''}${unsupported ? `UNSUPPORTED ${unsupported}  ` : ''}`
@@ -240,7 +251,9 @@ console.log(`plan display correct    : ${sum((r) => r.planOk)}/${rows.length}`);
 console.log(`status correct          : ${sum((r) => r.statusOk)}/${rows.length}`);
 console.log(`tool calls made         : ${sum((r) => r.tools)}`);
 console.log(`activity events shown   : ${sum((r) => r.events)}`);
-console.log(`gates rejected          : ${sum((r) => r.rejected)}`);
+console.log(`gates rejected          : ${sum((r) => r.rejected)}   (the gate accepted the refusal)`);
+console.log(`gates unanswered        : ${sum((r) => r.unanswered)}   (the gate refused the answer and timed out — 0 expected since WI-2; `
+  + 'runs before 2026-09-08 reported these as "rejected")');
 console.log();
 console.log('§64 targets, all of which must be 0:');
 console.log(`  invented activity rows       : ${sum((r) => r.invented)}`);
