@@ -152,7 +152,7 @@ function blueprintToSpec(bp) {
     t.condition_encoded_query ? `Trigger condition (encoded query): ${t.condition_encoded_query}` : null,
     t.schedule ? `Schedule: ${t.schedule}` : null,
     'Steps:',
-    ...(bp.steps || []).map((s, i) => `  ${s.order ?? i + 1}. [${s.kind}] ${s.summary}${s.flow_designer_action ? ` (action: ${s.flow_designer_action})` : ''}`),
+    ...(bp.steps || []).map((s, i) => `  ${s.order ?? i + 1}. [${s.kind}] ${s.summary}${s. _action ? ` (action: ${s.flow_designer_action})` : ''}`),
   ].filter(Boolean);
   return lines.join('\n');
 }

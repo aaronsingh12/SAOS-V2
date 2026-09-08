@@ -16,7 +16,11 @@ const DEFAULTS = {
     clientSecret: '',
   },
   llm: {
-    provider: 'anthropic',            // 'anthropic' | 'openai' | 'ollama'
+    // The set of valid provider names lives in agent/providers/ and NOWHERE
+    // else, this comment included. Listing them here would put vendor knowledge
+    // in the config layer, and the provider suite asserts that no file outside
+    // that directory names one.
+    provider: 'anthropic',
     apiKey: '',
     baseUrl: '',                      // optional override; ollama default http://localhost:11434/v1
     model: '',                        // blank = provider default
@@ -51,6 +55,75 @@ const DEFAULTS = {
   dba: {
     allowIrreversible: false,
   },
+  /*
+   * K1 — the ServiceNow knowledge base the agent retrieves from.
+   *
+   * Every default here is deliberately inert. An empty corpus retrieves
+   * nothing, and retrieving nothing is reported as "no knowledge indexed"
+   * rather than silently producing an empty context block that reads like a
+   * confident absence of documentation.
+   */
+  rag: {
+    // Retrieval is read-only and cannot authorise anything (see
+    // knowledge/context.js), so it is on by default. Off is for measuring what
+    // the agent does WITHOUT it, which is the only way to tell whether it
+    // helped.
+    enabled: true,
+    // Where ingestion reads from. Blank = <server>/data/knowledge. Documents
+    // are supplied by the operator: nothing here fetches from the web, because
+    // a fabricated URL is worse than a missing one.
+    corpusDir: '',
+    // How many retrieved chunks reach the system prompt. Small on purpose —
+    // the prompt already carries ~100 tool schemas and the fact ledger, and
+    // budget.js measures what is actually sent.
+    maxContextChunks: 6,
+    /*
+     * VERSION-AWARE RETRIEVAL, and the one thing this cannot know for itself.
+     *
+     * "Prefer newer documentation" needs an ordering over ServiceNow release
+     * names, and that ordering is not derivable from a document — it is a fact
+     * about the platform's release history. Deriving it from the names would
+     * be a guess dressed as logic.
+     *
+     * So it is OPERATOR-SUPPLIED, oldest first, e.g.
+     *   ["Vancouver", "Washington DC", "Xanadu"]
+     * A release named in a document but absent from this list is not ranked,
+     * and retrieval falls back to `updated_at` recency and SAYS SO in its
+     * result. Empty by default: no ordering is claimed until someone states one.
+     */
+    releaseOrder: [],
+    /*
+     * Extra hosts the operator declares official for their situation: a
+     * licensed documentation mirror, an internal proxy, an air-gapped copy.
+     *
+     * Empty by default, and the ONLY way to widen the source allowlist beyond
+     * the vendor's own domain. It is configuration rather than code so that
+     * admitting a non-vendor host is a decision someone made and can be shown
+     * to have made — see knowledge/sources.js.
+     */
+    allowedHosts: [],
+  },
+  /*
+   * EXPERIENCE §28/§77 — the skill registry's durable half.
+   *
+   * §77 says not to create a table by default, and to first inspect whether the
+   * existing capability/configuration storage can represent a skill registry.
+   * It can, and this is that inspection's answer: a skill is a name, a version,
+   * a list of capabilities and an on/off switch — configuration, of exactly the
+   * kind this file already holds — so it lives here and the database stays at
+   * user_version 23 with no new table.
+   *
+   * TWO KEYS, AND THE SPLIT MATTERS. `installed` holds user-installed manifests
+   * only; the seven built-ins are code (agent/skills/builtin.js) and are never
+   * written here, so a settings file cannot redefine a built-in skill or claim
+   * built-in trust for one. `disabled` is a list of identities that are OFF —
+   * an ABSENCE list rather than a presence list, so §35's "do not delete skill
+   * definitions merely to disable them" is the only thing this can express.
+   */
+  skills: {
+    installed: [],
+    disabled: [],
+  },
 };
 
 let cache = null;
@@ -65,6 +138,8 @@ function load() {
       llm: { ...DEFAULTS.llm, ...(parsed.llm || {}) },
       agent: { ...DEFAULTS.agent, ...(parsed.agent || {}) },
       dba: { ...DEFAULTS.dba, ...(parsed.dba || {}) },
+      rag: { ...DEFAULTS.rag, ...(parsed.rag || {}) },
+      skills: { ...DEFAULTS.skills, ...(parsed.skills || {}) },
     };
   } catch {
     cache = JSON.parse(JSON.stringify(DEFAULTS));
@@ -96,6 +171,8 @@ export function _setSettingsForTests(patch) {
     llm: { ...DEFAULTS.llm, ...(patch.llm || {}) },
     agent: { ...DEFAULTS.agent, ...(patch.agent || {}) },
     dba: { ...DEFAULTS.dba, ...(patch.dba || {}) },
+    rag: { ...DEFAULTS.rag, ...(patch.rag || {}) },
+    skills: { ...DEFAULTS.skills, ...(patch.skills || {}) },
   };
   return cache;
 }
@@ -166,12 +243,40 @@ export function saveSettings(patch) {
     llm: { ...cur.llm, ...(patch.llm || {}) },
     agent: { ...cur.agent, ...(patch.agent || {}) },
     dba: { ...cur.dba, ...(patch.dba || {}) },
+    rag: { ...cur.rag, ...(patch.rag || {}) },
+    skills: { ...cur.skills, ...(patch.skills || {}) },
   };
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(FILE, JSON.stringify(next, null, 2));
   cache = next;
   announceBinding();
   return next;
+}
+
+/**
+ * EXPERIENCE §28 — persist ONLY the skill registry.
+ *
+ * A separate writer rather than a `saveSettings({ skills })` call, for two
+ * reasons that are both about blast radius.
+ *
+ * It does not announce a binding. `saveSettings` fires the instance-switch hook
+ * because changing `connection` invalidates every cache that read it; toggling
+ * a skill changes nothing about the instance, and re-announcing on every toggle
+ * would rebuild schema caches for no reason.
+ *
+ * It does not touch `connection`. Skills are edited from a skills route, and a
+ * writer that could reach the credential block from there would be one more
+ * path by which a password could be rewritten by something that had no business
+ * near it. This one structurally cannot: it copies `cur` and replaces a single
+ * key.
+ */
+export function saveSkills(skills) {
+  const cur = load();
+  const next = { ...cur, skills: { ...cur.skills, ...(skills || {}) } };
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(FILE, JSON.stringify(next, null, 2));
+  cache = next;
+  return next.skills;
 }
 
 /** Clears the bound instance and its secrets. The LLM settings are unrelated and stay. */
@@ -208,5 +313,12 @@ export function publicSettings() {
     },
     agent: { autoApprove: s.agent.autoApprove, holdMutationsOnQuestion: s.agent.holdMutationsOnQuestion !== false },
     dba: { allowIrreversible: s.dba?.allowIrreversible === true },
+    rag: {
+      enabled: s.rag?.enabled !== false,
+      corpusDir: s.rag?.corpusDir || '',
+      maxContextChunks: s.rag?.maxContextChunks ?? DEFAULTS.rag.maxContextChunks,
+      releaseOrder: Array.isArray(s.rag?.releaseOrder) ? s.rag.releaseOrder : [],
+      allowedHosts: Array.isArray(s.rag?.allowedHosts) ? s.rag.allowedHosts : [],
+    },
   };
 }

@@ -4,22 +4,29 @@ import { SkeletonRows, SkeletonLines, EmptyState } from '../components/states.js
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import { useBinding } from '../hooks/useBinding.js';
 import { classificationBadge, describeIndexes, filterTables } from '../components/tableClassification.js';
+import { CreateTableForm, AddFieldForm, ModifyFieldForm, DropFieldPanel } from '../components/TableActions.jsx';
 
 /**
- * Tables — Database Administration, READ ONLY (Phase T1).
+ * Tables — Database Administration.
  *
  * Every number on this page comes from the same Layer-1 functions the agent's
  * DBA tools call, through /api/dba. There is no second data path, so the pane
  * and the chat cannot answer the same question differently.
  *
- * ── WHAT THIS PAGE REFUSES TO DO ─────────────────────────────────────────────
+ * ── WHAT THE WRITE ACTIONS ARE, AND ARE NOT (T2) ─────────────────────────────
  *
- * It does not mutate. No create, no add column, no modify, no drop — not
- * disabled buttons, not hidden ones: they do not exist. Schema changes are
- * gated operations that run through the tools with an approval flow and, for
- * a drop, an operator escalation; a browser pane that could reach them by
- * accident would be a way around the gate rather than through it. That is
- * Phase T2.
+ * Create / add / modify / remove post to ONE endpoint that hands the named
+ * tool to the agent loop's own `executeTool` — the same approval gate the chat
+ * card resolves. This page therefore performs no writes and decides no
+ * permissions. What it DOES do is make an invalid request unrepresentable: the
+ * scope prefix, the 30-character cap and the column types are the instance's
+ * own rules, read live, so a spec that the tool would reject cannot be
+ * submitted from here in the first place.
+ *
+ * The dangerous half is not offered as an ordinary edit. Narrowing a column,
+ * changing its type and removing it are irreversible; they surface as the real
+ * gate, with its four requirements shown and unmet, and the operator escalation
+ * marked as the one thing neither this pane nor any tool can grant.
  *
  * ── AND THE ONE IT REFUSES TO FAKE ───────────────────────────────────────────
  *
@@ -27,7 +34,8 @@ import { classificationBadge, describeIndexes, filterTables } from '../component
  * differently everywhere here. The index panel is the sharpest case: sys_index
  * is 403 over REST on this instance, so unavailable is a routine outcome — and
  * every table has at least a primary key, which makes a rendered zero a lie
- * rather than a small number.
+ * rather than a small number. The same rule governs a write: what is reported
+ * afterwards is the tool's own read-back, never "the request succeeded".
  */
 
 const TABS = [
@@ -83,6 +91,12 @@ export default function Tables() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [inherited, setInherited] = useState(true);
 
+  // T2 — write forms. The constraints come from the server so the form is
+  // judged by the same rules the tool applies; `action` is which form is open.
+  const [constraints, setConstraints] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [action, setAction] = useState(null);   // { kind: 'add' | 'modify' | 'drop', field? }
+
   /* ── the list ─────────────────────────────────────────────────────────── */
 
   const loadList = useCallback(async () => {
@@ -99,9 +113,12 @@ export default function Tables() {
   useEffect(() => {
     loadList();
     api.get('/dba/scopes').then((r) => setScopes(r.scopes || [])).catch(() => setScopes([]));
+    // The rules are the instance's, re-read whenever the binding changes.
+    api.get('/dba/constraints').then(setConstraints).catch(() => setConstraints(null));
     // Selecting a table from a previous binding would show another instance's
     // schema under this one's header.
     setSelected(null); setDetail({}); setDetailErr({});
+    setCreating(false); setAction(null);
   }, [bindingKey, loadList]);
 
   const shown = useMemo(() => filterTables(list?.tables, { q, scope, kind }), [list, q, scope, kind]);
@@ -158,11 +175,11 @@ export default function Tables() {
   return (
     <div className="stack">
       <div className="card">
-        <div className="card-title">Tables · read only</div>
+        <div className="card-title">Tables</div>
         <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: '0 0 10px' }}>
           The schema of <span className="mono">{instance?.host || 'the bound instance'}</span>, read live through the
-          same Layer-1 tools the agent uses. Nothing on this page changes anything — schema changes are gated
-          operations and run through the agent.
+          same Layer-1 tools the agent uses. Changes go through the same gated tools too — this page holds the rules
+          so an invalid spec cannot be submitted, and the tools hold the safety.
         </p>
 
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -183,6 +200,12 @@ export default function Tables() {
           <button className="btn sm" onClick={loadList} disabled={loadingList} style={{ marginLeft: 'auto' }}>
             {loadingList ? 'Reading…' : 'Refresh'}
           </button>
+          {/* Disabled until the constraints are read: a create form without the
+              instance's own rules could only guess at them. */}
+          <button className="btn primary sm" onClick={() => setCreating((c) => !c)} disabled={!constraints}
+            title={constraints ? '' : 'Waiting for the instance constraints'}>
+            {creating ? 'Close' : 'Create table'}
+          </button>
         </div>
 
         {list && (
@@ -196,6 +219,21 @@ export default function Tables() {
           </p>
         )}
       </div>
+
+      {creating && constraints && (
+        <CreateTableForm
+          constraints={constraints}
+          onCancel={() => setCreating(false)}
+          onDone={(name) => {
+            // The new table is real and verified by now — refresh the list and
+            // open it, so the next thing seen is the instance's own answer.
+            setCreating(false);
+            loadList();
+            setSelected(name);
+            setTab('fields');
+          }}
+        />
+      )}
 
       <div className="grid2" style={{ alignItems: 'start' }}>
         {/* ── list ── */}
@@ -271,10 +309,56 @@ export default function Tables() {
 
               {tab === 'fields' && (
                 <Panel title="Fields">
-                  <label style={{ fontSize: 12, color: 'var(--muted)', display: 'inline-flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-                    <input type="checkbox" checked={inherited} onChange={(ev) => setInherited(ev.target.checked)} />
-                    include inherited fields
-                  </label>
+                  <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 12, color: 'var(--muted)', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <input type="checkbox" checked={inherited} onChange={(ev) => setInherited(ev.target.checked)} />
+                      include inherited fields
+                    </label>
+                    {/* Add is offered only where the routing can actually take
+                        it — an in-scope table this application's source defines.
+                        Elsewhere the tool would refuse, and offering a button
+                        that always fails is a worse answer than not offering it. */}
+                    {d('classify')?.category === 'custom-in-scope' && (
+                      <button className="btn sm" style={{ marginLeft: 'auto' }}
+                        onClick={() => setAction(action?.kind === 'add' ? null : { kind: 'add' })}>
+                        {action?.kind === 'add' ? 'Close' : 'Add field'}
+                      </button>
+                    )}
+                  </div>
+
+                  {action?.kind === 'add' && constraints && (
+                    <AddFieldForm
+                      table={selected}
+                      constraints={constraints}
+                      onCancel={() => setAction(null)}
+                      onDone={() => {
+                        setAction(null);
+                        load(selected, 'fields', `/dba/table/${encodeURIComponent(selected)}/fields?inherited=${inherited ? '1' : '0'}`);
+                      }}
+                    />
+                  )}
+                  {action?.kind === 'modify' && (
+                    <ModifyFieldForm
+                      table={selected}
+                      field={action.field}
+                      onCancel={() => setAction(null)}
+                      onDone={() => {
+                        setAction(null);
+                        load(selected, 'fields', `/dba/table/${encodeURIComponent(selected)}/fields?inherited=${inherited ? '1' : '0'}`);
+                      }}
+                    />
+                  )}
+                  {action?.kind === 'drop' && (
+                    <DropFieldPanel
+                      table={selected}
+                      field={action.field}
+                      onCancel={() => setAction(null)}
+                      onDone={() => {
+                        setAction(null);
+                        load(selected, 'fields', `/dba/table/${encodeURIComponent(selected)}/fields?inherited=${inherited ? '1' : '0'}`);
+                      }}
+                    />
+                  )}
                   {e('fields') && <p className="error-text">{e('fields')}</p>}
                   {!d('fields') && !e('fields') && <SkeletonLines lines={5} />}
                   {d('fields') && (
@@ -292,6 +376,17 @@ export default function Tables() {
                             {f.mandatory && <span className="badge amber">required</span>}
                             {f.display && <span className="badge green">display</span>}
                             {f.inherited && <span className="badge" title={`defined on ${f.definedOn}`}>from {f.definedOn}</span>}
+                            {/* Only a column this application OWNS on this table
+                                can be changed here. An inherited one belongs to
+                                the parent, and a platform table's column is not
+                                ours to edit directly at all. */}
+                            {d('classify')?.category === 'custom-in-scope' && !f.inherited && !f.element.startsWith('sys_') && (
+                              <>
+                                <button className="btn sm" onClick={() => setAction({ kind: 'modify', field: f })}>change</button>
+                                <button className="btn sm" onClick={() => setAction({ kind: 'drop', field: f })}
+                                  title="Removing a column is irreversible and gated">remove</button>
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>

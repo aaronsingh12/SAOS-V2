@@ -7,7 +7,7 @@
 import { log } from '../../logging.js';
 import { estimateTextTokens } from '../../memory/tokens.js';
 import { isBlankText } from '../../memory/sanitize.js';
-import { withRetry, retryable, isRetryableStatus, isColdStart } from './retry.js';
+import { withRetry, retryable, isRetryableStatus, isColdStart, isAbort, abortedError } from './retry.js';
 
 const DEFAULTS = {
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
@@ -24,6 +24,27 @@ const DEFAULTS = {
    * a setting nobody chose. The provider refuses with instructions instead.
    */
   openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: '' },
+  /*
+   * OpenCode-compatible endpoints: a self-hosted or locally-run gateway that
+   * serves the OpenAI `/chat/completions` shape at an address only the operator
+   * knows.
+   *
+   * BOTH defaults are empty, and that is the honest position rather than a
+   * placeholder. Unlike the four above, there is no address to default to:
+   * "OpenCode-compatible" describes a wire format, not a hosted service, so any
+   * baseUrl written here would be a guess about someone else's machine. The
+   * same goes for the model id, which is whatever that gateway happens to
+   * serve. `providers/index.js` refuses with instructions instead of sending a
+   * request somewhere nobody chose.
+   *
+   * NOT VERIFIED AGAINST A LIVE ENDPOINT. Every other entry in this table was
+   * measured; this one could not be, because there is no OpenCode gateway on
+   * this machine to measure. What is claimed here is exactly one thing — that
+   * the request goes out in the OpenAI chat-completions shape — and if the
+   * target speaks a different protocol it will fail loudly at the wire rather
+   * than silently produce something wrong. See docs/llm-gateway.md.
+   */
+  opencode: { baseUrl: '', model: '' },
 };
 
 /**
@@ -53,6 +74,21 @@ export const WARMUP_TIMEOUT_MS = 15_000;
  * checked — reading only the outer error reports a timeout as a dead daemon.
  */
 const isTimeout = (err) => err?.name === 'TimeoutError' || err?.cause?.name === 'TimeoutError';
+
+/**
+ * Phase 0 — the request timeout, and the caller's cancellation, as one signal.
+ *
+ * The timeout is not negotiable: it is the line past which "slow" has become
+ * "not coming back", and it must keep applying whether or not anyone is holding
+ * a Stop button. `AbortSignal.any` composes the two rather than choosing
+ * between them, so a cancelled request and a hung one both end the fetch and
+ * stay distinguishable afterwards — `isTimeout` still recognises one and
+ * `isAbort` the other.
+ */
+function requestSignal(callerSignal) {
+  const timeout = AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS);
+  return callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
+}
 
 /**
  * Neutral history -> /chat/completions messages.
@@ -205,7 +241,7 @@ async function warmUp({ url, headers, model }) {
   log.warn('llm', `warm-up request finished in ${Date.now() - started}ms (status ${res.status}) — model should now be resident`);
 }
 
-export async function chat({ provider, apiKey, baseUrl, model, system, history, tools, maxTokens = 4096, decoding, extraHeaders = null }) {
+export async function chat({ provider, apiKey, baseUrl, model, system, history, tools, maxTokens = 4096, decoding, extraHeaders = null, signal = null }) {
   const d = DEFAULTS[provider] || DEFAULTS.openai;
   const url = `${(baseUrl || d.baseUrl).replace(/\/$/, '')}/chat/completions`;
   const resolvedModel = model || d.model;
@@ -282,9 +318,17 @@ export async function chat({ provider, apiKey, baseUrl, model, system, history, 
           method: 'POST',
           headers,
           body: payload,
-          signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+          // Phase 0 — the request timeout composed with the caller's
+          // cancellation. Built per attempt, so a retry gets a fresh timeout
+          // while the caller's signal, if any, stays the same one.
+          signal: requestSignal(signal),
         });
       } catch (err) {
+        // Phase 0 — checked first. A cancelled request is not an upstream
+        // failure and must not be retried: the timeout branch below is
+        // retryable, and the unreachable branch after it is too, so either
+        // would answer Stop with more requests.
+        if (isAbort(err, signal)) throw abortedError(`the ${provider} request`);
         // A hang and a dead daemon are different problems and must not read the
         // same. The timeout is shaped like the 408 it stands in for, so it goes
         // through exactly the retry path an upstream-reported timeout would.

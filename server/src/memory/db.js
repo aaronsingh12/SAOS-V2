@@ -581,6 +581,500 @@ const MIGRATIONS = [
 
   PRAGMA foreign_keys = ON;
   `,
+
+  // 15 — MEETING INTELLIGENCE, PHASE 1: CAPTURE.
+  //
+  // The capture agent is a separate OS-level process. It hears the meeting,
+  // splits it into utterances on silence, writes each one to disk, and posts
+  // the METADATA here. Audio bytes never travel over HTTP — both halves are on
+  // the same machine, so a path is cheaper, debuggable (you can play any single
+  // utterance back) and makes retention a directory removal rather than a
+  // row-by-row sweep.
+  //
+  // `idx` is assigned by the AGENT at capture time, not on arrival. A short
+  // utterance can finish transcribing before a long one that started earlier,
+  // so arrival order is not timeline order and never will be. UNIQUE(meeting,
+  // idx) is therefore both the ordering key and the idempotency key: the agent
+  // may re-post an utterance after a dropped connection and get the same row.
+  //
+  // `text` / `speaker` are nullable and unused in this phase. They are declared
+  // now so phase 2 fills a column rather than renaming a table — the migration
+  // that adds transcription should not have to rewrite this one.
+  `
+  CREATE TABLE IF NOT EXISTS meetings (
+    id            TEXT PRIMARY KEY,
+    title         TEXT,
+    source_app    TEXT,
+    source_pid    INTEGER,
+    -- 'auto' (the detector fired), 'manual' (the user pressed record) or
+    -- 'simulated' (scripts/fake-meeting.mjs). Worth storing: a meeting nobody
+    -- chose to record is exactly the one whose consent story has to be legible.
+    detected_by   TEXT NOT NULL DEFAULT 'auto',
+    -- recording -> captured -> confirmed | discarded
+    status        TEXT NOT NULL DEFAULT 'recording',
+    started       TEXT NOT NULL,
+    ended         TEXT,
+    duration_ms   INTEGER,
+    -- Absolute path to this meeting's utterance folder. NULL once the audio has
+    -- been removed AND the removal verified — so a non-null value here is a
+    -- claim that bytes are still on disk, and the Meetings page bases its
+    -- "awaiting confirmation" total on it.
+    audio_dir     TEXT,
+    audio_bytes   INTEGER NOT NULL DEFAULT 0,
+    audio_deleted TEXT,
+    -- The moment the user confirmed the transcript. This freezes the meeting:
+    -- audio goes, and from here the transcript is the only record, which is
+    -- what makes an evidence citation point at something permanent.
+    confirmed     TEXT,
+    agent_version TEXT,
+    instance      TEXT,
+    notes         TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS meeting_segments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting    TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    idx        INTEGER NOT NULL,
+    -- 'mic' (this user) or 'system' (everyone else, via WASAPI loopback).
+    -- Recording them separately is not tidiness: it means the local speaker is
+    -- known with zero inference, so diarization only ever has to split 'system'.
+    track      TEXT NOT NULL,
+    start_ms   INTEGER NOT NULL,
+    end_ms     INTEGER NOT NULL,
+    audio_path TEXT,
+    bytes      INTEGER NOT NULL DEFAULT 0,
+    sha256     TEXT,
+    rms        REAL,
+    text       TEXT,
+    text_model TEXT,
+    refined    INTEGER NOT NULL DEFAULT 0,
+    speaker    TEXT,
+    UNIQUE (meeting, idx)
+  );
+
+  -- The page reads the timeline in time order, which is NOT insertion order.
+  CREATE INDEX IF NOT EXISTS idx_meeting_seg_time ON meeting_segments(meeting, start_ms);
+  CREATE INDEX IF NOT EXISTS idx_meetings_started ON meetings(started DESC);
+  `,
+
+  // 16 — MEETING INTELLIGENCE, PHASE 2: LIVE TRANSCRIPTION STATE.
+  //
+  // Migration 15 already carries `text`, `text_model` and `refined`. What it
+  // has no way to express is the DIFFERENCE BETWEEN THREE THINGS THAT ALL LOOK
+  // LIKE AN EMPTY TRANSCRIPT:
+  //
+  //   pending  — not transcribed yet. The queue still owes us this one.
+  //   empty    — transcribed, and the model genuinely found no words in it.
+  //   failed   — the attempt errored. THIS IS NOT SILENCE, and a page that
+  //              rendered it as an empty line would be quietly lying about a
+  //              hole in the transcript that a requirement may have been in.
+  //
+  // `stt_state` makes those three distinguishable; `stt_error` says why a
+  // failure failed; `stt_ms` is the wall time, which is what the backlog meter
+  // and the auto-downgrade are computed from, and what makes a stall visible
+  // after the fact rather than only while it is happening.
+  `
+  ALTER TABLE meeting_segments ADD COLUMN stt_state TEXT NOT NULL DEFAULT 'pending';
+  ALTER TABLE meeting_segments ADD COLUMN stt_error TEXT;
+  ALTER TABLE meeting_segments ADD COLUMN stt_ms INTEGER;
+  ALTER TABLE meeting_segments ADD COLUMN stt_attempts INTEGER NOT NULL DEFAULT 0;
+
+  -- The worker's "what is still owed" query, run on every completion.
+  CREATE INDEX IF NOT EXISTS idx_meeting_seg_pending ON meeting_segments(stt_state, meeting);
+  `,
+
+  // 17 — MEETING INTELLIGENCE, PHASE 4: WHAT THE MEETING MEANT.
+  //
+  // A finding is something the model claims was asked for, decided, questioned
+  // or assumed. Every one of them MUST cite the transcript, and every citation
+  // is checked against the stored text before the finding is shown.
+  //
+  // That check is the whole safety mechanism of this module, and it exists
+  // because of a property of the only model available here: gpt-oss:120b-cloud
+  // provably ignores `seed`, so generation is non-reproducible, and the failure
+  // mode of a weak model on this task is not a crash — it is a fluent,
+  // confident, entirely invented requirement that reads exactly like the real
+  // ones. Nothing about the TEXT distinguishes them.
+  //
+  // A quote does distinguish them. A fabricated requirement cannot cite words
+  // that exist in a transcript it never read. So evidence is stored separately,
+  // per citation, with its verification verdict and the reason it failed — and
+  // an unverified finding is never allowed to become an approved requirement.
+  //
+  // `edited_text` is kept beside `text` rather than overwriting it: the human's
+  // correction and the model's original claim are different facts, and an
+  // audit of "what did the AI actually say" needs both.
+  `
+  CREATE TABLE IF NOT EXISTS meeting_findings (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting     TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    -- requirement | decision | question | assumption | criterion
+    kind        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    edited_text TEXT,
+    -- proposed | confirmed | rejected
+    status      TEXT NOT NULL DEFAULT 'proposed',
+    -- 'model' or 'human'. A human-added finding needs no evidence: the person
+    -- in the room is the evidence, and pretending otherwise would force them
+    -- to fabricate a citation.
+    origin      TEXT NOT NULL DEFAULT 'model',
+    confidence  TEXT,
+    -- Which rolling pass produced it, and a stable hash of the normalised text
+    -- so the next pass over an overlapping window does not add it again.
+    pass        INTEGER NOT NULL DEFAULT 0,
+    fingerprint TEXT,
+    created     TEXT NOT NULL,
+    updated     TEXT,
+    UNIQUE (meeting, fingerprint)
+  );
+
+  CREATE TABLE IF NOT EXISTS meeting_evidence (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding  INTEGER NOT NULL REFERENCES meeting_findings(id) ON DELETE CASCADE,
+    -- The utterance the model cited, by the index it saw.
+    seg_idx  INTEGER NOT NULL,
+    quote    TEXT NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 0,
+    -- Populated only on failure, and shown to the user verbatim. "the quote is
+    -- not in that utterance" is a far more useful thing to read than a finding
+    -- that quietly disappeared.
+    reason   TEXT,
+    start_ms INTEGER,
+    end_ms   INTEGER
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_meeting_findings ON meeting_findings(meeting, kind, status);
+  CREATE INDEX IF NOT EXISTS idx_meeting_evidence ON meeting_evidence(finding);
+
+  -- How far the rolling pass has read. Understanding runs DURING the meeting,
+  -- so this is the watermark that makes each pass incremental rather than a
+  -- re-read of the whole transcript every ninety seconds.
+  ALTER TABLE meetings ADD COLUMN understood_through_ms INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE meetings ADD COLUMN understanding_state TEXT;
+  ALTER TABLE meetings ADD COLUMN understanding_error TEXT;
+  ALTER TABLE meetings ADD COLUMN passes INTEGER NOT NULL DEFAULT 0;
+  `,
+
+  // 18 — MEETING INTELLIGENCE, PHASE 5: THE BUILD PLAN.
+  //
+  // A plan is the bridge between the approved requirement set and the
+  // ServiceNow machinery this application already has. It is stored rather than
+  // computed on demand for one reason: the user APPROVES it, and an approval
+  // has to refer to something fixed. Re-planning between the approval and the
+  // build — which a non-reproducible model guarantees would produce a different
+  // plan — would mean building something nobody agreed to.
+  //
+  // `steps` is the whole plan as JSON. It is deliberately not normalised into
+  // one row per step: the plan is approved, executed and audited as a single
+  // unit, and a schema per artifact type would have to change every time this
+  // application learns to build something new.
+  `
+  CREATE TABLE IF NOT EXISTS meeting_plans (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting   TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    -- draft -> approved -> building -> built | failed
+    status    TEXT NOT NULL DEFAULT 'draft',
+    steps     TEXT NOT NULL,
+    -- The requirement set the plan was made FROM, copied in at plan time.
+    -- Without it, "what did we agree to build" becomes unanswerable the moment
+    -- someone edits a finding afterwards.
+    basis     TEXT,
+    -- The run in build_runs, so the Audit page and the update-set sweep pick
+    -- this up with no new code.
+    build_run TEXT,
+    result    TEXT,
+    instance  TEXT,
+    created   TEXT NOT NULL,
+    approved  TEXT,
+    finished  TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_meeting_plans ON meeting_plans(meeting, created DESC);
+  `,
+
+  // 19 — WHERE A CHAT CAME FROM.
+  //
+  // A session started from a meeting is not the same thing as one somebody
+  // typed, and the difference matters at the moment it matters most: you are
+  // about to approve a write, and "what is this agent working from" should not
+  // require remembering. So the origin is recorded on the session and the chat
+  // is visibly marked for its whole life.
+  //
+  // This replaces the build-plan stage that used to live in the Meetings page.
+  // The agent already has the approval gate, the tool cards, the iteration
+  // budget and — unlike a plan screen — the ability to be argued with. Building
+  // a second, weaker orchestrator beside it was the wrong shape; handing the
+  // requirements over is the right one.
+  //
+  // `source_label` is DENORMALISED on purpose. It is the meeting's title as it
+  // read at handoff, and it must survive the meeting being discarded — a chat
+  // that says "from a meeting that no longer exists" is still more honest than
+  // one that silently loses its provenance.
+  `
+  ALTER TABLE sessions ADD COLUMN source TEXT;
+  ALTER TABLE sessions ADD COLUMN source_ref TEXT;
+  ALTER TABLE sessions ADD COLUMN source_label TEXT;
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source, source_ref);
+  `,
+
+  // 20 — KNOWLEDGE: the ServiceNow documentation corpus (K1) and the SNADA
+  // observation store (K5).
+  //
+  // DELIBERATELY SEPARATE from `chunks` / `embeddings`, which recall (A-5) owns.
+  // Those two hold CONVERSATION — what was said in this project — and are keyed
+  // on (kind, session, ref) with no room for the provenance a document needs.
+  // Folding external documentation into the same table would put "what
+  // ServiceNow's docs claim" and "what this project measured" into one result
+  // set with no way to tell them apart, and the entire conflict ladder in
+  // knowledge/precedence.js depends on being able to tell them apart.
+  //
+  // The mechanics are the same, on purpose: float32 blobs, brute-force cosine,
+  // FTS5 for the no-embedding fallback. knowledge/store.js reuses recall's own
+  // embed/cosine/chunk helpers rather than reimplementing them.
+  `
+  CREATE TABLE IF NOT EXISTS kb_documents (
+    id            TEXT PRIMARY KEY,   -- caller-supplied stable id (see knowledge/schema.js)
+    source        TEXT NOT NULL,      -- who published it
+    product       TEXT NOT NULL,      -- which ServiceNow product/family
+    topic         TEXT NOT NULL,      -- flow-designer, acl, sla, glide-api, ...
+    version       TEXT NOT NULL,      -- release name AS THE SOURCE WROTE IT, never normalised
+    -- Rank within the operator-supplied release order (settings.rag.releaseOrder).
+    -- NULL means "this release is not in that list", which is a real state:
+    -- retrieval must then fall back to updated_at and SAY it did.
+    version_rank  INTEGER,
+    document_type TEXT NOT NULL,      -- documentation | api-reference | release-note | ...
+    url           TEXT NOT NULL,      -- the source's own URL. Never synthesised.
+    updated_at    TEXT NOT NULL,      -- when the SOURCE last changed it
+    title         TEXT,
+    ingested_at   TEXT NOT NULL,      -- when WE read it. Different question.
+    -- Lets re-ingestion skip an unchanged document instead of re-embedding it.
+    content_hash  TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS kb_chunks (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    document TEXT NOT NULL,
+    seq      INTEGER NOT NULL,
+    text     TEXT NOT NULL,
+    UNIQUE (document, seq),
+    FOREIGN KEY (document) REFERENCES kb_documents(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS kb_embeddings (
+    chunk INTEGER PRIMARY KEY,
+    model TEXT NOT NULL,
+    dim   INTEGER NOT NULL,
+    vec   BLOB NOT NULL,
+    FOREIGN KEY (chunk) REFERENCES kb_chunks(id) ON DELETE CASCADE
+  );
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+    text,
+    content='kb_chunks',
+    content_rowid='id',
+    tokenize='porter unicode61'
+  );
+
+  CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
+    INSERT INTO kb_chunks_fts(rowid, text) VALUES (new.id, new.text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS kb_chunks_ad AFTER DELETE ON kb_chunks BEGIN
+    INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS kb_chunks_au AFTER UPDATE ON kb_chunks BEGIN
+    INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO kb_chunks_fts(rowid, text) VALUES (new.id, new.text);
+  END;
+
+  CREATE INDEX IF NOT EXISTS idx_kb_docs_topic ON kb_documents(topic);
+  CREATE INDEX IF NOT EXISTS idx_kb_docs_version ON kb_documents(version_rank);
+  CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks(document);
+
+  -- K5 — what SNADA has VERIFIED for itself, which is a different kind of claim
+  -- from anything in kb_documents and must never be stored beside it. Every row
+  -- carries the evidence that made it true; knowledge/observations.js refuses a
+  -- write without one, because an unverified observation is just an LLM output
+  -- with a database row.
+  CREATE TABLE IF NOT EXISTS snada_observations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    category      TEXT NOT NULL,     -- see OBSERVATION_CATEGORIES
+    subject       TEXT NOT NULL,     -- the tool, table, SDK feature or API it is about
+    observation   TEXT NOT NULL,     -- what was observed, in one sentence
+    evidence_kind TEXT NOT NULL,     -- see EVIDENCE_KINDS
+    evidence      TEXT NOT NULL,     -- the artifact itself: error text, read-back, compiler output
+    -- '*' for a property of the SDK or the platform; an instance URL for
+    -- anything measured on one PDI. Same rule as the fact ledger: a
+    -- single-instance measurement must never leak to another instance.
+    instance      TEXT NOT NULL,
+    platform_version TEXT,           -- release, when it was actually determined
+    tool_event    INTEGER,           -- tool_events.id, when the evidence came from a tool run
+    observed_at   TEXT NOT NULL,
+    confirmed_at  TEXT NOT NULL,
+    confirmations INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (category, subject, instance, observation)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_obs_subject ON snada_observations(subject);
+  CREATE INDEX IF NOT EXISTS idx_obs_category ON snada_observations(category);
+  `,
+
+  // 21 — PHASE 1: the durable task/step substrate.
+  //
+  // Behaviourally inert on arrival. Every agent turn already IS a unit of work;
+  // it has simply never had a name that outlived the process, so "what was this
+  // agent asked to do, and how did it end" could only be reconstructed by
+  // reading a transcript. These two tables give that unit an identity and a
+  // recorded lifecycle, and nothing else changes: one turn produces one task
+  // with one step, whatever happens inside it.
+  //
+  // NO FOREIGN KEY TO `sessions`, and that is the same decision migration 19
+  // made for `tool_events` and `sysid_provenance`. A task is a durable
+  // projection of what the agent did, not part of the transcript — so deleting
+  // a chat must not take it, exactly as deleting a chat does not take the
+  // mutation ledger. `session_id` stays a plain column: a task pointing at a
+  // conversation that no longer exists is the wanted outcome, not a dangling
+  // reference to repair.
+  //
+  // The step->task FK IS a real parent/child relationship and does cascade:
+  // a step without its task is meaningless, where a task without its chat is not.
+  //
+  // Every state column is written ONLY through the transition functions in
+  // memory/tasks.js. No model-facing tool can reach this table — these are
+  // control-plane fields, and test/agent-tasks.test.js asserts that structurally.
+  `
+  CREATE TABLE IF NOT EXISTS agent_tasks (
+    id             TEXT PRIMARY KEY,       -- crypto.randomUUID(), like sessions
+    session_id     TEXT NOT NULL,          -- deliberately NOT a foreign key (see above)
+    state          TEXT NOT NULL,          -- see TASK_STATES in memory/tasks.js
+    goal           TEXT,                   -- the user's own words, verbatim
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    started_at     TEXT,
+    completed_at   TEXT,
+    cancelled_at   TEXT,
+    failure_reason TEXT,
+    metadata_json  TEXT,
+    instance       TEXT,                   -- which PDI this ran against, as every audit row records
+    actor          TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_task_steps (
+    id             TEXT PRIMARY KEY,
+    task_id        TEXT NOT NULL,
+    -- Deterministic within a task, and enforced by the UNIQUE below rather than
+    -- by whatever order rows happen to come back in. Allocated from MAX+1 inside
+    -- the same statement that inserts, so two concurrent turns on one task
+    -- cannot both claim the same number.
+    sequence       INTEGER NOT NULL,
+    state          TEXT NOT NULL,          -- see STEP_STATES in memory/tasks.js
+    kind           TEXT NOT NULL,          -- 'turn' is the only kind this phase creates
+    description    TEXT,
+    capability     TEXT,                   -- reserved: which capability a future planner assigned
+    started_at     TEXT,
+    completed_at   TEXT,
+    failure_reason TEXT,
+    metadata_json  TEXT,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    UNIQUE (task_id, sequence),
+    FOREIGN KEY (task_id) REFERENCES agent_tasks(id) ON DELETE CASCADE
+  );
+
+  -- The access paths this phase actually has: "the tasks for this chat",
+  -- "the steps of this task in order", and "what is still running" — which is
+  -- the crash-visibility query, since a process that dies mid-turn leaves a
+  -- running row behind on purpose (no automatic recovery in this phase).
+  CREATE INDEX IF NOT EXISTS idx_agent_tasks_session ON agent_tasks(session_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_agent_tasks_state ON agent_tasks(state);
+  CREATE INDEX IF NOT EXISTS idx_agent_task_steps_task ON agent_task_steps(task_id, sequence);
+  CREATE INDEX IF NOT EXISTS idx_agent_task_steps_state ON agent_task_steps(state);
+  `,
+
+  // 22 — PHASE 4: the durable PLAN, carried on the Phase 1 tables.
+  //
+  // NO NEW TABLES, deliberately. A plan is a task with steps, which is exactly
+  // what migration 21 already models — introducing `agent_plans` beside
+  // `agent_tasks` would create a second lifecycle that could disagree with the
+  // first about what a run is, and nothing would say which was right.
+  //
+  // `plan_state` is a SECOND state column and that needs its reason. Phase 1's
+  // `state` is the TURN projection: a task exists for every agent turn and is
+  // running/completed/cancelled with the turn that produced it. A plan has its
+  // own lifecycle that the turn's does not express — being reviewed, being
+  // approved, being verified — and merging the two vocabularies would either
+  // break the Phase 1 projection or overload words that already mean something.
+  // So `plan_state` is NULL for every task that has no plan, and the two are
+  // read together rather than reconciled.
+  //
+  // THE FINGERPRINT COLUMNS ARE THE SECURITY PART. `plan_fingerprint` is what
+  // the plan currently hashes to; `approved_fingerprint` is what a human
+  // actually reviewed. The executor compares them before every step, so a plan
+  // that changed after approval cannot inherit it.
+  `
+  ALTER TABLE agent_tasks ADD COLUMN plan_state TEXT;
+  ALTER TABLE agent_tasks ADD COLUMN plan_fingerprint TEXT;
+  ALTER TABLE agent_tasks ADD COLUMN approved_fingerprint TEXT;
+  ALTER TABLE agent_tasks ADD COLUMN approved_at TEXT;
+  ALTER TABLE agent_tasks ADD COLUMN approved_source TEXT;
+  -- The review representation, stored so a reconnecting UI can rebuild the
+  -- whole plan without the process that made it. SSE is transport; this is
+  -- the source of truth.
+  ALTER TABLE agent_tasks ADD COLUMN plan_json TEXT;
+
+  -- The executable half of a step. plan_step_id is the plan-local name
+  -- ("step_1") that dependencies are written against; sequence remains the
+  -- table's own deterministic ordering from Phase 1.
+  ALTER TABLE agent_task_steps ADD COLUMN plan_step_id TEXT;
+  ALTER TABLE agent_task_steps ADD COLUMN operation TEXT;
+  ALTER TABLE agent_task_steps ADD COLUMN mechanism TEXT;
+  ALTER TABLE agent_task_steps ADD COLUMN scope TEXT;
+  ALTER TABLE agent_task_steps ADD COLUMN tool TEXT;
+  ALTER TABLE agent_task_steps ADD COLUMN mutating INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE agent_task_steps ADD COLUMN depends_on TEXT;        -- JSON array of plan_step_id
+  ALTER TABLE agent_task_steps ADD COLUMN inputs_json TEXT;
+  ALTER TABLE agent_task_steps ADD COLUMN effects_json TEXT;      -- promised effects
+  ALTER TABLE agent_task_steps ADD COLUMN verification_json TEXT; -- strategy, then verdict
+  ALTER TABLE agent_task_steps ADD COLUMN approval_json TEXT;
+  ALTER TABLE agent_task_steps ADD COLUMN result_json TEXT;
+
+  CREATE INDEX IF NOT EXISTS idx_agent_tasks_plan_state ON agent_tasks(plan_state);
+  CREATE INDEX IF NOT EXISTS idx_agent_task_steps_planid ON agent_task_steps(task_id, plan_step_id);
+  `,
+
+  // 23 — PHASE 8: EXACT task correlation for the two audit records.
+  //
+  // THE DEFECT THIS CLOSES. Evidence correlated `tool_events` and
+  // `mutation_ledger` by session plus the task's time window, because neither
+  // table carried a task id. Two plans in one session overlap in time, so each
+  // one's evidence claimed BOTH plans' mutations — and the `changes` section
+  // presented them as fact, sourced `mutation_ledger`, without the
+  // `exact: false` caveat the audit section at least carried. A run could
+  // therefore report a record it never touched as one of its own changes.
+  //
+  // TWO NULLABLE COLUMNS, NOTHING ELSE. Not a new table, not a redesigned
+  // ledger, not a second audit system. Rows written before this migration, and
+  // rows written by the ordinary turn loop which has no plan, keep NULL and
+  // keep the window fallback — so nothing existing changes meaning and no row
+  // has to be back-filled with a guess.
+  //
+  // The rule the read model then applies: a row that NAMES a task belongs to
+  // that task and to no other. That is what makes cross-claiming impossible
+  // rather than unlikely.
+  //
+  // A FUNCTION, not a string, because SQLite has no `ADD COLUMN IF NOT EXISTS`
+  // and both tables predate this migration — so it cannot be made replay-safe
+  // in SQL the way every earlier migration is. The column check is the whole
+  // reason: everything else here is ordinary idempotent DDL.
+  (db) => {
+    const has = (table, column) => db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+    if (!has('mutation_ledger', 'task_id')) db.exec('ALTER TABLE mutation_ledger ADD COLUMN task_id TEXT');
+    if (!has('tool_events', 'task_id')) db.exec('ALTER TABLE tool_events ADD COLUMN task_id TEXT');
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_mutation_ledger_task ON mutation_ledger(task_id);
+      CREATE INDEX IF NOT EXISTS idx_tool_events_task     ON tool_events(task_id);
+    `);
+  },
 ];
 
 /**
@@ -596,7 +1090,20 @@ export function migrate(db) {
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.exec('BEGIN');
     try {
-      db.exec(MIGRATIONS[v]);
+      /*
+       * PHASE 8 — a migration may be a FUNCTION as well as a SQL string.
+       *
+       * SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so a migration
+       * that adds a column to a table an earlier migration did NOT create cannot
+       * be written idempotently in SQL. Migration 23 is the first of those, and
+       * the suite's own replay test caught it: it rewinds `user_version` and
+       * re-runs, which a string-only migration could not survive.
+       *
+       * Strings still behave exactly as before. This adds an escape hatch for
+       * the cases SQL cannot express, not a new migration format.
+       */
+      if (typeof MIGRATIONS[v] === 'function') MIGRATIONS[v](db);
+      else db.exec(MIGRATIONS[v]);
       db.exec(`PRAGMA user_version = ${v + 1}`);
       db.exec('COMMIT');
       log.info('storage', `migration ${v + 1} applied`);

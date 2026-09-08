@@ -1,0 +1,50 @@
+{
+  "setup": {
+    "table": "sc_req_item",
+    "payload": {
+      "short_description": "Test low cost item",
+      "price": "5000",
+      "quantity": "1",
+      "state": "-5"
+    },
+    "update": {
+      "state": "1"
+    }
+  },
+  "wait": {
+    "flowName": "Assign Software Request Items",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "sc_req_item",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "assignment_group",
+      "expect": {
+        "value": "d513ae82730f0b90a40ef7303ab8b73f"
+      },
+      "note": "assignment_group set to IT Support group when total cost <= 10000"
+    },
+    {
+      "table": "sc_req_item",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "value": "Assigned to IT Support group as total cost is within limit."
+      },
+      "note": "work_notes added confirming assignment for low‑cost request"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "sc_req_item",
+      "locate": {
+        "bySetupRecord": true
+      }
+    }
+  ]
+}

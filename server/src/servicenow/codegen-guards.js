@@ -299,3 +299,162 @@ export class RetryLedger {
     return this.hashes.length;
   }
 }
+
+/* ================================================================== *
+ * WI-4 — THE ARTIFACT INSTALLED MUST BE THE ARTIFACT APPROVED
+ * ================================================================== */
+
+/**
+ * The promises a blueprint makes, as checkable facts.
+ *
+ * ═══ WHY THIS EXISTS SEPARATELY FROM `groundLiterals` ═══
+ *
+ * `groundLiterals` keeps only claims it can find in the SPEC TEXT, because the
+ * model proposes them and a model-proposed literal that appears nowhere in the
+ * request is unfounded. A blueprint is the opposite situation: a human APPROVED
+ * it, so its name, its inputs and the values it says the flow will write are
+ * authoritative by construction. Nothing needs grounding — the grounding is the
+ * approval.
+ *
+ * MEASURED, and the reason this is not a hypothetical: the approved blueprint
+ * for the onboarding subflow specified the work note
+ * "Priority checked by onboarding subflow". The source that installed carries
+ * `TemplateValue({ work_notes: 'Priority check performed.' })`. It compiled, it
+ * installed, and every downstream check was green, because nothing anywhere
+ * compared the artifact to the thing that had been approved.
+ *
+ * Literals are read from `steps[].config` values — that is where a blueprint
+ * puts text the flow writes. Short values are skipped for the same reason
+ * `groundLiterals` skips them: two characters is a coin toss against any source
+ * file, three is a claim. Values that are plainly identifiers rather than prose
+ * (a table name, a field name, an encoded query) are skipped too, because those
+ * legitimately appear transformed in Fluent source.
+ */
+export function blueprintPromises(blueprint) {
+  const bp = blueprint && typeof blueprint === 'object' ? blueprint : {};
+  const name = typeof bp.name === 'string' && bp.name.trim() ? bp.name.trim() : null;
+
+  const inputs = Array.isArray(bp.inputs)
+    ? bp.inputs
+      .filter((i) => i && typeof i.name === 'string' && i.name.trim())
+      .map((i) => ({ name: i.name.trim(), type: typeof i.type === 'string' ? i.type.trim() : null }))
+    : [];
+
+  /*
+   * A value is PROSE — something the flow writes and a reader would recognise —
+   * when it contains a space and is long enough to be distinctive. An encoded
+   * query ("active=true^priority=1"), a table name and a field name all fail
+   * that test, and all three are legitimately rendered differently in Fluent.
+   */
+  const literals = [];
+  const seen = new Set();
+
+  /*
+   * WALKED, NOT SHALLOW — and this is not defensive coding, it is the shape the
+   * real generator produces. MEASURED: `design_flow_blueprint` renders an
+   * Update Record step as
+   *
+   *   config: { table: 'incident', fields: { work_notes: 'Priority checked …' } }
+   *
+   * so the one string that matters sits one level down. A shallow read found
+   * `table` and `record` and missed the work note entirely — which would have
+   * let exactly the drift this guard exists to catch through a second time.
+   */
+  const walk = (node, depth = 0) => {
+    if (depth > 4 || node === null || node === undefined) return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, depth + 1);
+      return;
+    }
+    if (typeof node === 'object') {
+      for (const item of Object.values(node)) walk(item, depth + 1);
+      return;
+    }
+    if (typeof node !== 'string') return;
+    const v = node.trim();
+    if (v.length < 8) return;
+    if (!/\s/.test(v)) return;               // an identifier, not prose
+    if (/[=^]/.test(v)) return;              // an encoded query
+    if (/\{\{|\$\{/.test(v)) return;         // a template the generator must render
+    if (seen.has(v)) return;
+    seen.add(v);
+    literals.push(v);
+  };
+
+  for (const step of Array.isArray(bp.steps) ? bp.steps : []) {
+    walk(step && typeof step.config === 'object' ? step.config : null);
+  }
+
+  return { name, inputs, literals };
+}
+
+/**
+ * Does the generated source honour the approved blueprint?
+ *
+ * Three separate promises, reported separately, because they fail for different
+ * reasons and a reader needs to know which one drifted:
+ *
+ *   name      the artifact is called what was approved
+ *   inputs    every declared input NAME appears (a subflow's contract)
+ *   literals  every prose value the blueprint says the flow writes appears
+ *
+ * The input TYPE is checked loosely — a blueprint says "reference" and Fluent
+ * writes `ReferenceColumn` — so the check is that the type word appears near
+ * the input, not that the two strings match. A stricter check would fail
+ * correct sources, and a check that fails correct sources gets switched off.
+ */
+export function checkBlueprintFidelity(source, promises) {
+  const text = String(source || '');
+  const p = promises || {};
+  const drift = [];
+
+  if (p.name && !text.includes(p.name)) {
+    drift.push({
+      kind: 'name',
+      approved: p.name,
+      detail: `the approved blueprint names this artifact ${JSON.stringify(p.name)}, which does not appear in the source`,
+    });
+  }
+
+  for (const input of p.inputs ?? []) {
+    if (!text.includes(input.name)) {
+      drift.push({
+        kind: 'input',
+        approved: input.name,
+        detail: `the approved blueprint declares an input named ${JSON.stringify(input.name)}, which the source does not declare`,
+      });
+      continue;
+    }
+    if (!input.type) continue;
+    const word = input.type.replace(/[^a-z]/gi, '').toLowerCase();
+    if (word.length >= 4 && !text.toLowerCase().includes(word)) {
+      drift.push({
+        kind: 'input_type',
+        approved: `${input.name}: ${input.type}`,
+        detail: `input ${JSON.stringify(input.name)} was approved as type ${JSON.stringify(input.type)}, and no ${word} column appears in the source`,
+      });
+    }
+  }
+
+  for (const lit of p.literals ?? []) {
+    if (!text.includes(lit)) {
+      drift.push({
+        kind: 'literal',
+        approved: lit,
+        detail: `the approved blueprint says this artifact writes ${JSON.stringify(lit)}, which does not appear in the source`,
+      });
+    }
+  }
+
+  return {
+    ok: drift.length === 0,
+    drift,
+    diagnostic: drift.length
+      ? 'ERROR: the generated source does not match the APPROVED blueprint.\n'
+        + drift.map((d) => `ERROR: ${d.detail}.`).join('\n')
+        + '\nThe blueprint is what a human approved. Reproduce its name, its input names and types, and every '
+        + 'string value it says the artifact writes, character for character. Do not paraphrase them and do not '
+        + 'substitute wording you consider clearer.'
+      : null,
+  };
+}

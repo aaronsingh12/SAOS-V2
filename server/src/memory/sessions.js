@@ -32,13 +32,14 @@ function currentInstance() {
   return (getSettings().connection.instanceUrl || '').replace(/\/+$/, '') || '(unbound)';
 }
 
-export function createSession({ id, title } = {}) {
+export function createSession({ id, title, source = null, sourceRef = null, sourceLabel = null } = {}) {
   const db = getDb();
   const sid = id || crypto.randomUUID();
   const ts = now();
   db.prepare(
-    'INSERT OR IGNORE INTO sessions (id, title, created, updated, instance) VALUES (?, ?, ?, ?, ?)'
-  ).run(sid, title || null, ts, ts, currentInstance());
+    `INSERT OR IGNORE INTO sessions (id, title, created, updated, instance, source, source_ref, source_label)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(sid, title || null, ts, ts, currentInstance(), source, sourceRef, sourceLabel);
   return getSession(sid);
 }
 
@@ -258,9 +259,13 @@ export function recordToolEvent(sessionId, event) {
   const seq = (row?.m ?? -1) + 1;
   const { instance, actor } = currentActor();
   db.prepare(
+    /*
+     * PHASE 8 — `task_id` is written when a task owns the call, NULL otherwise.
+     * See migration 23: it is what stops one plan's evidence claiming another's.
+     */
     `INSERT INTO tool_events (session, seq, kind, name, payload, result, result_status, mutating, approval,
-                              approved_source, approved_at, instance, actor, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                              approved_source, approved_at, instance, actor, ts, task_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     sessionId,
     seq,
@@ -277,7 +282,8 @@ export function recordToolEvent(sessionId, event) {
     event.approvedAt ?? null,
     instance,
     actor,
-    now()
+    now(),
+    event.taskId ?? null
   );
   /*
    * WI-1 — index what this result put into context, from the same call that

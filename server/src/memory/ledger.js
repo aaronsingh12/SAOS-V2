@@ -54,15 +54,47 @@ function deriveDisplayId(result) {
 export function appendMutation({
   sessionId, turnSeq, tool, descriptor, result, verification, approval,
   approvedSource = null, approvedAt = null, capture = null,
+  /*
+   * PHASE 8 — which task this write belongs to, when a task owns it.
+   *
+   * NULL for the ordinary turn loop, which has no plan, and NULL for every row
+   * written before migration 23. Both keep the session + time-window fallback
+   * they always had. A row that DOES name a task can never be claimed by a
+   * different one, which is the point: two plans in one session used to see
+   * each other's mutations as their own.
+   */
+  taskId = null,
 }) {
   try {
+    /*
+     * WI-5 — A REFUSED CALL IS NOT A MUTATION.
+     *
+     * This ledger's own contract is that it "records what HAPPENED rather than
+     * what was attempted", and until now it recorded every executed mutating
+     * tool regardless of what the tool reported. A `create_flow_live` that was
+     * refused at the binding preflight — nothing built, nothing installed,
+     * nothing touched — produced a ledger row, and the turn summary counted it:
+     * "1 mutation ✅ create_flow_live" for a call that returned `ok: false`.
+     *
+     * `notAttempted` is set by `verifyMutation` only when the tool's OWN result
+     * says it failed, so this cannot suppress a real write. A failed write that
+     * DID reach the instance still has a descriptor, still gets diffed, and is
+     * still recorded as `no-op` or `partial` — which is the case that matters
+     * and is untouched.
+     *
+     * Guarded HERE rather than at the two call sites because this is the single
+     * writer: one guard covers the turn loop and the plan executor, and a third
+     * caller added later inherits it.
+     */
+    if (verification?.notAttempted) return false;
+
     const { instance, actor } = currentActor();
     const status = verification?.status || 'unverified';
     getDb().prepare(
       `INSERT INTO mutation_ledger
          (session, turn_seq, ts, tool, table_name, sys_id, display_id, requested, verification, status, approval,
-          approved_source, approved_at, capture, instance, actor)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          approved_source, approved_at, capture, instance, actor, task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       sessionId,
       Number(turnSeq ?? 0),
@@ -82,6 +114,7 @@ export function appendMutation({
       capture ? JSON.stringify(capture) : null,
       instance,
       actor,
+      taskId ?? null,
     );
     return true;
   } catch {
@@ -155,9 +188,21 @@ function hydrate(r) {
  * The report
  * ------------------------------------------------------------------ */
 
+/*
+ * WI-5 — `self-verified` NO LONGER WEARS THE VERIFIED TICK.
+ *
+ * It shared ✅ with `applied`, which made a tool's unchecked self-report
+ * indistinguishable from a harness read-back that actually compared the stored
+ * record against what was sent. Those are different claims and a reader cannot
+ * be expected to know that one of the two ticks means less.
+ *
+ * ☑️ is deliberately close enough to read as "reported done" and different
+ * enough to be noticed. `EvidencePanel` already coloured this status amber
+ * rather than green; the report now agrees with the panel.
+ */
 const GLYPH = {
   applied: '✅',
-  'self-verified': '✅',
+  'self-verified': '☑️',
   transformed: '⚠️',
   partial: '⚠️',
   'no-op': '❌',
@@ -194,6 +239,9 @@ export function renderMutationReport(entries) {
       lines.push(`    - Stored, but ${fieldList(v.transformed)} differ from what was sent${transformReason(v.transformed)}.`);
     } else if (v?.status === 'unverified') {
       lines.push(`    - Could not be verified by read-back: ${v.summary}.`);
+    } else if (v?.status === 'self-verified') {
+      /* Said out loud, because the glyph alone cannot carry the distinction. */
+      lines.push(`    - Reported by \`${e.tool}\` itself. The harness did not read this back independently.`);
     }
     const provenance = approvalLine(e);
     if (provenance) lines.push(`    - ${provenance}`);

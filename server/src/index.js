@@ -5,13 +5,19 @@ import { incidentsRouter } from './routes/incidents.js';
 import { catalogRouter } from './routes/catalog.js';
 import { flowsRouter } from './routes/flows.js';
 import { agentRouter } from './routes/agent.js';
+import { planRouter } from './routes/plan.js';
 import { slaRouter } from './routes/sla.js';
 import { accessRouter } from './routes/access.js';
 import { dbaRouter } from './routes/dba.js';
+import { meetingsRouter } from './routes/meetings.js';
+import { requeuePending } from './meetings/queue.js';
+import { closeOrphanedRecordings } from './meetings/store.js';
 import { auditRouter } from './routes/audit.js';
 import { applicationsRouter } from './routes/applications.js';
 import { transportRouter } from './routes/transport.js';
 import { logsRouter } from './routes/logs.js';
+import { knowledgeRouter } from './routes/knowledge.js';
+import { skillsRouter } from './routes/skills.js';
 import { log, requestLogger, banner } from './logging.js';
 import { SnowError } from './servicenow/client.js';
 import { getDb } from './memory/db.js';
@@ -36,14 +42,29 @@ app.use('/api/incidents', incidentsRouter);
 app.use('/api/catalog', catalogRouter);
 app.use('/api/flows', flowsRouter);
 app.use('/api/agent', agentRouter);
+// Phase 4: plan -> review -> approve -> execute -> verify. ADDITIVE — the
+// chat route above is untouched and still runs the ordinary turn loop.
+// Mounted UNDER /api/agent so a plan's approval card resolves through the
+// same POST /api/agent/approve endpoint every other approval already uses.
+app.use('/api/agent/plan', planRouter);
 app.use('/api/sla', slaRouter);
 app.use('/api/access', accessRouter);
 // Phase T1: the Tables pane. Read-only — see routes/dba.js.
 app.use('/api/dba', dbaRouter);
+// Meeting Intelligence phase 1: capture ingest from the local agent, plus the
+// reads the Meetings page needs. No transcription yet — see meetings/store.js.
+app.use('/api/meetings', meetingsRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/applications', applicationsRouter);
 app.use('/api/transport', transportRouter);
 app.use('/api/logs', logsRouter);
+app.use('/api/knowledge', knowledgeRouter);
+/*
+ * EXPERIENCE §28 — the skill registry. Read, install, enable, disable, remove.
+ * Nothing here executes a skill: a skill is data, and there is no route that
+ * could run one (§29, §31, §75).
+ */
+app.use('/api/skills', skillsRouter);
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
@@ -95,6 +116,17 @@ getDb();
 const seeded = seedLedger();
 
 /*
+ * The transcription queue is in memory, so a restart mid-meeting would leave
+ * every already-captured utterance permanently untranscribed while its audio
+ * sat on disk — a hole in the transcript that nothing would ever fill and
+ * nothing would report. Re-queuing on boot is what makes the crash-safety
+ * claim in meetings/queue.js true rather than aspirational.
+ */
+// A meeting still marked `recording` at boot is one the agent never closed.
+const orphans = closeOrphanedRecordings();
+const requeued = requeuePending();
+
+/*
  * The listener, and why it is not a one-liner any more.
  *
  * MEASURED on this machine (Node v24.18.0, Windows 11), reproduced 3/3:
@@ -136,6 +168,7 @@ function start(attempt = 1) {
       `model      ${s.llm.provider} · ${s.llm.model || '(default)'}`,
       `storage    ${DB_PATH}`,
       `ledger     ${seeded.seeded} facts for ${seeded.instance}`,
+      `meetings   ${requeued} utterance(s) re-queued${orphans ? `, ${orphans} stuck meeting(s) closed` : ''}`,
       `log level  ${log.level}   (LOG_LEVEL=debug for polls and reads)`,
     ]);
   });

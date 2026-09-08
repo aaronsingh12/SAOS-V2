@@ -12,12 +12,14 @@ import Flows from './pages/Flows.jsx';
 import Sla from './pages/Sla.jsx';
 import Access from './pages/Access.jsx';
 import TablesPage from './pages/Tables.jsx';
+import Meetings from './pages/Meetings.jsx';
 import Applications from './pages/Applications.jsx';
 import Transport from './pages/Transport.jsx';
 import Audit from './pages/Audit.jsx';
 import Settings from './pages/Settings.jsx';
 import Toasts from './components/Toasts.jsx';
 import ConfirmDialog from './components/ConfirmDialog.jsx';
+import MeetingDock from './components/MeetingDock.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { RequiresInstance } from './components/states.jsx';
 
@@ -30,6 +32,7 @@ const TITLES = {
   '/sla': 'SLA Definitions',
   '/access': 'Access Control',
   '/tables': 'Database Administration',
+  '/meetings': 'Meeting Intelligence',
   '/applications': 'Applications',
   '/transport': 'Transport',
   '/audit': 'Audit',
@@ -107,13 +110,14 @@ function Shell() {
         <NavLink to="/catalog" className="navlink">Catalog</NavLink>
         <NavLink to="/flows" className="navlink">Flows</NavLink>
         <NavLink to="/sla" className="navlink">SLA</NavLink>
-        <NavLink to="/access" className="navlink">Access</NavLink>
+        <NavLink to="/access" className="navlink">ACL</NavLink>
         <NavLink to="/tables" className="navlink">Tables</NavLink>
+        <NavLink to="/meetings" className="navlink">Meetings</NavLink>
         <NavLink to="/applications" className="navlink">Applications</NavLink>
         <NavLink to="/transport" className="navlink">Transport</NavLink>
         <NavLink to="/audit" className="navlink">Audit</NavLink>
         <NavLink to="/settings" className="navlink">Settings</NavLink>
-        <div className="sidebar-foot">v0.1 · phase 1</div>
+        <div className="sidebar-foot">v1.0</div>
       </aside>
       <div className="main">
         <Topbar title={title} />
@@ -141,6 +145,12 @@ function Shell() {
               <Route path="/sla" element={<RequiresInstance what="SLA definitions"><Sla /></RequiresInstance>} />
               <Route path="/access" element={<RequiresInstance what="Access control"><Access /></RequiresInstance>} />
               <Route path="/tables" element={<RequiresInstance what="Database administration"><TablesPage /></RequiresInstance>} />
+              {/* Deliberately NOT gated. Capturing a meeting and reviewing what
+                  was said needs no ServiceNow instance at all — only BUILDING
+                  from it does, and that gate belongs on the build action rather
+                  than on the page. Gating here would mean you cannot review
+                  last night's meeting on a plane. */}
+              <Route path="/meetings" element={<Meetings />} />
               <Route path="/applications" element={<RequiresInstance what="Applications"><Applications /></RequiresInstance>} />
               <Route path="/transport" element={<RequiresInstance what="Transport"><Transport /></RequiresInstance>} />
               <Route path="/audit" element={<Audit />} />
@@ -163,6 +173,13 @@ export default function App() {
           error boundary catching a page. */}
       <Toasts />
       <ConfirmDialog />
+      {/* M6 — the meeting capture control, deliberately app-wide. You start
+          recording BEFORE you go and look at meetings, so a button that lives
+          on the Meetings page is one you reach too late. Mounted here for the
+          same reason as the two above: it must survive navigation and must not
+          be unmounted by the boundary catching a page. It renders nothing at
+          all when this build does not ship the capture agent. */}
+      <MeetingDock />
     </BrowserRouter>
   );
 }

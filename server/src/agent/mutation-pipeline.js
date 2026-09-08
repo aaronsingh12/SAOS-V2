@@ -96,17 +96,63 @@ function unverified(reason) {
  */
 export async function verifyMutation({ descriptor, result, before, toolName }) {
   if (!descriptor) {
+    /*
+     * WI-5 — A TOOL THAT REPORTED FAILURE HAS NOT SELF-VERIFIED ANYTHING.
+     *
+     * This branch used to return `self-verified` for every descriptor-less
+     * tool, without ever looking at what the tool SAID. So a `create_flow_live`
+     * call that refused at the binding preflight — `ok: false`,
+     * `bindingRefused: true`, nothing attempted, nothing installed — came back
+     * labelled self-verified, was written to the mutation ledger, and rendered
+     * in the turn summary as "1 mutation ✅ create_flow_live".
+     *
+     * The tool's own result is the only evidence available here, and it is
+     * conclusive in the negative direction: a tool reporting `ok: false` did
+     * not write. `notAttempted` carries that to the ledger, which then declines
+     * to record a mutation that never happened.
+     */
+    if (result && result.ok === false) {
+      const why = result.bindingRefused
+        ? `${toolName} was refused at the binding preflight; nothing was attempted`
+        : `${toolName} reported failure; nothing was written`;
+      return {
+        verified: false, status: 'unverified', summary: why,
+        applied: [], dropped: [], transformed: [],
+        unverifiable: [{ field: '(all)', reason: why }], noOpSignal: null,
+        verifiedBy: toolName,
+        notAttempted: true,
+      };
+    }
     return {
-      verified: null, status: 'self-verified', summary: `${toolName} reports its own read-back`,
+      /*
+       * `verified: null` and NOT true. The harness checked nothing here — this
+       * is the tool's own account of its own work, and the status word says so.
+       */
+      verified: null, status: 'self-verified', summary: `${toolName} reports its own read-back — not checked by the harness`,
       applied: [], dropped: [], transformed: [], unverifiable: [], noOpSignal: null,
       verifiedBy: toolName,
     };
   }
   if (descriptor.operation === 'delete') return verifyDelete(descriptor);
 
-  // The record as the platform returned it. `create`/`update` hand back the
-  // written record; anything else means we have nothing to diff against.
-  const returned = result && typeof result === 'object' ? result : null;
+  /*
+   * The record as the platform returned it. `create`/`update` hand back the
+   * written record; anything else means we have nothing to diff against.
+   *
+   * A COMPOSITE TOOL RETURNS A WRAPPER, NOT A RECORD, and that made its
+   * read-back structurally impossible. FOUND BY THE PHASE 20 PDI:
+   * `create_catalog_item` creates an item AND its variables, so its result is
+   * `{ item, variables }`. Diffing the requested `name` against that wrapper
+   * found no `name` anywhere and reported `no-op: the platform discarded this
+   * write` — about a catalog item that had been created perfectly.
+   *
+   * So a `describeWrite` may now name the record inside its own result. Every
+   * tool that returns the record directly is unaffected: the fallback is the
+   * behaviour that was always there.
+   */
+  const returned = (descriptor.record && typeof descriptor.record === 'object')
+    ? descriptor.record
+    : (result && typeof result === 'object' ? result : null);
   if (!returned) return unverified('the tool returned no record to compare against');
 
   const { types, hierarchy } = await fieldTypesFor(descriptor.table);

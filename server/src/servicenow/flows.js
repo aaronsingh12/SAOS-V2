@@ -33,12 +33,15 @@ const PART_FAMILIES = {
   v2: {
     triggers: { table: 'sys_hub_trigger_instance_v2', fields: 'sys_id,trigger_type,name,comment,trigger_inputs' },
     actions: { table: 'sys_hub_action_instance_v2', fields: 'sys_id,order,action_type,comment' },
-    logic: { table: 'sys_hub_flow_logic_instance_v2', fields: 'sys_id,order,logic_definition,comment' },
+    /* PHASE 18 adds `ui_id`/`parent_ui_id`. They are the identity a diff matches
+     * containers on across two states — the row sys_id differs between a flow and
+     * its snapshot, and `order` moves whenever anything is inserted. */
+    logic: { table: 'sys_hub_flow_logic_instance_v2', fields: 'sys_id,order,logic_definition,comment,ui_id,parent_ui_id' },
     // A subflow CALL is not an action instance. It has its own table, and
     // omitting it made a flow whose only step is a call read back as
     // "1 trigger, 0 actions, 0 logic" — a flow that does nothing. Measured on
     // the §32 A4 caller, which had exactly that shape.
-    subflows: { table: 'sys_hub_sub_flow_instance_v2', fields: 'sys_id,order,comment,subflow,wait_for_completion,subflow_inputs' },
+    subflows: { table: 'sys_hub_sub_flow_instance_v2', fields: 'sys_id,order,comment,subflow,wait_for_completion,subflow_inputs,ui_id,parent_ui_id' },
   },
   legacy: {
     triggers: { table: 'sys_hub_trigger_instance', fields: 'sys_id,trigger_type,table,condition,active,sys_class_name' },
@@ -80,6 +83,36 @@ function decodeInputs(encoded) {
     return config;
   } catch {
     // Format changed or the blob is not gzip — surface absence, never a guess.
+    return null;
+  }
+}
+
+/**
+ * PHASE 17 — the same blob, keeping the RAW values.
+ *
+ * `decodeInputs` above prefers `displayValue`, which is right for a human
+ * reading what a trigger listens to: "Change Management Worker" is the answer
+ * to that question. It is the wrong answer for anything that has to ACT on the
+ * trigger — a fixture has to be created on `chg_mgt_worker`, and no amount of
+ * label-to-table guessing is as good as the value the platform already stored
+ * beside the label.
+ *
+ * Additive and separate rather than a change to the decoder above: every
+ * existing reader of `config` keeps the labels it has always been given, and a
+ * caller that needs identities asks for identities.
+ */
+function decodeInputValues(encoded) {
+  if (!encoded) return null;
+  try {
+    const json = zlib.gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8');
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return null;
+    const values = {};
+    for (const p of parsed) {
+      if (p?.name && p.value !== '' && p.value != null) values[p.name] = p.value;
+    }
+    return values;
+  } catch {
     return null;
   }
 }
@@ -146,7 +179,26 @@ export const flows = {
    * have to infer from an empty array.
    */
   async detail(sysId) {
-    const flow = await table.get('sys_hub_flow', sysId);
+    /*
+     * PHASE 18 — READ THE BASE CLASS, so a SNAPSHOT resolves as well as a flow.
+     *
+     * MEASURED on dev424910. Flow Designer keeps a published copy of every flow
+     * in `sys_hub_flow_snapshot`, and that copy is a full second state of the
+     * artifact: the action and trigger instances carry the SNAPSHOT's sys_id in
+     * their `flow` column exactly as they carry the live flow's, so the reads
+     * below already work on one without knowing which it has.
+     *
+     * The only thing that did not work was this line. `sys_hub_flow` holds the
+     * live record and nothing else; the snapshot lives in a sibling table, and
+     * both extend `sys_hub_flow_base`. Reading the BASE resolves either, and
+     * the returned row carries `sys_class_name` so a caller can still tell them
+     * apart — which Phase 18 needs, because "the live flow" and "the version
+     * that was published" are the two states a diff is between.
+     *
+     * This widens what can be READ and nothing else. There is no write path
+     * here, and a sys_id that is neither still 404s.
+     */
+    const flow = await table.get('sys_hub_flow_base', sysId);
     if (!flow) throw Object.assign(new Error(`No flow found with sys_id ${sysId}`), { status: 404 });
 
     let result = await readFamily('v2', sysId);
@@ -182,8 +234,9 @@ export const flows = {
     // Attach decoded trigger configuration (table / condition / strategy).
     const triggers = result.triggers.rows.map((t) => {
       const config = decodeInputs(raw(t, 'trigger_inputs'));
+      const configValues = decodeInputValues(raw(t, 'trigger_inputs'));
       const { trigger_inputs: _drop, ...rest } = t; // the raw blob is noise for clients
-      return { ...rest, config };
+      return { ...rest, config, configValues };
     });
 
     // Subflow calls, with the input mapping decoded out of the same kind of blob.

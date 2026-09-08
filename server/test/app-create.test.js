@@ -171,3 +171,119 @@ test('the registry still exposes every tool exactly once', () => {
   const names = TOOLS.map((t) => t.name);
   assert.equal(new Set(names).size, names.length, 'duplicate tool name');
 });
+
+/* ================================================================== *
+ * WI-1 — ARGV, AND THE PROMPT THAT ACTUALLY BROKE `init`
+ *
+ * The reported symptom was a command string with an unquoted multi-word
+ * appName and `exit -1`, which reads exactly like a shell-quoting bug. It is
+ * not one: this path has never built a shell string. The two tests below pin
+ * both halves of that — the argv boundary is real, and the real cause (a
+ * missing `--template`, which makes the CLI stop at an interactive picker) is
+ * closed.
+ * ================================================================== */
+
+test('WI-1 — a multi-word value survives the REAL spawn boundary as ONE argument', async () => {
+  /*
+   * Asserted against `runSdk` itself — the actual function every SDK call goes
+   * through — with a stand-in binary that reports the argv it received. Not a
+   * fixture of what we believe the arguments to be: the real `execFile`, the
+   * real argument array, and the child's own account of what arrived.
+   *
+   * A shell-interpolating implementation would deliver "Onboarding",
+   * "Incident" and "Flows" as three arguments, and this fails.
+   */
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nha-argv-'));
+  const echo = path.join(dir, 'echo-argv.js');
+  fs.writeFileSync(echo, 'console.log(JSON.stringify(process.argv.slice(2)));');
+  process.env.SN_SDK_ENTRY = echo;
+
+  const { runSdk } = await import('../src/servicenow/fluent.js');
+  const res = await runSdk(['init', '--appName', 'Onboarding Incident Flows', '--template', 'base'], 60_000, dir);
+
+  assert.equal(res.ok, true, `the stand-in did not run: ${res.stderr}`);
+  const argv = JSON.parse(res.stdout.trim());
+  assert.deepEqual(argv, ['init', '--appName', 'Onboarding Incident Flows', '--template', 'base']);
+  /* The load-bearing assertion: one element, spaces intact, no quoting damage. */
+  assert.equal(argv[2], 'Onboarding Incident Flows');
+  assert.equal(argv.length, 5, 'the multi-word name was split into separate arguments');
+
+  delete process.env.SN_SDK_ENTRY;
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('WI-1 — createApplication supplies a template, because the CLI prompts without one', async () => {
+  /*
+   * MEASURED against SDK 4.10.1: `now-sdk init` with appName, packageName and
+   * scopeName all supplied still renders an interactive template picker with no
+   * default. Under execFile the child's stdin is a pipe nobody writes to, so it
+   * waits until the timeout kills it — which surfaces as `exit -1` and looks
+   * like an argument bug.
+   *
+   * Read from the source, because the alternative is scaffolding a real
+   * application in a test to find out.
+   */
+  const fs = await import('node:fs');
+  const url = await import('node:url');
+  const path = await import('node:path');
+  const here = path.dirname(url.fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'servicenow', 'app-create.js'), 'utf8');
+
+  const args = src.slice(src.indexOf('const args = ['), src.indexOf(']', src.indexOf('const args = [')));
+  assert.match(args, /'--template', 'base'/, 'init would stop at the template picker and be killed by the timeout');
+  /* And every value is its own array element — nothing is concatenated. */
+  assert.match(args, /'--appName', String\(name\)\.trim\(\)/);
+  assert.ok(!/`\s*--appName/.test(args), 'an argument is built by string interpolation');
+
+  /* A killed process must not be reported as an exit code. */
+  assert.match(src, /res\.timedOut/, 'a timeout is still reported as a bare exit code');
+});
+
+test('WI-3 — the app-existence guard is INVERTED for establish, never skipped', async () => {
+  /*
+   * The constraint this pins: the binding refusal must not be weakened.
+   *
+   * `expectMissingApp` looks like a bypass and is not one. It replaces the
+   * "the application must exist" clause with its inverse, and the one caller
+   * that passes it then refuses if the application DOES exist. Two mutually
+   * exclusive conditions: no instance state permits both an ordinary install
+   * and an establish, so nothing became reachable that was not before.
+   *
+   * What must stay true, and is asserted here:
+   *   - exactly one call site passes the flag, and it is establishApplication;
+   *   - the flag does not short-circuit the host-agreement probe above it;
+   *   - establishApplication refuses when the scope already exists.
+   */
+  const fs = await import('node:fs');
+  const url = await import('node:url');
+  const path = await import('node:path');
+  const here = path.dirname(url.fileURLToPath(import.meta.url));
+  const read = (f) => fs.readFileSync(path.join(here, '..', 'src', 'servicenow', f), 'utf8');
+
+  const fluent = read('fluent.js');
+  const appCreate = read('app-create.js');
+
+  /* One caller, and it is the establish path. */
+  const callers = [...fluent.matchAll(/expectMissingApp:\s*true/g)].length
+    + [...appCreate.matchAll(/expectMissingApp:\s*true/g)].length;
+  assert.equal(callers, 1, 'more than one call site opts out of the app-existence check');
+  assert.match(appCreate, /assertTiersAgree\(\{ probe: true, expectMissingApp: true \}\)/);
+
+  /* The inversion sits AFTER the host probe, so the two-tier check still runs. */
+  const fn = fluent.slice(fluent.indexOf('export async function assertTiersAgree'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(body.indexOf('if (!probe) return') < body.indexOf('if (expectMissingApp)'),
+    'the inversion short-circuits before the SDK host probe');
+  assert.ok(body.indexOf('sdk.host !== bound.host') < body.indexOf('if (expectMissingApp)'),
+    'the inversion skips the two-tier host agreement check');
+
+  /* And establish refuses an application that is already there. */
+  assert.match(appCreate, /There is nothing to establish/);
+
+  /* The ordinary install path still calls the unmodified guard. */
+  assert.match(fluent, /binding = await assertTiersAgree\(\);/);
+});

@@ -184,8 +184,42 @@ const RANK = { id: 0, exact: 1, 'exact-display': 2, 'starts-with': 3, contains: 
 async function keyFieldsFor(t) {
   const df = await getDisplayField(t);
   const configured = KEY_FIELDS[t];
+
+  // A curated entry names columns that were chosen for this table on purpose.
   if (configured) return { df, keys: [...new Set([...configured, df])] };
-  return { df, keys: [...new Set([df, 'name'].filter(Boolean))] };
+
+  /*
+   * PHASE 13 — A FIELD THAT DOES NOT EXIST MATCHES EVERYTHING.
+   *
+   * Measured on the live instance. `incident` has no KEY_FIELDS entry, so this
+   * fallback asked for `name` — a column `incident` does not have. ServiceNow
+   * did not reject the query: an unknown field in an encoded query is SILENTLY
+   * DROPPED, and what remains matches every row. So
+   *
+   *     referenceLookup('incident', 'INC0010001')
+   *
+   * returned six records — five unrelated incidents ranked `exact` because
+   * `name=INC0010001` matched all of them, ahead of the one true
+   * `exact-display` hit — and resolved to INC0000009.
+   *
+   * The ambiguity verdict caught it, so nothing was written to the wrong
+   * incident. But resolving an incident by its number is the most ordinary
+   * thing anyone will ask for, and it could not work at all.
+   *
+   * Only the SPECULATIVE half of the fallback is checked. `name` is a guess
+   * that most tables happen to satisfy; the display field is not, because
+   * `getDisplayField` read it off this table's own dictionary. If the schema
+   * cannot be read, the guess is dropped rather than sent — an unverified
+   * column is exactly what caused the defect.
+   */
+  if (!df) return { df, keys: [] };
+  let hasName = false;
+  try {
+    const schema = await getSchema(t);
+    hasName = schema.fields.some((f) => f.name === 'name');
+  } catch { /* unreadable schema: do not speculate */ }
+
+  return { df, keys: hasName ? [...new Set([df, 'name'])] : [df] };
 }
 
 /**

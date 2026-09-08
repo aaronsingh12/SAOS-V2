@@ -12,7 +12,7 @@ import * as openaiCompat from './openaiCompat.js';
  * special-casing beyond a base URL, a credential check and its optional
  * attribution headers.
  */
-const OPENAI_COMPATIBLE = new Set(['openai', 'ollama', 'openrouter']);
+const OPENAI_COMPATIBLE = new Set(['openai', 'ollama', 'openrouter', 'opencode']);
 
 const KEY_REQUIRED = {
   openai: 'OpenAI API key not set. Add it in Settings.',
@@ -35,6 +35,35 @@ function assertCompatCredentials(llm) {
       + '(for example anthropic/claude-opus-5 or openai/gpt-5.6-luna), and there is no safe default to pick for you. '
       + 'Choose one in Settings — the list is loaded live from openrouter.ai/api/v1/models.'
     );
+  }
+
+  /*
+   * The same refusal, for the same reason, on the provider that has even less
+   * to guess with.
+   *
+   * An OpenCode-compatible gateway is an address on the operator's own network
+   * and a model id that gateway happens to serve. Neither is knowable from
+   * here. Defaulting the baseUrl would silently send a system prompt, the whole
+   * conversation and 100+ tool schemas to localhost:11434 — the Ollama default
+   * one line above — under a provider name the user chose specifically because
+   * they did NOT mean that. Refusing is the only option that cannot leak.
+   */
+  if (llm.provider === 'opencode') {
+    if (!llm.baseUrl) {
+      throw new Error(
+        'No OpenCode base URL is set. "OpenCode-compatible" is a wire format (OpenAI /chat/completions), '
+        + 'not a hosted service, so there is no address to default to and guessing one would send this '
+        + 'conversation somewhere you did not choose. Set the base URL in Settings — it is the root your '
+        + 'gateway serves /chat/completions under, e.g. http://localhost:4096/v1.'
+      );
+    }
+    if (!llm.model) {
+      throw new Error(
+        'No OpenCode model is set. The model ids an OpenCode-compatible gateway serves are whatever that '
+        + 'gateway was configured with, so there is no safe default to pick for you. Set the model in '
+        + 'Settings — your gateway lists them at GET <base URL>/models.'
+      );
+    }
   }
 }
 
@@ -90,13 +119,22 @@ export function providerInfo() {
 let scripted = null;
 export function _setChatTurnForTests(fn) { scripted = fn; }
 
-/** Full agent turn with tool support. history uses the neutral format (see orchestrator). */
-export async function chatTurn({ system, history, tools, maxTokens, decoding }) {
-  if (scripted) return scripted({ system, history, tools, maxTokens, decoding });
+/**
+ * Full agent turn with tool support. history uses the neutral format (see orchestrator).
+ *
+ * PHASE 0 — `signal` is part of the request, exactly like `decoding`: something
+ * the caller ASKS for, which an adapter may or may not be able to honour. An
+ * adapter that ignores it is not broken, and the caller must not assume its
+ * request stopped because it passed one — cancellation is guaranteed only at
+ * the orchestrator's own boundaries. Nothing here inspects the provider to
+ * decide whether to pass it; every adapter receives it and answers for itself.
+ */
+export async function chatTurn({ system, history, tools, maxTokens, decoding, signal }) {
+  if (scripted) return scripted({ system, history, tools, maxTokens, decoding, signal });
   const { llm } = getSettings();
   if (llm.provider === 'anthropic') {
     if (!llm.apiKey) throw new Error('Anthropic API key not set. Add it in Settings.');
-    return anthropic.chat({ apiKey: llm.apiKey, model: llm.model, system, history, tools, maxTokens, decoding });
+    return anthropic.chat({ apiKey: llm.apiKey, model: llm.model, system, history, tools, maxTokens, decoding, signal });
   }
   if (OPENAI_COMPATIBLE.has(llm.provider)) {
     assertCompatCredentials(llm);
@@ -110,6 +148,7 @@ export async function chatTurn({ system, history, tools, maxTokens, decoding }) 
       tools,
       maxTokens,
       decoding,
+      signal,
       extraHeaders: attributionHeaders(llm.provider),
     });
   }
@@ -117,13 +156,14 @@ export async function chatTurn({ system, history, tools, maxTokens, decoding }) 
 }
 
 /** One-shot text completion (no tools) — used by the flow blueprint designer. */
-export async function chatOnce({ system, user, maxTokens = 2048, decoding }) {
+export async function chatOnce({ system, user, maxTokens = 2048, decoding, signal }) {
   const res = await chatTurn({
     system,
     history: [{ role: 'user', text: user }],
     tools: [],
     maxTokens,
     decoding,
+    signal,
   });
   return res.text;
 }

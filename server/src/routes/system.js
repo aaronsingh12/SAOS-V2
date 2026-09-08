@@ -22,7 +22,10 @@ systemRouter.get('/health', (_req, res) => {
     ? {
       ok: cap.ok,
       cliVersion: cap.cli.version,
-      authAlias: cap.auth.alias,
+      // WI-2 — `authAlias` is gone rather than reported as null. There is no
+      // alias: the SDK is authenticated per invocation from the UI config, and
+      // a field that could only ever be null read as "not authenticated".
+      authMechanism: cap.auth.mechanism,
       authVerified: cap.auth.verified,
       scope: cap.workspace.scope,
       managedSources: cap.workspace.sources.length,

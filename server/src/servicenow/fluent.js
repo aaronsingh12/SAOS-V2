@@ -14,6 +14,8 @@ import {
   pinArtifactNames,
   groundLiterals,
   checkPromisedLiterals,
+  blueprintPromises,
+  checkBlueprintFidelity,
   lintTriggerStrategy,
   RetryLedger,
 } from './codegen-guards.js';
@@ -34,13 +36,18 @@ import { assertTaskSla, findSla, SLA_TOLERANCE_DEFAULT_SEC } from './sla.js';
 import { factBlock } from '../memory/facts.js';
 import { flows } from './flows.js';
 import { table } from './client.js';
+// `log.error` was already called on two paths in this file with nothing
+// importing it — a latent ReferenceError that would only fire the moment
+// something went wrong, which is the worst possible time for the reporter to be
+// the thing that breaks.
+import { log } from '../logging.js';
 
 const pexec = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const SERVER_ROOT = path.resolve(__dirname, '../..');
 const REPO_ROOT = path.resolve(SERVER_ROOT, '..');
-const WORKSPACE = path.join(SERVER_ROOT, 'fluent-workspace');
+export const WORKSPACE = path.join(SERVER_ROOT, 'fluent-workspace');
 const FLOWS_DIR = path.join(WORKSPACE, 'src/fluent/flows');
 const STAGED_DIR = path.join(WORKSPACE, 'staged');
 const STATE_FILE = path.join(SERVER_ROOT, 'data/fluent-state.json');
@@ -202,7 +209,7 @@ ${res.stderr || ''}`);
  *
  * Fails CLOSED: unbound, unknown, or mismatched all refuse.
  */
-export async function assertTiersAgree({ probe = true } = {}) {
+export async function assertTiersAgree({ probe = true, expectMissingApp = false } = {}) {
   const bound = boundInstance();
   if (!bound.configured) {
     throw Object.assign(new Error(
@@ -234,8 +241,24 @@ export async function assertTiersAgree({ probe = true } = {}) {
       + `stale alias — an install would succeed and land the artifacts where the read-back cannot see them.`
     ), { status: 409, detail: { restHost: bound.host, sdkHost: sdk.host, raw: sdk.raw } });
   }
-  // The host agreeing is necessary and not sufficient: the APPLICATION the
-  // workspace is pinned to must also exist on that host.
+  /*
+   * WI-3 — `expectMissingApp` INVERTS this clause; it never skips it.
+   *
+   * The default is unchanged and is the only thing any existing caller reaches:
+   * the host agreeing is necessary and not sufficient, so the APPLICATION the
+   * workspace names must also exist on that host.
+   *
+   * The one caller that passes `true` is `establishApplication`, whose entire
+   * purpose is the first-time case — and it then refuses if the application
+   * DOES exist. So the two conditions are mutually exclusive: there is no
+   * instance state in which both an install and an establish are permitted, and
+   * no call can select the weaker of two checks. Everything above this line —
+   * an instance bound, credentials the SDK can use, and the SDK echoing the
+   * same host the Table API reads — runs identically either way.
+   */
+  if (expectMissingApp) {
+    return { ok: true, host: bound.host, probed: true, scope: null, scopeId: null, appExpectedMissing: true };
+  }
   const app = await assertAppBinding();
   return { ok: true, host: bound.host, probed: true, scope: app.scope, scopeId: app.scopeId };
 }
@@ -982,6 +1005,40 @@ export function cachedCapability() {
  * -f sys_id --limit 1`, the cheapest genuinely authenticated SDK command, which
  * is what actually proves the credential is valid.
  */
+/**
+ * The `auth.verified` states that mean flow authoring can proceed.
+ *
+ * A SET, not an equality test, and that distinction is the whole bug this fixes.
+ *
+ * `verified` has four values and they are not a flat enum — they are a ladder of
+ * increasing evidence:
+ *
+ *   'unknown'  nothing was derived; no credentials.        NOT ready.
+ *   'derived'  the UI config produced usable credentials.  Ready.
+ *   'live'     those credentials were PROVEN against the
+ *              instance by the deep probe.                 Ready, and more so.
+ *   'failed'   the probe was rejected by the instance.     NOT ready.
+ *
+ * Readiness was written as `auth.verified === 'derived'`, which quietly meant
+ * "ready only while unproven". The deep probe UPGRADES 'derived' to 'live' on
+ * success, so `capability({ deep: true })` reported `ok: false` precisely when
+ * the credentials had just been proven to work — and with an EMPTY `fixes`
+ * array, because nothing had gone wrong to push a fix for.
+ *
+ * Live 2026-09-02 is what that cost. A deep check returned CLI 4.10.1 present,
+ * auth verified 'live', workspace present with 25 sources, `lastInstall.ok:
+ * true` from three hours earlier — and `ok: false`. The agent obeyed its own
+ * rule C ("Business Rule fallback ONLY when flow_authoring_capability reports
+ * ok:false"), told the user native Flow Designer was unavailable, and offered
+ * to write a business rule instead of the flow and subflow that had been
+ * working all along. The shallow check the UI polls stayed 'derived' and kept
+ * saying ok:true, so the page and the agent disagreed with each other.
+ *
+ * Adding a value to this ladder now means adding it here, where the ordering is
+ * written down, rather than to an equality buried in an expression.
+ */
+export const AUTH_READY = new Set(['derived', 'live']);
+
 export async function capability({ deep = false, force = false } = {}) {
   if (!deep && !force && capCache.value && Date.now() - capCache.at < CAP_TTL_MS) {
     return capCache.value;
@@ -1020,9 +1077,24 @@ export async function capability({ deep = false, force = false } = {}) {
    */
   const settings = getSettings();
   const bound = boundInstance();
+  /*
+   * WI-2 — `credentials: []` AND `alias: null` ARE GONE, AND THAT IS THE FIX.
+   *
+   * They were vestigial: after the alias was removed as a binding, neither
+   * field could ever hold anything, so both reported empty on a perfectly
+   * authenticated instance. A reader — human or model — sees "credentials: [],
+   * alias: null" and concludes the SDK is unauthenticated. That is exactly the
+   * conclusion an investigation reached on 2026-09-07 while the SDK was in fact
+   * logging into dev424910 successfully on every call.
+   *
+   * A field that is structurally always empty does not report a fact; it
+   * invents one. `mechanism` says what actually authorises the CLI, and it is
+   * the only auth input there is.
+   */
   const auth = {
     source: 'derived-from-ui-config',
-    credentials: [], alias: null, host: bound.host, username: bound.username,
+    mechanism: 'ci-env',
+    host: bound.host, username: bound.username,
     verified: 'unknown', matchesNowHelpAssistInstance: null, error: null,
     inertStoredAliases: [],
   };
@@ -1052,9 +1124,18 @@ export async function capability({ deep = false, force = false } = {}) {
     } else {
       auth.verified = 'failed';
       auth.error = (probe.stderr || probe.stdout || 'Authenticated probe failed').slice(0, 400);
+      /*
+       * The remedy has to name the thing that actually decides. It used to say
+       * `now-sdk auth --add ... --alias ${auth.alias}` — with `auth.alias`
+       * permanently null it rendered "--alias null", and it pointed at the
+       * credential store this design deliberately abandoned. Following it would
+       * recreate the second binding whose drift caused an install to land on a
+       * retired PDI.
+       */
       fixes.push({
-        problem: 'Stored SDK credential rejected by the instance',
-        command: `now-sdk auth --add ${auth.host || nowhelpassistHost} --type basic --alias ${auth.alias}`,
+        problem: `The instance rejected the credentials derived from Settings for ${auth.host}`,
+        command: 'Open Settings and re-enter the username and password for this instance. '
+          + 'The SDK is authenticated per invocation from that config — there is no stored alias to repair.',
       });
     }
   }
@@ -1093,7 +1174,7 @@ export async function capability({ deep = false, force = false } = {}) {
     // `auth.alias` used to be the readiness signal. There is no alias any more —
     // the binding is derived from the UI config — so readiness is now "the
     // derivation produced usable credentials and they have not been proven bad".
-    ok: Boolean(cli.present && !cli.error && auth.verified === 'derived' && !workspace.error && cheatsheet.present),
+    ok: Boolean(cli.present && !cli.error && AUTH_READY.has(auth.verified) && !workspace.error && cheatsheet.present),
     cli,
     auth,
     workspace,
@@ -1104,6 +1185,41 @@ export async function capability({ deep = false, force = false } = {}) {
     fixes,
     checkedAt: new Date().toISOString(),
   };
+
+  /*
+   * THE INVARIANT THAT WOULD HAVE CAUGHT THE BUG ABOVE, checked out loud.
+   *
+   * Every path that makes this report NOT ready also pushes a fix — a missing
+   * CLI, an unbound instance, incomplete credentials, a rejected probe, a
+   * broken workspace, an absent cheatsheet. So `ok: false` with an empty
+   * `fixes` is not a state this function has a way to legitimately produce: it
+   * means readiness was decided by something that never explained itself.
+   *
+   * It is not a cosmetic gap. The agent's operating rule is "Business Rule
+   * fallback ONLY when flow_authoring_capability reports ok:false — if you fall
+   * back, tell the user why, quoting the fixes[] commands". An unexplained
+   * refusal is therefore an instruction to abandon flow authoring with nothing
+   * to say about it, which is exactly what happened on 2026-09-02.
+   *
+   * Reported rather than thrown: a capability check that explodes takes the
+   * Flows page down with it, and a contradictory report is still more useful
+   * than none. But it is LOUD, and it ships the contradiction to the caller as
+   * a fix entry so the refusal at least says that it cannot justify itself.
+   */
+  if (!value.ok && fixes.length === 0) {
+    const detail =
+      `cli.present=${cli.present} cli.error=${cli.error ? 'set' : 'null'} ` +
+      `auth.verified=${auth.verified} workspace.error=${workspace.error ? 'set' : 'null'} ` +
+      `cheatsheet.present=${cheatsheet.present}`;
+    log.error('fluent',
+      `capability reported ok:false with NO fixes — every not-ready path pushes one, so readiness was ` +
+      `decided by something that did not explain itself. ${detail}`);
+    fixes.push({
+      problem: 'Flow authoring reported unavailable, but no check failed. This is a bug in the capability report itself, not a problem with your instance.',
+      command: `Do NOT fall back to a Business Rule on the strength of this. Sub-checks: ${detail}`,
+    });
+  }
+
   if (!deep) capCache = { at: Date.now(), value };
   return value;
 }
@@ -1518,7 +1634,7 @@ export const WORKSPACE_DIRS = {
  * not assumed, so a failed generation provably leaves nothing behind and never
  * reaches the instance — invariants (a), (b) and (d).
  */
-export async function generateAndValidate(spec, emit = () => {}, { updates = null, artifactType = null } = {}) {
+export async function generateAndValidate(spec, emit = () => {}, { updates = null, artifactType = null, blueprint = null } = {}) {
   const settings = getSettings();
   emit({ type: 'generating' });
 
@@ -1543,6 +1659,24 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
   // intersected with the spec text — it can narrow the guard, never invent it.
   const promisedLiterals = groundLiterals(spec, intent?.promised_literals || []);
   if (promisedLiterals.length) emit({ type: 'promised_literals', literals: promisedLiterals });
+
+  /*
+   * WI-4 — the APPROVED blueprint's own promises, which need no grounding.
+   *
+   * `groundLiterals` keeps only claims it can find in the spec text, because a
+   * model-proposed literal that appears nowhere in the request is unfounded. A
+   * blueprint is the opposite: a human approved it, so its name, inputs and
+   * written values are authoritative and are checked as-is.
+   */
+  const promises = blueprint ? blueprintPromises(blueprint) : null;
+  if (promises && (promises.name || promises.inputs.length || promises.literals.length)) {
+    emit({
+      type: 'blueprint_promises',
+      name: promises.name,
+      inputs: promises.inputs.map((i) => i.name),
+      literals: promises.literals,
+    });
+  }
 
   const context = await buildLiveContext(intent);
   if (context.resolved.length) emit({ type: 'resolved', resolved: context.resolved });
@@ -1675,6 +1809,23 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
       staticErrors.push(litCheck.diagnostic);
       stages.push('literals');
       emit({ type: 'literals_rejected', attempt, missing: litCheck.missing });
+    }
+
+    /*
+     * WI-4 — THE ARTIFACT BUILT MUST BE THE ARTIFACT APPROVED.
+     *
+     * In the same gate as the literal check, and for the same reason: this is a
+     * PRE-BUILD static comparison, so a drifted candidate never compiles, never
+     * installs and never reaches the instance. Running it after the install
+     * would be a report about something already deployed.
+     */
+    if (promises) {
+      const bpCheck = checkBlueprintFidelity(source, promises);
+      if (!bpCheck.ok) {
+        staticErrors.push(bpCheck.diagnostic);
+        stages.push('blueprint_fidelity');
+        emit({ type: 'blueprint_drift', attempt, drift: bpCheck.drift });
+      }
     }
 
     // Step 1 — the artifact that was asked for is the artifact that must come
@@ -1935,13 +2086,13 @@ export async function deploy(name, emit = () => {}) {
  * ------------------------------------------------------------------ */
 
 /** Full pipeline: spec → validated source → install → read-back. */
-export async function createLiveFlow(spec, emit = () => {}, { updates = null, artifactType = null } = {}) {
+export async function createLiveFlow(spec, emit = () => {}, { updates = null, artifactType = null, blueprint = null } = {}) {
   const cap = await capability();
   if (!cap.ok) {
     return { ok: false, stage: 'capability', message: 'Live Fluent authoring is not available in this environment.', capability: cap };
   }
 
-  const gen = await generateAndValidate(spec, emit, { updates, artifactType });
+  const gen = await generateAndValidate(spec, emit, { updates, artifactType, blueprint });
   if (!gen.ok) return { ok: false, stage: 'validate', ...gen };
 
   // Verification spec. A record-triggered flow is proven by firing it; a

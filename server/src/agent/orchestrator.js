@@ -34,8 +34,11 @@ import { checkBeforeGate, recordDrops, recordRejection } from './write-guard.js'
 import { checkWriteTarget } from '../memory/provenance.js';
 import { businessRuleAbortPlaybook, dataVsConfigNote } from './playbooks.js';
 import { planTimeTrapCheck } from './plan-check.js';
+import { retrieveForTurn } from '../knowledge/context.js';
+import { buildContextProfile, widenProfile, contextDiagnostics, logProfile } from './context-engine.js';
 import { isGatedDescriptor, runGatedWrite, resolveRunnerSysId } from '../servicenow/elevation-shim-client.js';
 import { registerElevatedWrite } from '../memory/provenance.js';
+import { listSkills, toolsForSkills, skillsForProfile, skillContextBlock, activeSkillSummary } from './skills/index.js';
 
 /**
  * The backbone, modeled on Claude Code / opencode:
@@ -69,6 +72,26 @@ const live = new Map(); // sessionId -> { pending: Map<approvalId, resolver> }
 function liveState(id) {
   if (!live.has(id)) live.set(id, { pending: new Map() });
   return live.get(id);
+}
+
+/**
+ * PHASE 4 — the approval primitives, exposed so the plan executor can use THIS
+ * gate rather than growing a second one.
+ *
+ * Nothing about the gate changes. `resolveApproval` is still the only resolver,
+ * `POST /api/agent/approve` is still its only caller, the nonce is still minted
+ * per card and compared in constant time, and `executeTool` still refuses any
+ * mutation whose approval cannot be attributed. What these two exports add is
+ * ACCESS to the same pending map, so a plan step waits at the same place a turn
+ * step does and a click resolves either identically.
+ *
+ * Exported rather than refactored deliberately: `runTurn`'s inline gate is
+ * untouched, so every Phase 0-3 turn-control invariant is byte-for-byte what it
+ * was.
+ */
+export { liveState as _approvalState };
+export function awaitApprovalDecision(sessionId, approvalId, nonce, signal = null) {
+  return awaitApproval(liveState(sessionId), approvalId, nonce, signal);
 }
 
 /** Kept for API compatibility; the durable half now comes from SQLite. */
@@ -130,6 +153,18 @@ export function resolveApproval(sessionId, approvalId, approved, source = APPROV
       + 'The approval is still pending.');
     try {
       recordToolEvent(sessionId, {
+        /*
+         * EXPERIENCE §8 — a REFUSED approval belongs to the task whose card was
+         * refused, and this is the one audit row the turn loop cannot stamp
+         * itself: `resolveApproval` runs on the approve REQUEST, in a different
+         * HTTP call, with no turn on the stack. The live state is the only
+         * thing both sides share, so the turn leaves its id there (see
+         * `state.taskId` in runTurn) and this reads it back.
+         *
+         * Null when no turn is live — which is exactly the case where there is
+         * no task to name, and the window fallback is then the honest answer.
+         */
+        taskId: state?.taskId ?? null,
         kind: 'guard', name: 'approve_token_mismatch',
         payload: { approvalId, presented: nonce ? 'mismatched' : 'absent', approved: Boolean(approved) },
         resultStatus: 'refused', mutating: false, approval: null,
@@ -198,7 +233,8 @@ export const MAX_UNEXPLAINED_BOUNCES = 3;
  * headroom for it — the two numbers have to agree, and a literal in two places
  * is how they stop agreeing.
  */
-const MAX_OUTPUT_TOKENS = 4096;
+ const MAX_OUTPUT_TOKENS = 4096;
+
 
 /**
  * F9 — the agent loop asks for a temperature instead of inheriting one.
@@ -372,22 +408,55 @@ export async function executeTool(tool, input, approval, provenance = null, cont
  * The timeout is its own source. It is a rejection nobody made, and recording
  * it as one would put a refusal in the audit trail that no person is
  * responsible for.
+ *
+ * PHASE 0 adds a third source for exactly the same reason. A cancelled wait is
+ * not a rejection either: nobody refused the operation, the turn was stopped
+ * while the card was still on screen. Recording it as `rejected` would write a
+ * decision into the audit trail that no person made — and, worse, would feed
+ * `recordRejection` a refusal the user never gave, blocking a resubmission they
+ * might well have wanted. So `cancelled` is its own source, and the caller
+ * branches on it BEFORE the approved/rejected split.
+ *
+ * Whatever settles the wait — click, timeout or cancellation — goes through one
+ * `finish`, which is idempotent, clears the timer, drops the abort listener and
+ * removes the pending entry. That is what makes "no dangling approval promise"
+ * a property of this function rather than of its callers remembering.
  */
-function awaitApproval(state, approvalId, nonce) {
+function awaitApproval(state, approvalId, nonce, signal = null) {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
+    let settled = false;
+    const finish = (decision) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      // `resolveApproval` deletes this too; the second delete is a no-op. Doing
+      // it here as well is what makes the timeout and cancellation paths leave
+      // nothing executable behind.
       state.pending.delete(approvalId);
-      resolve({ approved: false, source: 'timeout', at: new Date().toISOString() });
-    }, APPROVAL_TIMEOUT_MS);
-    state.pending.set(approvalId, {
-      nonce,
-      resolve: (decision) => {
-        clearTimeout(timer);
-        resolve(decision);
-      },
-    });
+      resolve(decision);
+    };
+    const timer = setTimeout(
+      () => finish({ approved: false, source: 'timeout', at: new Date().toISOString() }),
+      APPROVAL_TIMEOUT_MS,
+    );
+    const onAbort = () => finish({ approved: false, source: 'cancelled', at: new Date().toISOString() });
+    // Already cancelled before the card was even registered: settle immediately
+    // rather than registering a resolver nothing will ever call.
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    state.pending.set(approvalId, { nonce, resolve: finish });
   });
 }
+
+/**
+ * Phase 0 — the approval sources that mean "nobody decided this".
+ *
+ * Both leave `approval` null and neither may reach `executeTool`, but they are
+ * kept apart because they say different things to a person reading the trail: a
+ * timeout is an unanswered question, a cancellation is a stopped turn.
+ */
+export const NO_DECISION_SOURCES = Object.freeze(['timeout', 'cancelled']);
 
 /* ------------------------------------------------------------------ *
  * WI-3 — the ELEVATION GATE, wired into the mutation path.
@@ -403,7 +472,9 @@ function awaitApproval(state, approvalId, nonce) {
  * Refuse/fail-closed happen BEFORE approval; deny => nothing elevated. No
  * un-elevated revert on any failure path.
  *
- * Returns true when it fully handled the call (result + audit pushed).
+ * Returns `{ handled, cancelled }`. `handled` is true when it fully handled the
+ * call (result + audit pushed); `cancelled` says the turn was stopped while this
+ * elevation was at the gate, which the caller must not treat as a denial.
  *
  * FLAG #3 — GUARD-SUPERSET AUDIT. Routing around the normal permission gate must
  * ADD protection, never remove it. Every guard the ordinary mutation path applies:
@@ -423,8 +494,19 @@ function awaitApproval(state, approvalId, nonce) {
  *   - emit tool_use: N/A — the elevation bubble is its own render (WI-4).
  *   - recordVerificationFailure: N/A — it early-returns for anything but
  *     verify_flow_live (memory/facts.js).
+ *   - PHASE 0 cancellation: PRESENT, and it ADDS to the superset rather than
+ *     relaxing it. The card here takes the same signal as the normal gate, and
+ *     a cancelled wait is reported as cancelled rather than denied — so no
+ *     `recordRejection` is written for a decision nobody made. Nothing is
+ *     elevated and nothing is written on that path, identically to a denial.
  * ------------------------------------------------------------------ */
-async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq, state, emit, results, autoApprove }) {
+async function handleGatedElevation({ tool, call, descriptor, sessionId, taskId = null, turnSeq, state, emit, results, autoApprove, signal = null }) {
+  // Phase 0. `runGatedWrite` speaks one vocabulary — approved or denied — and
+  // must keep speaking it, because a denial is what makes it refuse to elevate
+  // and refuse to write, which is exactly right for a cancellation too. What it
+  // cannot know is WHY, so the reason is captured here and the outcome is
+  // relabelled below rather than the shim being taught a third answer.
+  let cancelledAtGate = false;
   let runner;
   try {
     runner = await resolveRunnerSysId();
@@ -433,6 +515,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
     const msg = `Refused: this operation on ${descriptor.table} requires elevation, but the runner identity could not be resolved (${err.message}). No elevation, no write.`;
     results.push({ id: call.id, name: call.name, output: msg, isError: true });
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'tool_call', name: call.name, payload: call.input, result: msg,
       resultStatus: 'elev_blocked_no_runner', mutating: true, approval: null,
     });
@@ -440,7 +523,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
       type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: 'elevation_no_runner', message: msg,
       elevation: { tier: null, state: 'FAIL_CLOSED', required_role: null, elevation_occurred: false, target: { table: descriptor.table, sys_id: descriptor.sys_id ?? null }, reason: msg },
     });
-    return true;
+    return { handled: true };
   }
 
   const requestApproval = autoApprove
@@ -455,7 +538,15 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
           warning: elevationPayload.note, elevation: elevationPayload,
         });
         log.warn('gate', `elevation approval required: ${call.name} on ${descriptor.table} — waiting for the user`);
-        const decision = await awaitApproval(state, approvalId, nonce);
+        const decision = await awaitApproval(state, approvalId, nonce, signal);
+        if (decision.source === 'cancelled') {
+          // NOT `approval_resolved`. Nothing was resolved — the card was still
+          // waiting when the turn was stopped, and rendering it as a decision
+          // would put a verdict on screen that no person gave.
+          cancelledAtGate = true;
+          emit({ type: 'approval_cancelled', approvalId, name: call.name, at: decision.at });
+          return decision;
+        }
         emit({ type: 'approval_resolved', approvalId, approved: decision.approved, source: decision.source, at: decision.at });
         return decision;
       };
@@ -482,6 +573,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
     log.warn('gate', `ACL spec refused (${r.specRefusal.reason}) — no approval requested, nothing elevated`);
     results.push({ id: call.id, name: call.name, output: msg, isError: true });
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'tool_call', name: call.name, payload: call.input, result: msg,
       resultStatus: `elev_refused_spec:${r.specRefusal.reason}`, mutating: true, approval: null,
     });
@@ -495,7 +587,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
         reason: r.specRefusal.message,
       },
     });
-    return true;
+    return { handled: true };
   }
 
   // Refused before approval — ineligible or eligibility-read-failed (fail-closed).
@@ -506,6 +598,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
     const msg = `Refused: ${r.plan.op.table}.${r.plan.op.operation} requires ${r.plan.requiredRole} and ${why}. ${r.plan.reason || ''} No elevation, no write, no fallback.`;
     results.push({ id: call.id, name: call.name, output: msg, isError: true });
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'tool_call', name: call.name, payload: call.input, result: msg,
       resultStatus: `elev_${r.decision}`, mutating: true, approval: null,
     });
@@ -518,7 +611,37 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
         target: { table: r.plan.op.table, sys_id: descriptor.sys_id ?? null }, reason: r.plan.reason || msg,
       },
     });
-    return true;
+    return { handled: true };
+  }
+
+  /*
+   * Phase 0 — CANCELLED at the gate. Checked before the denial branch below,
+   * because the two produce the same (correct) effect on the instance and must
+   * produce completely different records of it.
+   *
+   * Nothing was elevated and nothing was written, exactly as for a denial. But
+   * no `recordRejection` is written: a rejection is a fact about what the user
+   * decided, and blocking a resubmission on the strength of a decision they
+   * never made would make Stop quietly narrower than it looks.
+   */
+  if (r.decision === 'denied' && cancelledAtGate) {
+    const msg = 'The turn was cancelled while this elevation was waiting for approval. '
+      + 'Nothing was elevated, nothing was written, and no decision was recorded.';
+    log.warn('gate', `elevation cancelled at the gate on ${descriptor.table} — nothing elevated, nothing written`);
+    results.push({ id: call.id, name: call.name, output: msg, isError: true });
+    recordToolEvent(sessionId, {
+      taskId,
+      kind: 'tool_call', name: call.name, payload: call.input, result: msg,
+      resultStatus: 'cancelled', mutating: true, approval: null,
+    });
+    emit({
+      type: 'tool_result', id: call.id, name: call.name, output: msg, isError: true,
+      elevation: {
+        tier: null, state: 'CANCELLED', required_role: r.plan.requiredRole, elevation_occurred: false,
+        target: { table: r.plan.op.table, sys_id: descriptor.sys_id ?? null }, reason: msg,
+      },
+    });
+    return { handled: true, cancelled: true };
   }
 
   // Denied at the gate — nothing elevated, nothing written.
@@ -527,6 +650,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
     recordRejection({ sessionId, turnSeq, tool: call.name, table: descriptor.table, sys_id: descriptor.sys_id, requested: descriptor.requested });
     results.push({ id: call.id, name: call.name, output: msg, isError: true });
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'tool_call', name: call.name, payload: call.input, result: msg,
       resultStatus: 'elev_denied', mutating: true, approval: 'rejected', approvedSource: r.approvalSource,
     });
@@ -538,7 +662,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
         target: { table: r.plan.op.table, sys_id: descriptor.sys_id ?? null }, reason: msg,
       },
     });
-    return true;
+    return { handled: true };
   }
 
   // Approved and executed. Truth is the tier from the target read-back.
@@ -557,6 +681,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
   }, null, 1);
   results.push({ id: call.id, name: call.name, output, isError });
   recordToolEvent(sessionId, {
+    taskId,
     kind: 'tool_call', name: call.name, payload: call.input, result: output,
     resultStatus: `elev_${tier.toLowerCase()}`, mutating: true,
     approval: 'approved', approvedSource: r.approvalSource, approvedAt: r.approvalAt,
@@ -607,7 +732,7 @@ async function handleGatedElevation({ tool, call, descriptor, sessionId, turnSeq
         : null,
     },
   });
-  return true;
+  return { handled: true };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1208,20 +1333,67 @@ export function assertContinuationsAccountFor(iteration, reasons) {
  *   { type: 'approval_resolved', approvalId, approved }
  *   { type: 'tool_result', id, name, output, isError }
  *   { type: 'compacted', ... } | { type: 'done' } | { type: 'error', message, retryable }
+ *   { type: 'cancelled', phase, at, mutations }
  *
  * `retry` re-issues a turn whose previous attempt died before writing anything
  * — an empty completion, or the upstream falling over. The user's message is
  * already the last row in history, so appending it again would duplicate it and
  * quietly change the conversation the model sees. Everything else is identical:
  * same history, same tools, same gate.
+ *
+ * PHASE 0 — `signal` is an optional AbortSignal belonging to ONE execution. It
+ * is owned by the caller (the route), never stored in a module-level variable,
+ * and never shared between turns: two concurrent sessions cannot cancel each
+ * other because there is nowhere for one to reach the other's controller.
+ *
+ * The contract it buys is narrow and deliberate. Cancellation is OBSERVED at
+ * boundaries, never IMPOSED on work in flight:
+ *
+ *   - before an iteration builds a prompt or calls the provider
+ *   - when an in-flight provider request is aborted (the fetch, not the tool)
+ *   - after a completion is safely stored, before any tool runs
+ *   - between completed tool executions
+ *   - while a card is waiting at the approval gate
+ *
+ * A tool that has started NEVER sees the signal. It finishes, its result is
+ * recorded, its ledger row is written and its capture runs — and only then does
+ * the loop stop. That is the whole reason the mutation ledger stays internally
+ * consistent through a cancellation.
  */
-export async function runTurn(sessionId, userText, emit, { retry = false } = {}) {
+/*
+ * EXPERIENCE §5/§8 — `taskId` IS NEW, AND IT IS A CORRELATION ID, NOT A LAYER.
+ *
+ * Migration 23 added `tool_events.task_id` so evidence could stop guessing, but
+ * only the PLAN executor ever wrote it: every row the ordinary turn loop
+ * produced was NULL, and both the evidence layer and the activity projection
+ * fell back to matching by session plus the task's time window. That is
+ * deterministic but it is not a key — two turns overlapping in one session each
+ * claim the other's tool calls — so the workspace could show a tool this task
+ * did not run, which is exactly what §8 forbids.
+ *
+ * The fix is one opaque string. `runTurn` does not import the task layer, does
+ * not create, read or transition a task, and does not know what the id means;
+ * it stamps it on the audit rows it already writes, exactly as it already
+ * stamps `sessionId`. The dependency arrow is unchanged — the task layer still
+ * watches the turn's output rather than the reverse.
+ *
+ * Additive: a caller that passes nothing keeps the window fallback, and every
+ * row written before this stays NULL and keeps behaving as it did.
+ */
+export async function runTurn(sessionId, userText, emit, { retry = false, signal = null, taskId = null } = {}) {
   const state = liveState(sessionId);
   // WI-3 — so `resolveApproval`, which runs on the approve REQUEST rather than
   // in this turn, can put a refused approval into the transcript the user is
   // actually looking at. Cleared in the `finally` below: a stale emit would
   // write into a closed response for the rest of the process's life.
   state.emit = emit;
+  /*
+   * Published for the same reason `state.emit` is: `resolveApproval` runs on a
+   * DIFFERENT request and needs to reach the turn its card belongs to. Cleared
+   * in the same `finally` that clears `emit`, so a stale id can never attribute
+   * a later refusal to a turn that has ended.
+   */
+  state.taskId = taskId;
   const { agent } = getSettings();
 
   if (!loadSessionRow(sessionId)) createSession({ id: sessionId });
@@ -1235,6 +1407,31 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
   let turnHasProse = false;
   let compactedThisTurn = false;
   let mutatingCallCount = 0;
+  /*
+   * Phase 0 — everything cancellation needs, and all of it turn-local.
+   *
+   * `cancelRequestedAt` and `cancelDuringTool` are recorded by the abort
+   * listener at the moment the request arrives; `finishCancelled` records when
+   * it was OBSERVED. The gap between the two is the answer to "how long did
+   * Stop take", and it is the one thing a log line cannot reconstruct
+   * afterwards — a tool that was mid-flight when Stop was pressed has finished
+   * and been recorded by the time the loop notices.
+   */
+  let cancelRequestedAt = null;
+  let cancelDuringTool = null;
+  /** The tool currently inside the mutation pipeline, or null. Never aborted. */
+  let activeTool = null;
+  const onAbort = () => {
+    cancelRequestedAt = cancelRequestedAt || new Date().toISOString();
+    cancelDuringTool = cancelDuringTool || activeTool;
+    log.warn('agent', `cancellation requested  session=${shortId(sessionId)}`
+      + `${activeTool ? ` — ${activeTool} is executing and will be allowed to finish` : ''}`);
+  };
+  if (signal) {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+  const cancelled = () => Boolean(signal?.aborted);
   // WI-2 — one entry per SANCTIONED re-invocation of the provider. The loop
   // cannot reach iteration i without i of these, so a `continue` added later
   // without naming its reason fails loudly instead of silently re-opening the
@@ -1265,6 +1462,69 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
     { message: userText.slice(0, 200) });
 
   /*
+   * Phase 0 — THE CANCELLATION EXIT, and the only one.
+   *
+   * Every caller `return`s straight after awaiting this, so the `finally` below
+   * still runs and the capture window still closes. It deliberately mirrors the
+   * other terminal paths rather than short-circuiting them: reconcile what the
+   * turn produced, render the harness's own mutation report, then emit exactly
+   * one terminal frame. A turn that was stopped after writing a record must
+   * still report that record, and the report is rendered from the ledger, so
+   * cancelling cannot make a completed mutation disappear from it.
+   *
+   * `cancelled` replaces `done`, never accompanies it. The two risky steps are
+   * caught individually so a failure in either cannot cost the terminal frame —
+   * the invariant is one frame per stream, and a cancellation that emitted none
+   * would look exactly like the truncated-stream defect `sse()` was hardened
+   * against.
+   */
+  async function finishCancelled({ phase, iteration = null }) {
+    const observedAt = new Date().toISOString();
+    log.warn('agent', `turn CANCELLED at ${phase}  session=${shortId(sessionId)}  ${ms(turnStart)}`
+      + `  (${mutatingCallCount} mutation(s) completed)`);
+    try {
+      recordToolEvent(sessionId, {
+        taskId,
+        kind: 'guard', name: 'turn_cancelled',
+        payload: {
+          phase,
+          turnSeq,
+          iteration,
+          requestedAt: cancelRequestedAt,
+          observedAt,
+          // The question a reader will actually have: was something running
+          // when Stop was pressed, and if so what.
+          toolActive: Boolean(cancelDuringTool),
+          tool: cancelDuringTool,
+          mutationsCompleted: mutatingCallCount,
+        },
+        result: `The turn was cancelled at ${phase}.`
+          + (cancelDuringTool ? ` ${cancelDuringTool} was executing and was allowed to finish.` : ''),
+        resultStatus: 'cancelled', mutating: false, approval: null,
+      });
+    } catch (err) {
+      log.warn('agent', `could not record the cancellation: ${err.message}`);
+    }
+    if (mutatingCallCount > 0) {
+      try {
+        const reconciled = await reconcileTurn({ sessionId, sessionTitle, since: turnCaptureMark });
+        if (reconciled) emit(reconciled);
+      } catch (err) {
+        log.error('agent', `capture reconciliation failed after cancellation: ${err.message}`, err);
+      }
+    }
+    try { emitMutationReport({ sessionId, turnSeq, emit }); }
+    catch (err) { log.error('agent', `could not render the mutation report after cancellation: ${err.message}`, err); }
+    emit({
+      type: 'cancelled', phase, at: observedAt,
+      requestedAt: cancelRequestedAt,
+      mutations: mutatingCallCount,
+      toolActive: Boolean(cancelDuringTool),
+      tool: cancelDuringTool,
+    });
+  }
+
+  /*
    * B4 / D3 — the task boundary, checked BEFORE the model sees the turn.
    *
    * Placement is the whole guarantee. A stop the model is asked to respect is a
@@ -1289,7 +1549,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
       emitMutationReport({ sessionId, turnSeq, emit });
       emit({ type: 'done' });
       closeCaptureWindow(sessionId);
-      if (state.emit === emit) state.emit = null;
+      if (state.emit === emit) { state.emit = null; state.taskId = null; }
       return;
     }
     if (boundary.verdict === 'consented' || boundary.verdict === 'declined') {
@@ -1304,8 +1564,130 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
     log.error('impersonation', `task-boundary check failed, turn proceeding unchecked: ${err.message}`, err);
   }
 
+  /*
+   * K3 — RETRIEVAL HAPPENS ONCE PER TURN, HERE, AND NOT INSIDE THE LOOP.
+   *
+   * The query is the user's request, which does not change across iterations.
+   * Retrieving per iteration would re-embed the same string up to MAX_ITERATIONS
+   * times for an identical result, and — worse — would let the knowledge block
+   * change shape mid-turn, so the prompt MEASURED by computeBudget and the
+   * prompt SENT could differ. That equality is load-bearing (see the note on
+   * `provisionalSystem` below), so the block is computed once and reused.
+   *
+   * The model can still reach for more: `search_servicenow_docs` is in the
+   * catalogue for the case where the turn's real question only becomes clear
+   * after a tool result.
+   *
+   * Never throws — `retrieveForTurn` is total, and a turn that dies because the
+   * documentation index had a bad day is strictly worse than one that runs
+   * without it.
+   */
+  /*
+   * PHASE 2 — THE CONTEXT PROFILE, BUILT ONCE, BEFORE RETRIEVAL.
+   *
+   * Before retrieval because the profile owns the retrieval QUERY: a request
+   * about flows should bias the corpus toward Flow Designer rather than toward
+   * whatever shares its vocabulary.
+   *
+   * Once per turn for the same reason K3 gives below — the request does not
+   * change between iterations, so re-classifying it would burn work for an
+   * identical answer and, worse, would let the tool list change shape mid-turn
+   * so that the prompt MEASURED by computeBudget and the prompt SENT could
+   * differ. The one thing that DOES change it is a tool miss, and that widens
+   * explicitly and monotonically (see below).
+   *
+   * `capability: null` today. That argument is the seam a planner plugs into in
+   * a later phase — a step that knows what it is for passes it and the
+   * classifier is never consulted. Nothing sets it yet.
+   */
+  /*
+   * EXPERIENCE §40/§41 — THE SKILL SURFACE, APPLIED BEFORE CLASSIFICATION.
+   *
+   * §41 is the section that decides where this goes: "Do not merely hide the UI
+   * while leaving the backend available to planning." So a disabled skill's
+   * capabilities are removed from the tool array the context engine is given,
+   * not from a list the renderer draws — the planner never sees them, the
+   * prompt never carries their schemas, and `computeBudget` measures the
+   * surface that was actually sent.
+   *
+   * BEFORE the profile, and this ordering matters twice. The profile narrows
+   * the skill surface rather than the registry, so a narrowing can never
+   * re-admit what a disabled skill removed; and `widenProfile` below widens
+   * back to THIS array rather than to `TOOLS`, so the one path that undoes
+   * narrowing cannot undo the skill boundary.
+   *
+   * NO SKILLS CONFIGURED is not a locked-down agent, it is an unconfigured one:
+   * `toolsForSkills` returns the full registry with `restricted: false`, and
+   * every turn behaves exactly as it did before this layer existed.
+   */
+  const allSkills = listSkills({ tools: TOOLS });
+  const skills = allSkills.filter((sk) => sk.enabled);
+  const surface = toolsForSkills(TOOLS, allSkills);
+  if (surface.restricted) {
+    log.info('skills', `tool surface narrowed to ${surface.tools.length}/${TOOLS.length} — `
+      + `${allSkills.filter((sk) => !sk.enabled).map((sk) => sk.id).join(', ')} disabled, `
+      + `removing ${surface.removed.join(', ')}`);
+  }
+
+  let profile = buildContextProfile({ goal: userText, tools: surface.tools, capability: null });
+  {
+    const diag = contextDiagnostics(profile, { allTools: surface.tools });
+    logProfile(diag);
+    emit(diag);
+  }
+  /*
+   * §46 — the skills that are ACTIVE for this turn, which is not the same as
+   * the skills that are installed. Only those whose capabilities intersect what
+   * this request was classified as reach the prompt (§42), and only those are
+   * announced.
+   */
+  const activeSkills = skillsForProfile(skills, profile);
+  if (activeSkills.length) emit({ type: 'skills_active', skills: activeSkillSummary(activeSkills) });
+  /*
+   * §42 — what an active skill adds to the PROMPT, if anything.
+   *
+   * Appended to the assembled system prompt rather than passed into
+   * `buildSystemPrompt`, because prompts.js is frozen and this is additive:
+   * with only built-in skills enabled it is null and the prompt is unchanged.
+   * Computed ONCE, here, and used for both the measured and the sent string
+   * below — the same discipline `knowledgeNote` follows, and for the same
+   * reason: a prompt that is measured and a prompt that is sent must be one
+   * string or the budget stops describing the request.
+   */
+  const skillNote = skillContextBlock(activeSkills);
+  const withSkills = (text) => (skillNote ? `${text}
+
+${skillNote}` : text);
+
+  const knowledge = await retrieveForTurn(profile.query);
+  if (knowledge.retrieval) {
+    emit({
+      type: 'knowledge',
+      mode: knowledge.retrieval.mode,
+      indexed: knowledge.retrieval.indexed,
+      hits: knowledge.retrieval.hits.length,
+      degraded: Boolean(knowledge.retrieval.degraded),
+      // Cited so the user can see what informed the turn, and check it.
+      citations: knowledge.retrieval.hits.map((h) => ({
+        title: h.title || h.topic, version: h.version, url: h.url, source: h.source,
+      })),
+    });
+  }
+  const knowledgeNote = knowledge.block;
+
   try {
     for (let i = 0; i < MAX_ITERATIONS; i++) {
+      /*
+       * Phase 0 — SAFE POINT 1: before this iteration costs anything.
+       *
+       * Nothing has been built, probed, folded or sent. On i === 0 this is the
+       * whole guarantee that a turn cancelled before it started never reaches
+       * the provider at all.
+       */
+      if (cancelled()) {
+        await finishCancelled({ phase: i === 0 ? 'before-first-iteration' : 'iteration-boundary', iteration: i });
+        return;
+      }
       /*
        * D-7 — AT MOST ONE COMPACTION PER USER TURN.
        *
@@ -1342,19 +1724,24 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
        * in the estimate is how a budget quietly stops describing the request.
        */
       const iterationNotice = iterationBudgetNotice(MAX_ITERATIONS - i);
-      const provisionalSystem = buildSystemPrompt({
+      const provisionalSystem = withSkills(buildSystemPrompt({
         sessionId,
         digestNote: buildDigestNote(sessionId),
         mutationDigest: ledgerDigestForModel(ledgerSoFar),
         iterationNotice,
-      });
-      const budgets = await computeBudget({ system: provisionalSystem, tools: TOOLS, maxTokens: MAX_OUTPUT_TOKENS });
+        knowledgeNote,
+        // Phase 2 — the same profile that supplies `tools` below, so the prompt
+        // that is MEASURED and the prompt that is SENT stay one string.
+        profile,
+      }));
+      const budgets = await computeBudget({ system: provisionalSystem, tools: profile.tools, maxTokens: MAX_OUTPUT_TOKENS });
       if (i === 0) {
         // The three numbers, at meta time, every turn. Previously the budget
         // was a constant nobody could see was wrong.
         log.info('llm',
           `budget: model context ${budgets.modelCtx} (${budgets.modelCtxSource}), capped at ${budgets.ceiling}, ` +
-          `fixed overhead ${budgets.fixed} (system + ${TOOLS.length} tool schemas), output headroom ${budgets.headroom} ` +
+          `fixed overhead ${budgets.fixed} (system ${budgets.systemTokens} + ${budgets.toolCount}/${surface.tools.length} tool schemas ` +
+          `${budgets.toolSchemaTokens}), output headroom ${budgets.headroom} ` +
           `=> history budget ${budgets.budget}`);
         emit({ type: 'budget', ...budgets });
       }
@@ -1387,17 +1774,34 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
       // Rebuilt after compaction, so a digest written just now is in the prompt.
       // Same ledger digest as the budget probe above, so the prompt that is
       // MEASURED and the prompt that is SENT are the same string.
-      const system = buildSystemPrompt({
+      const system = withSkills(buildSystemPrompt({
         sessionId,
         digestNote: buildDigestNote(sessionId),
         mutationDigest: ledgerDigestForModel(ledgerSoFar),
         iterationNotice,
-      });
+        // Same block the budget above measured, so the prompt that is MEASURED
+        // and the prompt that is SENT stay the same string.
+        knowledgeNote,
+        profile,
+      }));
       const requestTokens = budgets.fixed + estimateTokens(history);
       log.debug('llm', `request ~${requestTokens} tokens (fixed ${budgets.fixed}, history budget ${budgets.budget})`);
       if (requestTokens > budgets.ceiling) {
         log.warn('llm', `request ~${requestTokens} tokens is over the ${budgets.ceiling}-token self-imposed cap ` +
           `(model window is ${budgets.modelCtx}); sending anyway — compaction could not fold enough to help.`);
+      }
+      /*
+       * Phase 0 — SAFE POINT 2: the last boundary before the provider speaks.
+       *
+       * Not redundant with the top of the loop. Compaction is an LLM call of
+       * its own and can take seconds, and a cancellation that arrived while it
+       * ran must not then be paid for with a full completion. Checked before
+       * the continuation assertion so a cancelled turn is never the one that
+       * has to satisfy it.
+       */
+      if (cancelled()) {
+        await finishCancelled({ phase: 'before-provider-call', iteration: i });
+        return;
       }
       // WI-2 — the invariant, checked at the one place it matters: immediately
       // before the provider is asked to speak again.
@@ -1408,14 +1812,34 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         res = await chatTurn({
           system,
           history,
-          tools: TOOLS,
+          // Phase 2 — the SELECTED surface. Fewer tools is not fewer
+          // permissions: everything that does run still passes the same gate,
+          // the same guards and the same read-back verification.
+          tools: profile.tools,
           maxTokens: MAX_OUTPUT_TOKENS,
           // F9 — asked for, never assumed. Both adapters pass this through;
           // whether the backend honours it is a separate question with a
           // measured answer in agent/decoding.js.
           decoding: { temperature: AGENT_TEMPERATURE },
+          // Phase 0. The provider request is a READ and is the one thing in
+          // this loop that is safe to abort in flight, so the signal is handed
+          // to the adapter. Whether the adapter can use it is its own business
+          // — cancellation still lands at the next boundary if it cannot.
+          signal,
         });
       } catch (err) {
+        /*
+         * Phase 0 — SAFE POINT 3: we aborted this request ourselves.
+         *
+         * Judged from OUR signal, never from the shape of the error, so this
+         * stays provider-neutral: no adapter has to invent an error type and
+         * nothing here has to recognise one.
+         */
+        if (cancelled()) {
+          log.info('llm', `iteration ${i + 1} aborted by cancellation after ${ms(callStart)}`);
+          await finishCancelled({ phase: 'provider-call', iteration: i });
+          return;
+        }
         // The message shape is the usual cause of a provider 400, and it is
         // invisible from the error alone — so name it here rather than making
         // someone read the database to find out.
@@ -1449,6 +1873,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           const guard = err.guard || { name: 'f4_empty_completion', status: 'empty-completion' };
           try {
             recordToolEvent(sessionId, {
+              taskId,
               kind: 'guard',
               name: guard.name,
               payload: { iteration: i + 1, ...err.guardDump },
@@ -1526,6 +1951,41 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         emit({ type: 'assistant_text', text: assistantText });
       }
 
+      /*
+       * Phase 0 — SAFE POINT 4: the completion is stored, no tool has run.
+       *
+       * Checked here rather than the moment `chatTurn` returned, so the prose
+       * the model produced is kept and shown: the user paid for it, and a turn
+       * that says what it was about to do before stopping is more useful than
+       * one that silently discards it.
+       *
+       * The tool calls, however, MUST come out of the stored row. A
+       * `tool_call` with no matching `tool` result is the exact shape the wire
+       * format rejects — it would poison every later request in this session,
+       * which is the failure `rewriteMessage` already exists to prevent on the
+       * withheld-mutation and unexplained-write paths. The payloads survive in
+       * the guard row below, which is their only remaining record.
+       */
+      if (cancelled()) {
+        if (res.toolCalls?.length) {
+          rewriteMessage(sessionId, assistantSeq, { role: 'assistant', text: assistantText, toolCalls: [] });
+          const discarded = res.toolCalls.map((c) => c.name);
+          log.warn('gate', `discarded ${discarded.length} tool call(s) unrun — the turn was cancelled before they started`);
+          try {
+            recordToolEvent(sessionId, {
+              taskId,
+              kind: 'guard', name: 'cancelled_before_tools',
+              payload: { discarded, calls: res.toolCalls, iteration: i },
+              result: 'The turn was cancelled after the completion arrived and before any tool ran.',
+              resultStatus: 'cancelled', mutating: false, approval: null,
+            });
+          } catch (err) { log.warn('agent', `could not record the discarded calls: ${err.message}`); }
+          emit({ type: 'calls_discarded', reason: 'cancelled', discarded });
+        }
+        await finishCancelled({ phase: 'after-completion', iteration: i });
+        return;
+      }
+
       if (!res.toolCalls?.length) {
         /*
          * WI-2 — the turn ENDS on a question only the user can answer.
@@ -1544,6 +2004,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         if (clarifying) {
           log.info('gate', `turn ends on a question for the user (${clarifying.reason}: ${clarifying.quote})`);
           recordToolEvent(sessionId, {
+            taskId,
             kind: 'guard', name: 'turn_ended_on_question',
             payload: { reason: clarifying.reason, quote: clarifying.quote, asked: clarifying.asked },
             resultStatus: 'awaiting-user', mutating: false, approval: null,
@@ -1568,6 +2029,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           appendMessage(sessionId, { role: 'user', text: note });
           emit({ type: 'nudged', reason: 'stalled', asked: stalled.asked.trim() });
           recordToolEvent(sessionId, {
+            taskId,
             kind: 'guard', name: 'a6_stalled_turn', payload: { asked: stalled.asked.trim() },
             resultStatus: 'nudged', mutating: false, approval: null,
           });
@@ -1605,6 +2067,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           const intent = stallIntent(assistantText);
           log.info('agent', `turn ended having asked nothing and changed nothing (${intent}) — "${head}"`);
           recordToolEvent(sessionId, {
+            taskId,
             kind: 'guard', name: 'stalled_turn_ended',
             payload: { head, intent, nudgedEarlier: stallNudged },
             resultStatus: intent, mutating: false, approval: null,
@@ -1663,6 +2126,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
           role: 'assistant', text: assistantText, toolCalls: callsToRun,
         });
         recordToolEvent(sessionId, {
+          taskId,
           kind: 'guard', name: 'withheld_mutation',
           // The discarded payloads, verbatim. Nothing else keeps them.
           payload: { asked: asking.asked, via: asking.via, held: asking.held, discarded: asking.discarded },
@@ -1724,6 +2188,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
         rewriteMessage(sessionId, assistantSeq, { role: 'assistant', text: '', toolCalls: [] });
         const exhausted = unexplainedBounces >= MAX_UNEXPLAINED_BOUNCES;
         recordToolEvent(sessionId, {
+          taskId,
           kind: 'guard', name: 'unexplained_mutation',
           payload: { writes: unexplained.writes, attempt: unexplainedBounces },
           resultStatus: exhausted ? 'abandoned' : 'bounced', mutating: false, approval: null,
@@ -1760,10 +2225,117 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
       }
 
       const results = [];
+      /*
+       * Phase 0 — set when the loop below stops early because the turn was
+       * cancelled. Named rather than inferred from `results.length`, because a
+       * turn can legitimately run fewer calls than it was given (a block, a
+       * refusal) and only this says the reason was Stop.
+       */
+      let cancelledDuringCalls = false;
+      let cancelPhase = null;
       for (const call of callsToRun) {
+        /*
+         * Phase 0 — SAFE POINT 5: between completed tool executions.
+         *
+         * The check is at the TOP of the body, so a tool that has already
+         * started is never reached by it. Whatever ran before this point has
+         * its result in `results`, its row in `tool_events`, its entry in the
+         * mutation ledger and its capture already swept — cancelling here
+         * cannot leave any of those half-written.
+         */
+        if (cancelled()) {
+          cancelledDuringCalls = true;
+          cancelPhase = 'between-tool-calls';
+          break;
+        }
         const tool = toolMap.get(call.name);
         if (!tool) {
           results.push({ id: call.id, name: call.name, output: `Unknown tool: ${call.name}`, isError: true });
+          continue;
+        }
+        /*
+         * PHASE 2 — THE TOOL THE PROFILE DID NOT EXPOSE.
+         *
+         * The tool EXISTS and is permitted; it was simply not in this turn's
+         * selected surface. That distinction is the whole safety argument for
+         * narrowing the surface at all, so the message says it in those words:
+         * a missing tool is never a refusal, and the model must not read it as
+         * one and go looking for another way to achieve the same write. It is
+         * not routed anywhere — nothing is substituted, nothing falls back to a
+         * generic mutation — the call simply does not run this iteration.
+         *
+         * The profile then WIDENS to the full registry for the rest of the
+         * turn, so the very next iteration can call it. Monotonic and one-shot:
+         * widening never narrows again, and it goes straight to everything
+         * rather than adding one capability, because guessing what else this
+         * turn will need is exactly what this layer must not do.
+         */
+        /*
+         * Judged from what the engine EXCLUDED, not from what it selected.
+         *
+         * `toolMap` is the resolver and can legitimately hold entries the
+         * registry array does not — the offline suite registers tools through
+         * it to drive the loop without an instance. Those were never in the set
+         * the engine filtered, so it did not exclude them, and treating "not in
+         * the profile" as "excluded" would block a tool this layer had no
+         * opinion about.
+         */
+        /*
+         * EXPERIENCE §41/§79.8 — A TOOL A DISABLED SKILL OWNS DOES NOT RUN.
+         *
+         * Checked BEFORE the context-widening branch below, and that order is
+         * the whole guarantee: widening goes to the full skill surface, so a
+         * tool excluded by a SKILL must be refused here or it would be admitted
+         * one iteration later by the mechanism that exists to recover from a
+         * context miss.
+         *
+         * A REFUSAL, not a narrowing. The message says so in those words,
+         * because the two are opposite instructions to the model: a tool
+         * outside the profile should be called again, and a tool outside the
+         * skill surface must not be — and must not be worked around with a
+         * generic write either, which is the failure mode this sentence exists
+         * to prevent.
+         */
+        if (surface.restricted
+            && TOOLS.some((t) => t.name === call.name)
+            && !surface.tools.some((t) => t.name === call.name)) {
+          const message =
+            `${call.name} is not available: the skill that provides it is disabled for this session. `
+            + 'This IS a refusal. Do not call it again, do not substitute a different tool, and do not '
+            + 'achieve the same effect with a generic record write. Tell the user which skill they would '
+            + 'need to enable.';
+          log.warn('skills', `${call.name} refused — no enabled skill grants it`);
+          results.push({ id: call.id, name: call.name, output: message, isError: true });
+          recordToolEvent(sessionId, {
+            taskId,
+            kind: 'guard', name: 'skill_disabled',
+            payload: { tool: call.name, enabled_skills: skills.map((sk) => sk.identity) },
+            result: message, resultStatus: 'skill-disabled', mutating: false, approval: null,
+          });
+          emit({ type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: 'skill_disabled', message });
+          continue;
+        }
+        const wasExcluded = profile.tools !== surface.tools
+          && surface.tools.some((t) => t.name === call.name)
+          && !profile.tools.some((t) => t.name === call.name);
+        if (wasExcluded) {
+          const message =
+            `${call.name} was not offered in this turn's tool set, so it was not run. This is NOT a refusal and `
+            + `${call.name} is not forbidden — the context for this turn was scoped to `
+            + `${profile.capabilities?.filter((c) => c !== 'core').join(', ') || 'a subset'} and it fell outside that. `
+            + 'The full tool set is now available: call it again. Do NOT substitute a different tool or a generic '
+            + 'write to achieve the same effect.';
+          log.warn('context', `${call.name} was called but not exposed — widening and asking the model to retry`);
+          results.push({ id: call.id, name: call.name, output: message, isError: true });
+          recordToolEvent(sessionId, {
+            taskId,
+            kind: 'guard', name: 'tool_not_in_context',
+            payload: { tool: call.name, capabilities: profile.capabilities, exposed: profile.tools.length },
+            result: message, resultStatus: 'not-exposed', mutating: false, approval: null,
+          });
+          emit({ type: 'tool_not_in_context', id: call.id, name: call.name, capabilities: profile.capabilities });
+          profile = widenProfile(profile, { tools: surface.tools, reason: `${call.name} was called but not exposed` });
+          emit(contextDiagnostics(profile, { allTools: surface.tools }));
           continue;
         }
         /*
@@ -1825,6 +2397,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             log.error('gate', `${call.name} HARD BLOCKED — sys_id ${guardDescriptor.sys_id} has no provenance in this session`);
             results.push({ id: call.id, name: call.name, output: message, isError: true });
             recordToolEvent(sessionId, {
+              taskId,
               kind: 'guard', name: 'confabulated_sys_id',
               // The full payload, because nothing else keeps it.
               payload: { tool: call.name, table: guardDescriptor.table, sys_id: guardDescriptor.sys_id, input: call.input },
@@ -1847,6 +2420,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             log.warn('gate', `${call.name} BLOCKED before approval — ${verdict.reason}`);
             results.push({ id: call.id, name: call.name, output: verdict.message, isError: true });
             recordToolEvent(sessionId, {
+              taskId,
               kind: 'tool_call', name: call.name, payload: call.input, result: verdict.message,
               resultStatus: `blocked:${verdict.reason}`, mutating: true, approval: null,
             });
@@ -1886,11 +2460,23 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
          * the model has no verb that reaches it any other way.
          */
         if (tool.mutating && guardDescriptor && isGatedDescriptor(guardDescriptor)) {
-          const handled = await handleGatedElevation({
-            tool, call, descriptor: guardDescriptor, sessionId, turnSeq, state, emit, results,
+          const gated = await handleGatedElevation({
+            tool, call, descriptor: guardDescriptor, sessionId, taskId, turnSeq, state, emit, results,
             autoApprove: Boolean(agent.autoApprove),
+            signal,
           });
-          if (handled) { mutatingCallCount += 1; continue; }
+          if (gated.handled) {
+            mutatingCallCount += 1;
+            // Phase 0 — cancelled at the elevation gate. Nothing was elevated
+            // and nothing was written; the result and the audit row are already
+            // pushed, so the turn stops here rather than taking the next call.
+            if (gated.cancelled) {
+              cancelledDuringCalls = true;
+              cancelPhase = 'awaiting-elevation-approval';
+              break;
+            }
+            continue;
+          }
         }
 
         /*
@@ -1930,6 +2516,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             log.warn('gate', `${call.name} refused before approval — ${pre.refusal.reason}`);
             results.push({ id: call.id, name: call.name, output: msg, isError: true });
             recordToolEvent(sessionId, {
+              taskId,
               kind: 'tool_call', name: call.name, payload: call.input, result: msg,
               resultStatus: `imp_refused:${pre.refusal.reason}`, mutating: true, approval: null,
             });
@@ -1985,7 +2572,34 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             impersonationApproval,
           });
           log.warn('gate', `approval required: ${call.name}${impersonationApproval?.elevated ? ' — ELEVATED (admin target)' : ''} — waiting for the user`);
-          const decision = await awaitApproval(state, approvalId, nonce);
+          const decision = await awaitApproval(state, approvalId, nonce, signal);
+          /*
+           * Phase 0 — SAFE POINT 6: cancelled while the card was waiting.
+           *
+           * Handled BEFORE the approved/rejected split, and that ordering is
+           * the whole point. `approval` stays null, so `executeTool` would
+           * refuse this call even if something later tried to run it; no
+           * `recordRejection` is written, because nobody rejected anything and
+           * a fabricated refusal would block a resubmission the user never
+           * declined; and the card is reported as cancelled rather than
+           * decided, so the transcript does not show a verdict no one gave.
+           */
+          if (decision.source === 'cancelled') {
+            const output = 'The turn was cancelled while this operation was waiting for approval. '
+              + 'It was never authorised and never executed.';
+            log.warn('gate', `${call.name} CANCELLED at the gate — never authorised, never executed`);
+            results.push({ id: call.id, name: call.name, output, isError: true });
+            recordToolEvent(sessionId, {
+              taskId,
+              kind: 'tool_call', name: call.name, payload: call.input, result: output,
+              resultStatus: 'cancelled', mutating: true, approval: null,
+            });
+            emit({ type: 'approval_cancelled', approvalId, name: call.name, at: decision.at });
+            emit({ type: 'tool_result', id: call.id, name: call.name, output, isError: true });
+            cancelledDuringCalls = true;
+            cancelPhase = 'awaiting-approval';
+            break;
+          }
           approval = decision.approved ? 'approved' : 'rejected';
           approvedSource = decision.source;
           approvedAt = decision.at;
@@ -2009,6 +2623,7 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
             }
             results.push({ id: call.id, name: call.name, output, isError: true });
             recordToolEvent(sessionId, {
+              taskId,
               kind: 'tool_call', name: call.name, payload: call.input, result: output,
               resultStatus: 'rejected', mutating: true, approval,
               approvedSource, approvedAt,
@@ -2040,6 +2655,20 @@ export async function runTurn(sessionId, userText, emit, { retry = false } = {})
          * tool without the hook skips both and is reported as self-verifying.
          */
         const beforeRecord = await snapshotBefore(guardDescriptor);
+
+        /*
+         * Phase 0 — THE UNINTERRUPTIBLE SPAN STARTS HERE.
+         *
+         * From this line until the `finally` below, the call is executing and
+         * its consequences are being recorded: the write itself, the read-back
+         * verification, the tool event, the mutation ledger row, the
+         * impersonation provenance and the transport sweep. The signal is
+         * deliberately not consulted anywhere inside it. A cancellation that
+         * arrives now is remembered by the abort listener and acted on at the
+         * next boundary, which is what keeps the ledger internally consistent:
+         * every executed mutation has its verification and its capture.
+         */
+        activeTool = call.name;
 
         try {
           const raw = await executeTool(tool, call.input || {}, approval, {
@@ -2079,6 +2708,7 @@ ${JSON.stringify(planWarning.note, null, 1)}`;
           // The result is the audit trail's payload, not a nicety: the sys_id
           // of whatever was just created exists here and nowhere else.
           recordToolEvent(sessionId, {
+            taskId,
             kind: 'tool_call', name: call.name, payload: call.input, result: output,
             resultStatus: verification && verification.status !== 'applied' && verification.status !== 'self-verified'
               ? verification.status
@@ -2221,15 +2851,58 @@ ${JSON.stringify({ businessRuleAbort: playbook }, null, 1)}` : '');
           log.error('tool', `${call.name} failed  ${ms(toolStart)} — ${err.message}`, err.detail || err);
           results.push({ id: call.id, name: call.name, output, isError: true });
           recordToolEvent(sessionId, {
+            taskId,
             kind: 'tool_call', name: call.name, payload: call.input, result: output,
             resultStatus: 'error', mutating: tool.mutating, approval, approvedSource, approvedAt,
           });
           emit({ type: 'tool_result', id: call.id, name: call.name, output, isError: true });
+        } finally {
+          // Phase 0 — the uninterruptible span ends. Whatever happened, this
+          // call is no longer in flight, so a cancellation arriving after it is
+          // recorded as a boundary stop rather than as an interrupted tool.
+          activeTool = null;
         }
       }
       // Only when something ran: an empty `tool` row is a slot the model has to
       // account for and a shape the wire format has no use for.
       if (results.length) appendMessage(sessionId, { role: 'tool', results });
+
+      /*
+       * Phase 0 — the tool loop stopped early because the turn was cancelled.
+       *
+       * Every call that RAN has a result, and the row above pairs them. The
+       * calls that did NOT run must come out of the stored assistant row for
+       * the same reason as safe point 4: an unanswered `tool_call` is the shape
+       * the wire format rejects, and leaving one behind would break the next
+       * request in this session rather than this one.
+       *
+       * Membership is decided by what is in `results`, not by counting, so it
+       * stays correct however a call left the loop — executed, blocked,
+       * refused, rejected or cancelled at the gate.
+       */
+      if (cancelledDuringCalls) {
+        const ranIds = new Set(results.map((r) => r.id));
+        const unrun = callsToRun.filter((c) => !ranIds.has(c.id));
+        if (unrun.length) {
+          rewriteMessage(sessionId, assistantSeq, {
+            role: 'assistant', text: assistantText, toolCalls: callsToRun.filter((c) => ranIds.has(c.id)),
+          });
+          const discarded = unrun.map((c) => c.name);
+          log.warn('gate', `discarded ${discarded.length} tool call(s) unrun — the turn was cancelled mid-sequence`);
+          try {
+            recordToolEvent(sessionId, {
+              taskId,
+              kind: 'guard', name: 'cancelled_before_tools',
+              payload: { discarded, calls: unrun, iteration: i, ran: results.length },
+              result: `The turn was cancelled after ${results.length} call(s); the rest were never started.`,
+              resultStatus: 'cancelled', mutating: false, approval: null,
+            });
+          } catch (err) { log.warn('agent', `could not record the discarded calls: ${err.message}`); }
+          emit({ type: 'calls_discarded', reason: 'cancelled', discarded });
+        }
+        await finishCancelled({ phase: cancelPhase || 'between-tool-calls', iteration: i });
+        return;
+      }
 
       if (endTurnAfterCalls) {
         // WI-3 — the question was already emitted as assistant_text. Nothing is
@@ -2276,6 +2949,11 @@ ${JSON.stringify({ businessRuleAbort: playbook }, null, 1)}` : '');
     // session's rows look contested, and the guard would stop capturing
     // anything at all.
     closeCaptureWindow(sessionId);
-    if (state.emit === emit) state.emit = null;
+    if (state.emit === emit) { state.emit = null; state.taskId = null; }
+    // Phase 0 — the listener dies with the turn it belongs to. A signal can
+    // outlive one execution (a caller could hold it), and a listener left
+    // attached would keep this turn's closure — and its whole history — alive
+    // for as long as the controller existed.
+    signal?.removeEventListener('abort', onAbort);
   }
 }

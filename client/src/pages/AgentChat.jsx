@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, sse } from '../api.js';
+import { logToServer } from '../logging.js';
 import { useHealth } from '../hooks/useHealth.js';
 import Markdown from '../components/Markdown.jsx';
 import { confirmDestructive, promptFor, CONSEQUENCE } from '../components/confirm.js';
@@ -8,8 +9,20 @@ import { toast } from '../components/toast.js';
 import { SkeletonLines, LoadingRegion, EmptyState, DisconnectedBanner } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import ImpersonationChip from '../components/ImpersonationChip.jsx';
+import DiagnosisPanel from '../components/DiagnosisPanel.jsx';
+import LintPanel from '../components/LintPanel.jsx';
+import TestPanel from '../components/TestPanel.jsx';
+import ChangePanel from '../components/ChangePanel.jsx';
+import KnowledgePanel, { KnowledgeAside } from '../components/KnowledgePanel.jsx';
+import AppBuildPanel from '../components/AppBuildPanel.jsx';
 import { writeOutcome, captureReason, approvalProvenance } from '../components/writeOutcome.js';
 import { elevationOutcome } from '../components/elevationOutcome.js';
+import EvidencePanel from '../components/EvidencePanel.jsx';
+import ActivityPanel from '../components/ActivityPanel.jsx';
+import PlanPanel from '../components/PlanPanel.jsx';
+import SkillsPanel from '../components/SkillsPanel.jsx';
+import TaskHistory from '../components/TaskHistory.jsx';
+import { rowFromFrame, mergeRows, deriveStatus, STATUS_LABEL, AGENT_STATUS } from '../components/activity.js';
 
 const SAMPLES = [
   'Create a "Laptop Request" catalog item with 6 sensible variables including a reference to sys_user and a model select box',
@@ -74,9 +87,21 @@ export default function AgentChat() {
   const [capture, setCapture] = useState(true);
 
   const [sessions, setSessions] = useState(null);   // null = not loaded yet
+  /*
+   * A `?session=` in the URL is how the Meetings page hands a build over. It
+   * WINS over the remembered session — arriving from a meeting and landing in
+   * yesterday's unrelated chat would be the worst possible outcome of pressing
+   * "Build with the agent".
+   */
+  const [params, setParams] = useSearchParams();
   const [sessionId, setSessionId] = useState(
-    () => localStorage.getItem(SESSION_KEY) || localStorage.getItem(LEGACY_SESSION_KEY) || crypto.randomUUID()
+    () => params.get('session')
+      || localStorage.getItem(SESSION_KEY)
+      || localStorage.getItem(LEGACY_SESSION_KEY)
+      || crypto.randomUUID()
   );
+  // Set when this chat came from a meeting. Drives the banner and the rail mark.
+  const [origin, setOrigin] = useState(null);
   const [loadingSession, setLoadingSession] = useState(false);
   const [digestCount, setDigestCount] = useState(0);
   // The three measured budget numbers for this session, streamed at meta time.
@@ -87,10 +112,198 @@ export default function AgentChat() {
 
   const { connected } = useHealth();
   const msgsRef = useRef(null);
+  /*
+   * Phase 0 — the running turn's controller, and nothing else.
+   *
+   * A ref rather than state: aborting must not re-render, and the handler that
+   * reads it must see the CURRENT turn's controller rather than the one that
+   * was current when the closure was made. Replaced on every send and cleared
+   * when the turn settles, so Stop can never abort a turn that already ended.
+   */
+  const turnAbort = useRef(null);
+  // Whether Stop has been pressed for the turn in flight. Drives the button's
+  // own state, so a second click cannot fire a second abort.
+  const [stopping, setStopping] = useState(false);
+  /*
+   * PHASE 8 — the durable evidence for the turn that just ran.
+   *
+   * `taskId` arrives on the `task_started` frame; the panel then reads the
+   * EXISTING `GET /api/agent/plan/:taskId/evidence`. Nothing is accumulated
+   * here — this is a pointer to the server's record, not a copy of it.
+   */
+  const [taskId, setTaskId] = useState(null);
+  const [showEvidence, setShowEvidence] = useState(false);
+
+  /*
+   * EXPERIENCE §6 — THE ACTIVITY TIMELINE FOR THE TASK ON SCREEN.
+   *
+   * Rows, not frames. Every entry came from a frame the backend emitted or a
+   * row it stored, mapped by `components/activity.js`; there is nothing here
+   * this component advances on its own, which is what §66 asks for.
+   *
+   * ONE SOURCE AT A TIME. While a turn streams these are built from the stream;
+   * on refresh or when a past task is opened they are REPLACED wholesale by the
+   * server's durable projection. There is no merge of the two, so §11's
+   * duplicate has nowhere to come from.
+   */
+  const [activity, setActivity] = useState([]);
+  const [activeSkills, setActiveSkills] = useState([]);
+  const [progress, setProgress] = useState(null);
+  const [serverStatus, setServerStatus] = useState(null);
+  const [rail, setRail] = useState('chats');       // chats | tasks | skills
+  /*
+   * The task the frames arriving RIGHT NOW belong to, as a ref.
+   *
+   * A ref because `observe` runs inside an SSE callback that outlives the
+   * render which created it: reading `taskId` from state there would see
+   * whatever it was when the turn started, and every row would be keyed to a
+   * stale task. `seq` is the same story — a monotone counter over this stream,
+   * which is what orders rows that arrive in the same millisecond.
+   */
+  const liveTask = useRef(null);
+  const seqRef = useRef(0);
+  /*
+   * The rows, readable from a callback that outlives the render which made it.
+   * Used only by the §76 diagnostic below — reading `activity` there would
+   * report whatever it held when the turn STARTED, which is always zero.
+   */
+  const activityRef = useRef([]);
+
+  /**
+   * One frame -> at most one timeline row (§7, §8).
+   *
+   * Called for EVERY frame of EVERY stream this page opens, which is why it is
+   * wrapped around `sse` below rather than repeated in six handlers: a route
+   * whose frames were not observed would show an empty timeline for work that
+   * really happened, and that is exactly the class of bug §8 is about.
+   */
+  const observe = useCallback((evt) => {
+    /*
+     * Learned HERE rather than in each of the seven stream handlers.
+     *
+     * Every route emits `task_started`, and before this the knowledge route
+     * dropped it on the floor — so a `/knowledge` turn produced real durable
+     * evidence that the workspace had no id for and could not offer. Reading it
+     * at the one point every frame passes through makes that impossible to
+     * forget for the next route as well.
+     */
+    if (evt?.type === 'task_started') {
+      liveTask.current = evt.taskId;
+      setTaskId(evt.taskId);
+    }
+    if (evt?.type === 'skills_active') { setActiveSkills(evt.skills || []); return; }
+    seqRef.current += 1;
+    const row = rowFromFrame(evt, { taskId: liveTask.current, seq: seqRef.current });
+    if (row) {
+      setActivity((rows) => {
+        const next = mergeRows(rows, row);
+        activityRef.current = next;
+        return next;
+      });
+    }
+  }, []);
+
+  /**
+   * Wrap `sse` so the timeline sees every frame exactly once.
+   *
+   * `observe` runs BEFORE the caller's handler for the same reason the server's
+   * `emit` projects before it writes: the record must not depend on what the
+   * consumer does with the frame.
+   */
+  const streamed = useCallback(
+    (path, body, onEvent, method = 'POST', opts = {}) => sse(path, body, (evt) => {
+      observe(evt);
+      onEvent(evt);
+    }, method, opts),
+    [observe],
+  );
+
+  /**
+   * EXPERIENCE §10/§51/§58 — load a task's DURABLE timeline and show that instead.
+   *
+   * The replacement is the point. `activityForTask` is projected from the
+   * tables, so it is complete and its ids are the durable ones; appending it to
+   * whatever the stream had produced would put two identities for one event in
+   * one list. Replacing cannot.
+   *
+   * READ-ONLY on both sides: this is a GET, and the route it calls performs no
+   * mutation — so §52's "do not re-execute anything" holds because there is
+   * nothing here that could.
+   */
+  const openTask = useCallback(async (id) => {
+    if (!id) return;
+    const t0 = performance.now();
+    try {
+      const a = await api.get(`/agent/plan/${id}/activity`);
+      /*
+       * §76 — OBSERVABILITY, and what it is allowed to contain.
+       *
+       * Counts and durations. Not the goal, not a tool argument, not a row: the
+       * numbers say whether the workspace is keeping up, and nothing in them
+       * could be a credential. `logToServer` puts it in the server terminal
+       * beside the request that produced it.
+       */
+      logToServer('debug',
+        `activity: task ${id.slice(0, 8)} — ${a.events?.length ?? 0} event(s), `
+        + `${a.progress?.total ?? 0} step(s), cursor ${a.cursor}, loaded in ${Math.round(performance.now() - t0)}ms`);
+      setTaskId(id);
+      setActivity(a.events || []);
+      activityRef.current = a.events || [];
+      setProgress(a.progress || null);
+      setServerStatus(a.status || null);
+      setActiveSkills(a.skills || []);
+      seqRef.current = a.cursor || 0;
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(SESSION_KEY, sessionId);
     localStorage.removeItem(LEGACY_SESSION_KEY);
+  }, [sessionId]);
+
+  /*
+   * `?session=` is a ONE-SHOT instruction from the Meetings page, and it is
+   * consumed here rather than left in the URL.
+   *
+   * Leaving it there meant this effect fired again every time the rail changed
+   * the session, snapping the user straight back to the meeting's chat — you
+   * could not click another conversation at all. Clearing it also keeps the
+   * address bar honest: it said "session=X" while you were reading Y.
+   */
+  useEffect(() => {
+    const wanted = params.get('session');
+    if (!wanted) return;
+    if (wanted !== sessionId && !running) setSessionId(wanted);
+    const next = new URLSearchParams(params);
+    next.delete('session');
+    setParams(next, { replace: true });
+  }, [params, sessionId, running, setParams]);
+
+  /*
+   * WHERE THIS CHAT CAME FROM, and — when it came from a meeting and has not
+   * been used yet — the brief, dropped into the composer.
+   *
+   * The brief is FETCHED rather than carried through navigation, so a refresh
+   * does not lose it, and it is placed rather than sent: a transcript is a
+   * lossy record of what people meant, and this is the last free moment to
+   * correct one.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    setOrigin(null);
+    api.get(`/agent/sessions/${sessionId}`).then(async (row) => {
+      if (cancelled || row?.source !== 'meeting') return;
+      setOrigin({ kind: 'meeting', ref: row.source_ref, label: row.source_label });
+      const untouched = !row.messageCount;
+      if (!untouched) return;
+      try {
+        const brief = await api.get(`/meetings/${row.source_ref}/brief`);
+        if (!cancelled) setInput((cur) => cur || brief.text);
+      } catch { /* the meeting may have been discarded; the chat still stands */ }
+    }).catch(() => { /* a brand-new session has no row yet */ });
+    return () => { cancelled = true; };
   }, [sessionId]);
 
   const refreshSessions = useCallback(async () => {
@@ -121,8 +334,35 @@ export default function AgentChat() {
     api.get(`/transport/capture/${sessionId}`)
       .then((c) => { if (alive) setCapture(c.enabled); })
       .catch(() => { /* the server's default is ON, and so is ours */ });
+    /*
+     * EXPERIENCE §58 — REFRESH MUST NOT LOSE THE TASK.
+     *
+     * The transcript already survives a reload (it is read from the database
+     * above); the task did not, because its id only ever existed in this
+     * component's state. So the newest task for this chat is looked up and its
+     * durable timeline loaded — which makes a refresh mid-turn show what the
+     * agent has done rather than an empty panel beside a full transcript.
+     *
+     * The timeline is cleared FIRST. Switching chats must not leave the
+     * previous chat's activity on screen for the moment it takes to fetch, and
+     * a chat with no tasks must show nothing rather than the last one's rows.
+     */
+    setActivity([]);
+    activityRef.current = [];
+    setProgress(null);
+    setServerStatus(null);
+    setActiveSkills([]);
+    setTaskId(null);
+    liveTask.current = null;
+    seqRef.current = 0;
+    api.get(`/agent/plan/history/${sessionId}`)
+      .then((h) => {
+        const newest = h.tasks?.[0];
+        if (alive && newest) openTask(newest.task_id);
+      })
+      .catch(() => { /* no history is a fine answer; the panel simply stays empty */ });
     return () => { alive = false; };
-  }, [sessionId]);
+  }, [sessionId, openTask]);
 
   /**
    * Keep the transcript pinned to the newest turn — by scrolling the message
@@ -165,16 +405,393 @@ export default function AgentChat() {
     catch (e) { setCapture(!on); toast.error(e.message); }
   };
 
+  /*
+   * Phase 0 — Stop.
+   *
+   * Aborting the fetch is the whole mechanism: it closes the SSE response, the
+   * server sees the disconnect and stops its turn at the next safe boundary.
+   * There is no cancel request to send, no polling, and no second execution
+   * path — the stream that started the turn is the one that stops it.
+   *
+   * What this does NOT do is stop work already in flight on the instance. A
+   * tool that has started finishes and is recorded, so the wording is "finishing
+   * the current step" rather than a promise this cannot keep.
+   */
+  const stop = () => {
+    if (!running || !turnAbort.current) return;
+    setStopping(true);
+    /*
+     * EXPERIENCE §15 — cancellation REQUESTED, and what that does not mean.
+     *
+     * The wording is deliberate. A mutation already inside its boundary
+     * completes; nothing is rolled back and nothing is undone. Saying "stopped"
+     * would claim an outcome the backend has not reached yet, and implying a
+     * rollback would claim one it never performs.
+     */
+    push({
+      kind: 'system',
+      text: 'Cancellation requested. The current operation completes safely and is recorded — '
+        + 'nothing already written is rolled back.',
+    });
+    turnAbort.current.abort();
+  };
+
   const send = async (text, { retry = false } = {}) => {
     const message = (text ?? input).trim();
     if (!message || running) return;
     if (!retry) setInput('');
     setRunning(true);
+    setStopping(false);
+    /*
+     * EXPERIENCE §6 — a new turn is a new task, so it gets a new timeline.
+     *
+     * Cleared rather than appended to: the panel shows what THIS task is doing,
+     * and carrying the previous task's rows forward would make the counts in
+     * the header describe two runs at once. The previous task is not lost — it
+     * is durable, and the Tasks rail reopens it (§51).
+     */
+    setActivity([]);
+    activityRef.current = [];
+    setProgress(null);
+    setServerStatus(null);
+    setActiveSkills([]);
+    liveTask.current = null;
+    seqRef.current = 0;
+    const controller = new AbortController();
+    turnAbort.current = controller;
     if (!retry) push({ kind: 'user', text: message });
+
+    /*
+     * PHASE 14 — `/diagnose <question>` runs the Doctor instead of an ordinary
+     * turn.
+     *
+     * EXPLICIT RATHER THAN INFERRED. Sniffing "does this look like a
+     * diagnostic question?" would sometimes route a request that wanted work
+     * done into a read-only investigation, and sometimes the reverse — and the
+     * second mistake is the one that matters, because the user would be told
+     * something was investigated when they asked for it to be fixed. A command
+     * cannot be misread.
+     */
+    /*
+     * PHASE 16 — `/lint <flow>` runs NowLint, on the same explicit-command
+     * principle as `/diagnose`. Sniffing "does this look like a lint request?"
+     * would sometimes route a request that wanted work done into an analysis
+     * pass, and the reverse; a command cannot be misread.
+     */
+    /*
+     * PHASE 19 — `/knowledge <question>` asks everything this build knows, and
+     * adjudicates where the sources disagree. Explicit, like every domain
+     * command before it: retrieval already reaches every ordinary turn's
+     * prompt, and what this adds is the ADJUDICATION, which a person should ask
+     * for rather than have inferred from their phrasing.
+     *
+     * `knowledge_complete` is the terminal frame. There is no approval frame on
+     * this route — the domain has no write path — so none is handled.
+     */
+    /*
+     * PHASE 20 — `/build <request>` designs an application and, where this
+     * environment can author every component, builds it through the ordinary
+     * plan and the ordinary approval card.
+     *
+     * The approval frame IS handled here, unlike the read-only domain routes:
+     * a build is a mutation, and it goes through the same gate every other
+     * mutation does. `appbuild_complete` is the terminal frame.
+     */
+    if (/^\/build\s+/i.test(message)) {
+      try {
+        await streamed('/agent/plan/build',
+          { sessionId, message: message.replace(/^\/build\s+/i, '') },
+          (evt) => {
+            switch (evt.type) {
+              case 'task_started': setTaskId(evt.taskId); break;
+              case 'appbuild_requirements':
+                push({ kind: 'system', text: `Requirements read: ${evt.name}` });
+                break;
+              case 'appbuild_discovered':
+                push({ kind: 'system', text: `Discovered ${JSON.stringify(evt.counts)}${evt.complete ? '' : ' (some surfaces unreadable)'}` });
+                break;
+              case 'appbuild_capability':
+                push({ kind: 'system', text: evt.executable
+                  ? 'Every component is supported here.'
+                  : `${evt.blocked} component(s) cannot be built here — nothing will be written.` });
+                break;
+              case 'approval_required':
+                setApproval({ approvalId: evt.approvalId, nonce: evt.nonce, name: evt.name, input: evt.input, plan: evt.plan, warning: evt.warning });
+                break;
+              case 'approval_resolved':
+                setApproval(null);
+                break;
+              case 'appbuild_decided': break;
+              case 'appbuild_complete':
+                settled = true;
+                if (evt.build) push({ kind: 'appbuild', build: evt.build });
+                break;
+              case 'plan_failed':
+                settled = true;
+                push({ kind: 'error', text: evt.note ?? 'The build could not be completed.' });
+                break;
+              default: break;
+            }
+          });
+      } catch (e) {
+        push({ kind: 'error', text: e.message || 'The build could not be completed.' });
+      }
+      return;
+    }
+    if (/^\/knowledge\s+/i.test(message) || /^\/know\s+/i.test(message)) {
+      try {
+        await streamed('/agent/plan/knowledge',
+          { sessionId, message: message.replace(/^\/(knowledge|know)\s+/i, '') },
+          (evt) => {
+            if (evt.type === 'task_started') return;
+            if (evt.type === 'knowledge_answered') return;
+            if (evt.type === 'knowledge_complete') { push({ kind: 'knowledge', knowledge: evt.knowledge }); return; }
+            if (evt.type === 'plan_failed') {
+              push({ kind: 'error', text: evt.note ?? 'The question could not be answered.' });
+            }
+          });
+      } catch (e) {
+        push({ kind: 'error', text: e.message || 'The question could not be answered.' });
+      }
+      return;
+    }
+
+    if (/^\/lint\s+/i.test(message)) {
+      try {
+        await streamed('/agent/plan/lint',
+          { sessionId, message: message.replace(/^\/lint\s+/i, '') },
+          (evt) => {
+            if (evt.type === 'task_started') { setTaskId(evt.taskId); return; }
+            if (evt.type === 'lint_complete') { push({ kind: 'lint', lint: evt.lint, knowledge: evt.knowledge }); return; }
+            if (evt.type === 'plan_failed') {
+              push({ kind: 'error', text: evt.note ?? 'The lint could not be completed.' });
+            }
+          }, 'POST', { signal: controller.signal });
+      } catch (e) {
+        push({ kind: 'error', text: e.message || 'The lint could not be completed.' });
+      } finally {
+        setRunning(false);
+        turnAbort.current = null;
+      }
+      return;
+    }
+
+    /*
+     * PHASE 17 — `/test <flow>` runs NowTest, on the same explicit-command
+     * principle as `/diagnose` and `/lint`, and for a sharper reason than
+     * either: this is the only one of the three that WRITES. A sniffed
+     * "does this look like a test request?" would occasionally create a real
+     * record on a real instance because a sentence happened to contain the word
+     * "test". A command cannot be misread.
+     *
+     * The approval that authorises that write goes through the EXISTING plan
+     * approval card below — the same `approval_required` frame, the same nonce,
+     * the same `decide()`, the same `POST /api/agent/approve` the server is
+     * already waiting on. There is deliberately no second approval control: a
+     * gate that exists twice is a gate that can be bypassed once.
+     */
+    if (/^\/test\s+/i.test(message)) {
+      /*
+       * `settled` exists because a domain-terminal frame and a STREAM-terminal
+       * frame are not the same thing. `/plan/test` ends on `test_complete` or
+       * `plan_failed` and then closes, without the `done` frame `sse()` looks
+       * for, so a run that finished perfectly still surfaces as a truncated
+       * stream in the catch below. Reporting "the connection ended before this
+       * finished" underneath a completed verdict would be the renderer telling
+       * a person the opposite of what happened. A genuinely truncated stream —
+       * one that stops before either terminal frame — is still reported loudly.
+       */
+      let settled = false;
+      try {
+        await streamed('/agent/plan/test',
+          { sessionId, message: message.replace(/^\/test\s+/i, '') },
+          (evt) => {
+            switch (evt.type) {
+              case 'task_started': setTaskId(evt.taskId); break;
+              // §8 — which flow this is about, named before anything is created.
+              case 'test_flow_identified':
+                push({ kind: 'system', text: `Testing "${evt.flow?.name ?? 'flow'}" — ${evt.flow?.sys_id ?? ''}` });
+                break;
+              // §13 — how much of what the flow promises this run will actually
+              // check, said BEFORE the approval rather than discovered in the
+              // verdict. A person approving a write deserves to know in advance
+              // that the answer may be INCONCLUSIVE.
+              case 'test_contract':
+                if (evt.coverage?.note) push({ kind: 'system', text: evt.coverage.note });
+                break;
+              case 'test_plan_ready':
+                push({
+                  kind: 'system',
+                  text: `Test plan ready — ${evt.review?.steps?.length ?? 0} step(s), `
+                    + `${evt.review?.plannedChanges?.length ?? 0} change(s) on the instance.`,
+                });
+                break;
+              // The existing approval card, unchanged. `warning` carries what
+              // this particular approval authorises — a disposable record, or a
+              // leftover one being cleaned up.
+              case 'approval_required':
+                push({
+                  kind: 'approval', approvalId: evt.approvalId, name: evt.name, input: evt.input,
+                  decided: null, warning: evt.warning || null, nonce: evt.nonce || null,
+                });
+                break;
+              case 'approval_resolved':
+                patchMsg((m) => m.kind === 'approval' && m.approvalId === evt.approvalId, {
+                  decided: evt.approved, source: evt.source || null, at: evt.at || null,
+                  sending: null, failed: null,
+                });
+                break;
+              case 'test_started':
+                push({
+                  kind: 'system',
+                  text: `Creating a disposable ${evt.fixture?.table ?? 'record'} and waiting for the flow to run.`,
+                });
+                break;
+              // §36 — cleanup is never silent, including while it is happening.
+              case 'test_cleanup_started':
+                push({ kind: 'system', text: `Removing the test record ${evt.table} ${evt.sys_id}.` });
+                break;
+              /*
+               * The verdict is decided, and the stream is not over: cleanup can
+               * still be running. This is a progress line, and it is a DIFFERENT
+               * frame from the terminal one below precisely so that exactly one
+               * terminal frame ever arrives.
+               */
+              case 'test_decided':
+                push({ kind: 'system', text: `Result: ${evt.status}. Finishing up.` });
+                break;
+              case 'test_complete':
+                settled = true;
+                if (evt.test) push({ kind: 'test', test: evt.test, knowledge: evt.knowledge });
+                break;
+              case 'plan_failed':
+                settled = true;
+                push({ kind: 'error', text: evt.note ?? 'The test could not be completed.' });
+                break;
+              default: break;
+            }
+          }, 'POST', { signal: controller.signal });
+      } catch (e) {
+        if (!settled) push({ kind: 'error', text: e.message || 'The test could not be completed.' });
+      } finally {
+        setRunning(false);
+        turnAbort.current = null;
+      }
+      return;
+    }
+
+    /*
+     * PHASE 18 — `/change <flow>` compares a flow with an earlier state of
+     * itself, on the same explicit-command principle as the three above.
+     *
+     * It is the one of the four that CANNOT write. There is no approval frame
+     * on this route and none is handled here, and that absence is deliberate
+     * rather than an omission: `/api/agent/plan/change` has no executor, no
+     * tool and no client in its path, so there is nothing for an approval to
+     * authorise. Adding a card here would invent a gate in front of a door that
+     * does not exist, and teach people that a comparison is a thing that
+     * sometimes changes the instance.
+     *
+     * Deploying what the comparison found is a SEPARATE journey: the panel's
+     * [Prepare Change] hands its goal to the ordinary `send()` below, which is
+     * the ordinary planner with the ordinary review and the ordinary approval
+     * card. One gate, in the place it already was.
+     */
+    if (/^\/change\s+/i.test(message)) {
+      /*
+       * `change_complete` is the terminal frame and the only one that
+       * carries the comparison. The domain says `change_decided` when the
+       * verdict is known; the route says `change_complete` when the stream
+       * is over. One terminal frame, as everywhere else in this build.
+       */
+      let settled = false;
+      try {
+        await streamed('/agent/plan/change',
+          { sessionId, message: message.replace(/^\/change\s+/i, '') },
+          (evt) => {
+            switch (evt.type) {
+              case 'task_started': setTaskId(evt.taskId); break;
+              // §8 — which flow this is about, named before either state is read.
+              case 'change_artifact_identified':
+                push({
+                  kind: 'system',
+                  text: `Comparing "${evt.flow?.name ?? 'flow'}" — ${evt.flow?.sys_id ?? ''}`,
+                });
+                break;
+              // §4 — WHERE the two states came from, said while they are being
+              // read rather than discovered in the result. A baseline whose
+              // source a person only learns at the end is one they cannot
+              // object to in time.
+              case 'change_states_read':
+                push({
+                  kind: 'system',
+                  text: `Read ${evt.baseline?.source ?? 'baseline'} and ${evt.current?.source ?? 'current'}.`,
+                });
+                break;
+              // §35 — capturing a baseline happens INSTEAD of a comparison, so
+              // it gets its own line rather than being folded into one.
+              case 'change_baseline_captured':
+                push({ kind: 'system', text: `Baseline captured — ${evt.hash ?? ''}` });
+                break;
+              /*
+               * The comparison is decided and the stream is not over. A
+               * DIFFERENT frame from the terminal one below, precisely so that
+               * exactly one terminal frame ever arrives.
+               */
+              case 'change_decided':
+                push({ kind: 'system', text: `${evt.changes ?? 0} change(s), risk ${evt.risk ?? 'UNKNOWN'}.` });
+                break;
+              case 'change_complete':
+                settled = true;
+                if (evt.change) push({ kind: 'change', change: evt.change, knowledge: evt.knowledge });
+                break;
+              case 'plan_failed':
+                settled = true;
+                push({ kind: 'error', text: evt.note ?? 'The comparison could not be completed.' });
+                break;
+              default: break;
+            }
+          }, 'POST', { signal: controller.signal });
+      } catch (e) {
+        if (!settled) push({ kind: 'error', text: e.message || 'The comparison could not be completed.' });
+      } finally {
+        setRunning(false);
+        turnAbort.current = null;
+      }
+      return;
+    }
+
+    const diagnostic = /^\/diagnose\s+/i.test(message);
+    if (diagnostic) {
+      try {
+        await streamed('/agent/plan/diagnose',
+          { sessionId, message: message.replace(/^\/diagnose\s+/i, '') },
+          (evt) => {
+            if (evt.type === 'task_started') { setTaskId(evt.taskId); return; }
+            if (evt.type === 'diagnosis_complete') {
+              push({ kind: 'diagnosis', diagnosis: evt.diagnosis, knowledge: evt.knowledge });
+              return;
+            }
+            if (evt.type === 'plan_failed') {
+              push({ kind: 'error', text: evt.note ?? 'The diagnosis could not be completed.' });
+            }
+          }, 'POST', { signal: controller.signal });
+      } catch (e) {
+        push({ kind: 'error', text: e.message || 'The diagnosis could not be completed.' });
+      } finally {
+        setRunning(false);
+        turnAbort.current = null;
+      }
+      return;
+    }
+
     try {
-      await sse('/agent/chat', { sessionId, message, retry }, (evt) => {
+      await streamed('/agent/chat', { sessionId, message, retry }, (evt) => {
         switch (evt.type) {
           case 'meta': setMeta(evt); break;
+          // PHASE 8 — which durable task this turn is. Additive: a client that
+          // ignored this frame would behave exactly as it did before.
+          case 'task_started': setTaskId(evt.taskId); break;
           // The three measured numbers, for the digest badge's tooltip.
           case 'budget': setBudget(evt); break;
           // Same rule as hydrate(): only real content becomes a bubble.
@@ -269,14 +886,90 @@ export default function AgentChat() {
           // that is DATA says so — silence would read as a capture failure.
           case 'capture': push({ kind: 'capture', ...evt }); break;
           case 'error': push({ kind: 'error', text: evt.message, retryable: evt.retryable, retryOf: message }); break;
+          /*
+           * Phase 0 — the third terminal state, and it is neither of the other
+           * two. Rendered distinctly so a stopped turn is never read as a
+           * failure (nothing went wrong) or as a completion (the work is not
+           * finished). The server's own count of completed mutations rides
+           * along, because "did anything land before it stopped" is the first
+           * question anyone asks — and the mutation report above already says
+           * exactly what did.
+           */
+          case 'cancelled':
+            push({ kind: 'cancelled', phase: evt.phase, mutations: evt.mutations || 0, tool: evt.tool || null });
+            break;
+          // Calls the model proposed that never ran, because the turn stopped
+          // first. Said out loud: silence would read as the model choosing not
+          // to act.
+          case 'calls_discarded':
+            if (evt.reason === 'cancelled' && evt.discarded?.length) {
+              push({
+                kind: 'system',
+                text: `Not started: ${evt.discarded.join(', ')} — the turn was stopped before ${evt.discarded.length === 1 ? 'it ran' : 'they ran'}.`,
+              });
+            }
+            break;
+          // An approval card that was still waiting when the turn stopped. It
+          // was never decided, and must not be painted as approved or rejected.
+          case 'approval_cancelled':
+            patchMsg((m) => m.kind === 'approval' && m.approvalId === evt.approvalId, {
+              decided: null, cancelled: true, sending: null, failed: null,
+            });
+            break;
           default: break;
         }
-      });
+      }, 'POST', { signal: controller.signal });
     } catch (e) {
-      push({ kind: 'error', text: e.message });
+      /*
+       * `e.cancelled` means WE aborted this fetch. The server is stopping its
+       * own turn as we speak and will report what it did on the Audit page, so
+       * this is a stopped turn rather than an error — and rendering it as one
+       * would put a red box in front of a user who pressed Stop deliberately.
+       *
+       * The bubble is only pushed if the server's own `cancelled` frame did not
+       * arrive first: aborting the fetch usually tears the stream down before
+       * that frame can be read, but not always, and two stop bubbles for one
+       * Stop is worse than none.
+       */
+      if (e.cancelled) {
+        setMessages((ms) => (ms.some((m) => m.kind === 'cancelled')
+          ? ms
+          : [...ms, { id: uid(), kind: 'cancelled', phase: 'client-abort', mutations: null, tool: null }]));
+      } else {
+        push({ kind: 'error', text: e.message });
+      }
     } finally {
       setRunning(false);
+      setStopping(false);
+      // The turn is over however it ended — a later Stop must not abort a
+      // controller whose turn has already settled.
+      if (turnAbort.current === controller) turnAbort.current = null;
       refreshSessions();
+      /*
+       * EXPERIENCE §8 — SETTLE THE TIMELINE FROM THE SERVER.
+       *
+       * The finished list is replaced by the durable projection, so what the
+       * workspace shows after a turn is exactly what it shows after a refresh
+       * and exactly what it shows when the task is reopened a week later. Three
+       * routes to one answer rather than three answers.
+       *
+       * It also supplies the status and the step counts, which the frame stream
+       * cannot give honestly: `progress` comes from the step rows, and a count
+       * derived from frames would be the client's estimate of the backend's
+       * state, which §26 rules out.
+       *
+       * Failure here is not the turn's failure. The live rows stay, and they
+       * were real; a projection that could not be fetched is a missing refinement,
+       * not a reason to blank what the user just watched.
+       */
+      /*
+       * §76 — how much the live stream produced, before the durable projection
+       * replaces it. A large gap between the two is the signal that a frame is
+       * being mapped to nothing, which is the failure this layer would
+       * otherwise hide from itself.
+       */
+      logToServer('debug', `activity: turn produced ${seqRef.current} frame(s) -> ${activityRef.current.length} row(s)`);
+      if (liveTask.current) openTask(liveTask.current).catch(() => {});
     }
   };
 
@@ -400,11 +1093,108 @@ export default function AgentChat() {
   };
 
   const railLoading = !searchHits && sessions === null;
-  const rail = searchHits ? searchHits.sessions : (sessions || []);
+  const chatRail = searchHits ? searchHits.sessions : (sessions || []);
+
+  /*
+   * EXPERIENCE §12/§13 — the one word the header shows.
+   *
+   * Derived, with a deterministic precedence, from what the backend has said —
+   * never from which frame happened to arrive last. While a turn streams that
+   * is the live rows; once it settles it is the server's own derivation over
+   * the durable rows, so the header and the timeline cannot disagree.
+   */
+  const status = deriveStatus({ running, stopping, rows: activity, serverStatus });
+  const statusLabel = STATUS_LABEL[status] ?? STATUS_LABEL[AGENT_STATUS.IDLE];
+  /*
+   * §16/§19 — the plan panel's inputs, split out of the one timeline.
+   *
+   * A CHAT TURN IS NOT A PLAN. Every task carries one durable step — Phase 1's
+   * "one turn, one task, one step" — so filtering on type alone put a one-line
+   * "Plan: 1 step · One agent turn" panel above every ordinary message. §68
+   * says the panels are contextual and the conversation stays primary, and a
+   * panel that appears every single time is neither.
+   *
+   * A durable row knows whether it belongs to a plan: `plan_step_id` is set by
+   * the plan store and null for a turn step. A LIVE row has no metadata at all,
+   * and only the plan executor emits step frames — so its mere existence is the
+   * evidence.
+   */
+  const planSteps = activity.filter((r) => {
+    if (r.type !== 'step' || r.id.includes(':dataflow:')) return false;
+    return r.metadata ? Boolean(r.metadata.plan_step_id) : true;
+  });
+  const dataflow = activity.filter((r) => r.id.includes(':dataflow:'));
 
   return (
     <div className="agent-layout">
       <aside className="session-rail">
+        {/*
+          * EXPERIENCE §4/§28 — three things live in this column, and only one at
+          * a time: the chats, this chat's tasks, and the skills.
+          *
+          * Tabs rather than three stacked sections, because all three are lists
+          * that want the whole column. §68 is the constraint that decides it —
+          * the conversation stays primary, so the rail must not grow until it
+          * competes with the transcript for attention.
+          */}
+        <div className="rail-tabs" role="tablist" aria-label="Workspace">
+          {[['chats', 'Chats'], ['tasks', 'Tasks'], ['skills', 'Skills']].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={rail === id}
+              className={`rail-tab${rail === id ? ' active' : ''}`}
+              onClick={() => setRail(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {rail === 'skills' && (
+          <div className="rail-pane">
+            {/*
+              * §45 — a skill toggled while a turn is running does NOT change
+              * that turn. The task recorded its skill set when it opened; this
+              * changes what the NEXT task sees. The control is disabled while a
+              * turn runs so the UI cannot suggest otherwise.
+              */}
+            <SkillsPanel disabled={running} />
+            {running && (
+              <p className="rail-note">
+                A turn is running. Skill changes apply to the next task — this one keeps the set it started with.
+              </p>
+            )}
+          </div>
+        )}
+
+        {rail === 'tasks' && (
+          <div className="rail-pane">
+            {/*
+              * Opening a past task REPLACES the timeline with that task's
+              * durable projection. Doing that mid-turn would leave the live
+              * stream appending this turn's rows onto another task's list —
+              * two id spaces in one panel, which is exactly the mixing §11
+              * exists to prevent. So the rows are inert while a turn runs, and
+              * the reason is on screen rather than left to be discovered.
+              */}
+            <TaskHistory
+              sessionId={sessionId}
+              currentTaskId={taskId}
+              onOpen={running ? null : openTask}
+              onContinue={running ? null : (prompt) => setInput(prompt)}
+            />
+            {running && (
+              <p className="rail-note">
+                A turn is running. Past tasks open once it finishes — their timelines would otherwise
+                mix with this one’s.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="rail-pane" hidden={rail !== 'chats'}>
         <div className="rail-head">
           <button className="btn primary sm" onClick={newChat} disabled={running}>New chat</button>
           <button
@@ -450,20 +1240,23 @@ export default function AgentChat() {
               <LoadingRegion label="Loading chats" />
             </div>
           )}
-          {!railLoading && rail.length === 0 && (
+          {!railLoading && chatRail.length === 0 && (
             <div className="rail-empty">
               {searchHits ? 'Nothing matched.' : 'No chats yet — say something below and this fills in.'}
             </div>
           )}
-          {rail.map((s) => (
+          {chatRail.map((s) => (
             <div
               key={s.id}
-              className={`rail-item${s.id === sessionId ? ' active' : ''}`}
+              className={`rail-item${s.id === sessionId ? ' active' : ''}${s.source === 'meeting' ? ' from-meeting-row' : ''}`}
               onClick={() => { if (!running) setSessionId(s.id); }}
               title={s.title || 'Untitled chat'}
             >
               <div className="rail-title">{s.title || 'Untitled chat'}</div>
               <div className="rail-meta">
+                {s.source === 'meeting' && (
+                  <span className="badge green" title={`From the meeting "${s.source_label || ''}"`}>meeting</span>
+                )}
                 <span className="mono">{new Date(s.updated).toLocaleDateString()}</span>
                 {s.message_count > 0 && <span>{s.message_count} msg</span>}
                 {s.mutation_count > 0 && <span className="badge amber">{s.mutation_count}</span>}
@@ -487,11 +1280,38 @@ export default function AgentChat() {
             </div>
           </div>
         )}
+        </div>
       </aside>
 
       <div className="chat-wrap">
+        {/* A chat that came from a meeting is not one somebody typed, and the
+            difference matters most at the moment you are about to approve a
+            write. Persistent rather than a toast, for exactly that reason — it
+            has to still be there ten minutes and forty tool calls later. */}
+        {origin?.kind === 'meeting' && (
+          <div className="from-meeting" style={{ marginBottom: 10 }}>
+            <span className="mark">● from meeting</span>
+            <span className="what">
+              Building what was agreed in <b>{origin.label || 'a recorded meeting'}</b>.
+              Requirements came from the transcript, not from me.
+            </span>
+            <Link className="btn ghost sm" to="/meetings">Open the meeting</Link>
+          </div>
+        )}
         <div className="spread" style={{ marginBottom: 10 }}>
           <div className="row">
+            {/*
+              * EXPERIENCE §12/§48/§49 — WHAT THE AGENT IS DOING, IN ONE WORD.
+              *
+              * The dot animates only while the agent is WORKING. A turn waiting
+              * for approval or for an answer is not working, and §48 is
+              * explicit that animating those is wrong — so `spin` comes from
+              * the status vocabulary rather than from `running`, and a waiting
+              * turn shows a still dot beside the name of who is being waited on.
+              */}
+            <span className={`ag-status ag-${statusLabel.tone}${statusLabel.spin ? ' ag-spin' : ''}`}>
+              <span aria-hidden="true">●</span> {statusLabel.text}
+            </span>
             {meta && <span className="badge blue">{meta.provider} · <span className="mono">{meta.model}</span></span>}
             {!meta && <span className="badge">provider set in Settings</span>}
             {digestCount > 0 && (
@@ -524,6 +1344,19 @@ export default function AgentChat() {
             {meta?.decoding?.reality && !/honoured\./.test(meta.decoding.reality) && (
               <span className="badge amber" title={meta.decoding.reality}>non-reproducible</span>
             )}
+            {/* PHASE 8 — the durable record for this turn, on demand. Off by
+                default: the evidence is for when you want to check, not a
+                permanent second transcript beside the conversation. */}
+            {taskId && (
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => setShowEvidence((v) => !v)}
+                title="What actually ran, what was verified, who approved it, and what is still uncertain."
+              >
+                {showEvidence ? 'Hide evidence' : 'Evidence'}
+              </button>
+            )}
           </div>
           <div className="row">
             <label
@@ -539,6 +1372,28 @@ export default function AgentChat() {
             </label>
           </div>
         </div>
+
+        {showEvidence && taskId && (
+          <EvidencePanel taskId={taskId} onClose={() => setShowEvidence(false)} />
+        )}
+
+        {/*
+          * EXPERIENCE §4/§68 — the panels are CONTEXTUAL and sit above the
+          * transcript; the conversation stays the primary interaction.
+          *
+          * Both render nothing when there is nothing real to show — no task, no
+          * events, no plan — rather than an empty frame implying work is
+          * pending. §66: absence of progress is shown as absence.
+          */}
+        <PlanPanel steps={planSteps} progress={progress} dataflow={dataflow} />
+        <ActivityPanel
+          rows={activity}
+          taskId={taskId}
+          running={running}
+          progress={progress}
+          skills={activeSkills}
+          onOpenEvidence={() => setShowEvidence(true)}
+        />
 
         {/* The agent itself runs disconnected — it just cannot do anything
             useful to an instance, so this is a banner rather than a gate. */}
@@ -588,6 +1443,34 @@ export default function AgentChat() {
             }
             if (m.kind === 'system') {
               return <div key={m.id} className="msg"><div className="system-note">{m.text}</div></div>;
+            }
+            /*
+             * Phase 0 — a STOPPED turn, which is neither of its neighbours.
+             *
+             * Not an error bubble: nothing went wrong and there is nothing to
+             * retry-because-it-failed. Not silence either: a turn that stopped
+             * halfway must say so, or it reads exactly like one that finished.
+             * The amber border is the same one the approval gate uses — this
+             * is a turn awaiting a person, not a broken one.
+             */
+            if (m.kind === 'cancelled') {
+              return (
+                <div key={m.id} className="msg">
+                  <div className="bubble" style={{ borderColor: 'var(--amber)' }}>
+                    <strong>Stopped.</strong>{' '}
+                    <span className="muted">
+                      {m.tool
+                        ? `${m.tool} was already running when you pressed Stop; it finished and was recorded. `
+                        : ''}
+                      {m.mutations === null
+                        ? 'The agent was told to stop and is winding down. Anything it completed is on the Audit page.'
+                        : m.mutations > 0
+                          ? `${m.mutations} change${m.mutations === 1 ? '' : 's'} had already been made and ${m.mutations === 1 ? 'is' : 'are'} listed above. Nothing further was started.`
+                          : 'Nothing was changed on the instance.'}
+                    </span>
+                  </div>
+                </div>
+              );
             }
             if (m.kind === 'error') {
               return (
@@ -671,6 +1554,77 @@ export default function AgentChat() {
                     <div className="tool-body">
                       <div style={{ fontSize: 12.5, color: 'var(--amber)', whiteSpace: 'pre-wrap' }}>{m.text}</div>
                     </div>
+                  </div>
+                </div>
+              );
+            }
+            if (m.kind === 'appbuild') {
+              return (
+                <div key={m.id} className="msg assistant">
+                  <AppBuildPanel build={m.build} />
+                </div>
+              );
+            }
+            if (m.kind === 'knowledge') {
+              return (
+                <div key={m.id} className="msg assistant">
+                  <KnowledgePanel knowledge={m.knowledge} />
+                </div>
+              );
+            }
+            if (m.kind === 'lint') {
+              return (
+                <div key={m.id} className="msg">
+                  <div className="bubble">
+                    <LintPanel lint={m.lint} />
+                    <KnowledgeAside panel={m.knowledge?.panel} />
+                  </div>
+                </div>
+              );
+            }
+            if (m.kind === 'test') {
+              return (
+                <div key={m.id} className="msg">
+                  <div className="bubble">
+                    {/* §40 — the Doctor handoff is a CONTINUATION, so it starts
+                        an ordinary `/diagnose` turn rather than a private one.
+                        The question it asks is visible in the transcript and
+                        answerable by the same command anyone could have typed,
+                        which is the difference between a handoff and a hidden
+                        second engine. */}
+                    <TestPanel test={m.test} onInvestigate={(request) => send(`/diagnose ${request}`)} />
+                    <KnowledgeAside panel={m.knowledge?.panel} />
+                  </div>
+                </div>
+              );
+            }
+            if (m.kind === 'change') {
+              return (
+                <div key={m.id} className="msg">
+                  <div className="bubble">
+                    {/* §32 — both handoffs are CONTINUATIONS, so each starts an
+                        ordinary turn rather than a private one. [Prepare
+                        Change] types the goal into the normal planner, which
+                        reviews it and waits for an approval; [Run NowTest]
+                        types the ordinary `/test` command. The panel itself
+                        cannot deploy or write anything, and neither of these
+                        gives it a way to. */}
+                    <ChangePanel
+                      change={m.change}
+                      onPrepare={(goal) => send(goal)}
+                      onRunTest={(request) => send(`/test ${request}`)}
+                    />
+                    <KnowledgeAside panel={m.knowledge?.panel} />
+                  </div>
+                </div>
+              );
+            }
+            if (m.kind === 'diagnosis') {
+              return (
+                <div key={m.id} className="msg">
+                  <div className="bubble">
+                    <DiagnosisPanel diagnosis={m.diagnosis} />
+                    <KnowledgeAside panel={m.knowledge?.panel} />
                   </div>
                 </div>
               );
@@ -838,7 +1792,24 @@ export default function AgentChat() {
                     </div>
                   )}
                   <pre>{JSON.stringify(m.input, null, 1)}</pre>
-                  {m.decided === null || m.decided === undefined ? (
+                  {/*
+                    * Phase 0 — the card was still waiting when the turn stopped.
+                    *
+                    * Checked FIRST, and it is deliberately not one of the two
+                    * verdicts: nobody approved and nobody rejected. Painting it
+                    * red would put a decision on screen that no person made,
+                    * which is the same dishonesty WI-4 removed from the green
+                    * badge. The buttons go, because there is no longer a turn
+                    * waiting for them.
+                    */}
+                  {m.cancelled ? (
+                    <>
+                      <span className="badge">not decided — the turn was stopped</span>
+                      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
+                        This was never authorised and never ran. Ask again if you still want it.
+                      </div>
+                    </>
+                  ) : m.decided === null || m.decided === undefined ? (
                     m.sending === true || m.sending === false ? (
                       <span className="badge">sending your {m.sending ? 'approval' : 'rejection'}…</span>
                     ) : (
@@ -872,9 +1843,24 @@ export default function AgentChat() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
           />
-          <button className="btn primary" onClick={() => send()} aria-busy={running} disabled={running || !input.trim()}>
-            {running ? 'Working…' : 'Send'}
-          </button>
+          {/* Phase 0 — Stop REPLACES Send while a turn is running, rather than
+              sitting beside a disabled button. The two are mutually exclusive
+              actions on the same turn, and one live control is easier to reach
+              in a hurry than a live one next to a dead one. */}
+          {running ? (
+            <button
+              className="btn danger"
+              onClick={stop}
+              disabled={stopping}
+              title="Stop at the next safe point. A step already running will finish and be recorded."
+            >
+              {stopping ? 'Stopping…' : 'Stop'}
+            </button>
+          ) : (
+            <button className="btn primary" onClick={() => send()} aria-busy={running} disabled={!input.trim()}>
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>

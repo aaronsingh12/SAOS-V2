@@ -59,6 +59,10 @@ export const DECODING_SENT = {
   // OpenRouter — which is why SEED_HONOURED leaves it unmeasured rather than
   // claiming anything on ~400 backends' behalf.
   openrouter: { temperature: true, seed: true },
+  // Same adapter, same body, so the same two parameters go out. Whether the
+  // gateway behind an OpenCode-compatible endpoint reads either of them is a
+  // property of that gateway, and SEED_HONOURED says so rather than guessing.
+  opencode: { temperature: true, seed: true },
 };
 
 /**
@@ -75,6 +79,10 @@ export const SEED_HONOURED = {
   // Measured 2026-08-18 against gpt-oss:120b-cloud on both the /v1 and the
   // native path. A locally-pulled model may differ; a *-cloud model does not.
   ollama: false,
+  // Unmeasurable from here: the endpoint is on the operator's machine and this
+  // one has none. `null` is the honest entry, and `decodingReality` turns it
+  // into "has not been measured here" rather than a claim either way.
+  opencode: null,
 };
 
 /** Human-readable statement of what determinism is actually available. */

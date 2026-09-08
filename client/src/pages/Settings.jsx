@@ -11,6 +11,15 @@ const HINTS = {
   // has to be chosen. The picker below loads them live rather than shipping a
   // list that goes stale.
   openrouter: { model: 'vendor/model — pick from the live list', baseUrl: 'https://openrouter.ai/api/v1', key: true },
+  // Neither the model nor the base URL has a default, and the placeholders say
+  // so rather than showing an address that would be a guess about the
+  // operator's own network. "OpenCode-compatible" is a wire format (OpenAI
+  // /chat/completions), not a hosted service, so the server refuses to send
+  // anything until both are set. The key field is shown but OPTIONAL — a
+  // self-hosted gateway may or may not want a bearer token, and the adapter
+  // only sends an Authorization header when one is set; hiding the field would
+  // make a token-protected gateway unusable.
+  opencode: { model: 'required — whatever your gateway serves', baseUrl: 'required — e.g. http://localhost:4096/v1', key: true },
 };
 
 export default function Settings() {
@@ -66,6 +75,7 @@ export default function Settings() {
             <option value="openai">OpenAI</option>
             <option value="ollama">Ollama (local)</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="opencode">OpenCode-compatible (self-hosted)</option>
           </select>
         </div>
         {hint.key && (

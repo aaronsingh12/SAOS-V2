@@ -336,7 +336,18 @@ test('FLAG #3 — handleGatedElevation applies the gate guards it must (approval
   const after = src.indexOf('\n * A6 — the stalled turn', start);
   assert.ok(start > 0 && after > start, 'the function and its following section marker are both present');
   const fn = src.slice(start, after);
-  assert.match(fn, /awaitApproval\(state, approvalId, nonce\)/, 'own approval + nonce');
+  /*
+   * The property is "this function mints and awaits its OWN approval, bound to
+   * its own nonce" — not the argument count. Phase 0 added a trailing `signal`
+   * so a cancelled turn can stop a card that is still waiting, and the
+   * delimiter is matched rather than the closing paren so a later argument
+   * cannot silently break the assertion either.
+   */
+  assert.match(fn, /awaitApproval\(state, approvalId, nonce[,)]/, 'own approval + nonce');
+  // Phase 0 — and a cancellation at that gate is NOT laundered into a denial:
+  // nothing is elevated, nothing is written, and no rejection is recorded
+  // against a decision the user never made.
+  assert.match(fn, /cancelledAtGate/, 'a cancelled elevation gate is distinguished from a denied one');
   assert.match(fn, /crypto\.randomBytes\(32\)/, '32-byte approval nonce, like the normal gate');
   assert.match(fn, /recordToolEvent\(/, 'tool_events audit');
   assert.match(fn, /appendMutation\(/, 'mutation ledger');

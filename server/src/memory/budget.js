@@ -167,7 +167,19 @@ export async function computeBudget({ system, tools, maxTokens = 4096 } = {}) {
   const model = llm.model || '';
   const { tokens: modelCtx, source } = await probeContextWindow(model, llm.baseUrl);
 
-  const fixed = estimateTextTokens(system) + estimateTextTokens(JSON.stringify(tools ?? []));
+  /*
+   * PHASE 2 — the fixed cost, itemised.
+   *
+   * `fixed` is unchanged and is still the sum of the two halves, so every
+   * existing assertion about it holds. What is new is that the two halves are
+   * REPORTED separately, because "the fixed overhead is 31,759" was a number
+   * nobody could act on: it did not say whether the prompt or the registry was
+   * the weight, and the answer (20,856 of it tool schemas) is what decided
+   * where Phase 2 spent its effort.
+   */
+  const systemTokens = estimateTextTokens(system);
+  const toolSchemaTokens = estimateTextTokens(JSON.stringify(tools ?? []));
+  const fixed = systemTokens + toolSchemaTokens;
   const headroom = Math.max(OUTPUT_HEADROOM, maxTokens);
   const ceiling = Math.min(modelCtx, SANE_CONTEXT_CAP);
   /*
@@ -192,7 +204,13 @@ export async function computeBudget({ system, tools, maxTokens = 4096 } = {}) {
 
   if (starved) reportStarvation({ fixed, headroom, ceiling, budget, tools });
 
-  return { modelCtx, modelCtxSource: source, cap: SANE_CONTEXT_CAP, ceiling, fixed, headroom, budget, starved };
+  return {
+    modelCtx, modelCtxSource: source, cap: SANE_CONTEXT_CAP, ceiling,
+    fixed, headroom, budget, starved,
+    // Phase 2 — the breakdown, so a context optimisation is measurable rather
+    // than asserted. Additive: nothing that read this object before reads less.
+    systemTokens, toolSchemaTokens, toolCount: Array.isArray(tools) ? tools.length : 0,
+  };
 }
 
 /**

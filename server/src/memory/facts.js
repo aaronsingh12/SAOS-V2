@@ -266,6 +266,16 @@ const SEED = [
     value: 'Incidents, requests, tasks and every other table that does not extend sys_metadata are DATA. They are never captured by an update set and do not belong to an application scope. Update sets carry configuration only — catalog items, business rules, flows, UI policies, SLA definitions. Say so when a request implies otherwise.',
     provenance: 'fluent-research §36 E7', confidence: 0.99 },
 
+  /* --- WI-6: two assertions the model made that are FALSE, corrected here --- */
+
+  { scope: UNIVERSAL, kind: 'trap', key: 'flows-and-subflows-share-sys-hub-flow',
+    value: 'Flows AND subflows both live in `sys_hub_flow`, told apart by its `type` column ("flow" | "subflow"). There is no `sys_flow` table — querying it returns "Invalid table sys_flow". Measured on dev424910: 113 rows with type=flow and 256 with type=subflow, in the one table. Related tables are `sys_hub_flow_snapshot` (the published copy), `sys_hub_action_instance_v2` (steps), `sys_hub_trigger_instance_v2` (triggers) and `sys_hub_sub_flow_instance_v2` (subflow CALLS). A flow whose only step is a subflow call therefore reads back EMPTY from the flow record alone — the call lives in the sub_flow_instance table, and looking only at the flow record is a false negative.',
+    provenance: 'WI-6; measured live on dev424910 2026-09-07', confidence: 0.99 },
+
+  { scope: UNIVERSAL, kind: 'trap', key: 'global-scope-flows-are-legal',
+    value: 'Global-scope flows are LEGAL in Flow Designer and this instance ships them — measured on dev424910, `sys_hub_flow` carries global-scope flows and subflows including "Request Management Approval" and "Flow Template Subflow". The scoped-application requirement belongs to the SDK/Fluent path ONLY: `now-sdk install` ships a whole application, so a source-driven artifact needs an app to live in. Do not generalise that into a platform rule, and do not build a decision tree on "flows must be in a scoped app" — it is false about Flow Designer and true only about how THIS project authors them.',
+    provenance: 'WI-6; measured live on dev424910 2026-09-07', confidence: 0.99 },
+
 ];
 
 /**
@@ -342,9 +352,28 @@ export const FACT_BLOCK_LIMIT = 200;
  * an impersonation turn. Dropping a trap the model needed costs more than the
  * tokens, so the ledger ships whole until a selector can be shown to keep the
  * relevant fact.
+ *
+ * PHASE 2 IS THAT SELECTOR, AND IT IS A DIFFERENT KIND OF THING.
+ *
+ * `keys` filters by the fact's own KEY, against a classification a human wrote
+ * once in agent/context-capabilities.js. It is not similarity, it has no
+ * threshold, and it cannot rank an ACL trap into a schema request — the failure
+ * described above is unreachable by construction rather than tuned away, and
+ * the context-engine suite re-runs that exact prompt as a test.
+ *
+ * Two properties keep it safe. A fact with no classification is treated as
+ * GLOBAL, so anything a user stores at runtime through `remember_fact` is
+ * always sent. And `keys` is omitted by every caller that has no context
+ * profile, which reproduces the previous behaviour exactly.
+ *
+ * Truncation still counts against what was ELIGIBLE after filtering, so the
+ * in-band warning keeps meaning what it says.
  */
-export function factBlock({ instance, kinds = FACT_KINDS, limit = FACT_BLOCK_LIMIT } = {}) {
-  const eligible = listFacts({ instance }).filter((f) => kinds.includes(f.kind));
+export function factBlock({ instance, kinds = FACT_KINDS, limit = FACT_BLOCK_LIMIT, keys = null } = {}) {
+  const wanted = keys ? new Set(keys) : null;
+  const eligible = listFacts({ instance })
+    .filter((f) => kinds.includes(f.kind))
+    .filter((f) => !wanted || wanted.has(f.key));
   const facts = eligible.slice(0, limit);
   const omitted = eligible.length - facts.length;
   if (!facts.length) return '';

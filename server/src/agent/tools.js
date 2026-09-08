@@ -1,5 +1,9 @@
 import { table, testConnection } from '../servicenow/client.js';
 import { getSchema, toCompactSchema, referenceLookup, tableLookup } from '../servicenow/schema.js';
+import {
+  flowExecutionsFor, flowExecution, auditFor, journalFor, slasFor, ciRelationshipsFor,
+  waitForFlowExecution, WAIT_LIMITS,
+} from '../servicenow/diagnostics.js';
 import { catalog } from '../servicenow/catalog.js';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
 import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify } from '../servicenow/fluent.js';
@@ -8,6 +12,12 @@ import { listPoliciesForItem, itemVariables, createPolicy, CONDITION_OPERATORS }
 import { aclReport, aclDiff, explainAclReport } from '../servicenow/acl.js';
 import { search } from '../memory/recall.js';
 import { recordCalculatedFields, listFacts, recordFact } from '../memory/facts.js';
+import { searchKnowledge, knowledgeStats } from '../knowledge/store.js';
+import { resolveConflict, AUTHORITY_ORDER } from '../knowledge/precedence.js';
+import {
+  recordObservation, listObservations, observationStats,
+  OBSERVATION_CATEGORIES, EVIDENCE_KINDS,
+} from '../knowledge/observations.js';
 import { listApplications } from '../servicenow/applications.js';
 import { listCapturedSets, setContents } from '../servicenow/transport.js';
 import { createApplication, vendorPrefix, suggestScopeName, validateScopeName, studioSteps, MAX_SCOPE_LENGTH } from '../servicenow/app-create.js';
@@ -237,14 +247,78 @@ export const TOOLS = [
     },
     execute: async ({ table: t, search, limit }) => {
       const rows = await referenceLookup(t, search || '', limit || 10);
+      /*
+       * PHASE 13 — A BROWSE IS NOT A RESOLUTION.
+       *
+       * `referenceLookup` computes `ambiguous` as `Boolean(term) && …`, so with
+       * NO search term it answers `ambiguous: false` and puts the first row of
+       * an alphabetical listing in `resolved`. For the interactive picker that
+       * is right — a person is scrolling a list and will click one.
+       *
+       * For this tool it is dangerous, because `resolved.sys_id` is a declared
+       * OUTPUT that a later step can reference into a mutation. Measured: the
+       * model wrote `{ table: 'incident', display: 'INC0010001' }` — `display`
+       * is not a declared input, so `search` arrived undefined, and the plan
+       * would have carried an arbitrary first incident into an update.
+       *
+       * So the verdict is tightened HERE rather than in `referenceLookup`,
+       * which the picker shares and which is not wrong for its own purpose.
+       * A resolution means one record matched the term exactly; a browse, a
+       * starts-with and a contains all mean "here are some candidates", and a
+       * candidate is exactly what must not become a mutation target.
+       */
+      const EXACTISH = new Set(['id', 'exact', 'exact-display']);
+      const resolvedExactly = Boolean(rows.resolved) && EXACTISH.has(rows.resolved.matchType);
+      const ambiguous = rows.ambiguous || !resolvedExactly;
+
       // The array's own properties do not survive JSON.stringify, and the
       // ambiguity verdict is the whole point of WI-4 — so it is lifted into an
       // object the model actually receives.
       return {
-        table: t, search: search || '', ambiguous: rows.ambiguous, resolved: rows.resolved,
-        ...(rows.confirmBefore ? { confirmBefore: rows.confirmBefore } : {}),
+        table: t, search: search || '', ambiguous, resolved: rows.resolved,
+        ...(ambiguous && rows.length
+          ? {
+            confirmBefore: rows.confirmBefore
+              ?? (search
+                ? 'Do not use this in a mutation payload without confirming it with the user — no single exact match was found.'
+                : 'No search term was given, so nothing was resolved — these are the first rows of the table, '
+                  + 'not an answer. Name what you are looking for.'),
+          }
+          : {}),
         results: [...rows],
       };
+    },
+    /*
+     * PHASE 13 — WHAT A LATER STEP MAY READ, AND WHEN IT MAY NOT.
+     *
+     * This is the tool that turns "Abel Tuter" into an identity, so it is the
+     * one place where a wrong answer puts a mutation on the wrong person's
+     * record. Two declarations carry that weight:
+     *
+     *   `path` reads the RESOLVED top hit — not the results array, so a plan
+     *   cannot reach past the ranking into "the second one".
+     *
+     *   `withheldWhen: { ambiguous: true }` is the important half. When no
+     *   single exact match was found, this tool already says so, and the output
+     *   then DOES NOT EXIST. A reference to it resolves to nothing, the step
+     *   stops, and the question reaches a person — which is the whole rule:
+     *   never silently choose one of several people.
+     *
+     * So a plan can be written as "look them up, then assign to what the lookup
+     * found", and that plan is safe by construction: it either resolves to one
+     * unambiguous identity or it does not run.
+     */
+    outputs: {
+      sys_id: {
+        type: 'sys_id',
+        path: ['resolved', 'sys_id'],
+        withheldWhen: { ambiguous: true },
+      },
+      display: {
+        type: 'string',
+        path: ['resolved', 'display'],
+        withheldWhen: { ambiguous: true },
+      },
     },
   },
   {
@@ -274,8 +348,71 @@ export const TOOLS = [
       },
       required: ['table'],
     },
-    execute: ({ table: t, query, fields, limit, order_by_desc }) =>
-      table.query(t, { query, fields, limit: Math.min(limit || 10, 50), orderByDesc: order_by_desc }),
+    /*
+     * PHASE 12 — readable by a later step, and ONLY from the first row.
+     *
+     * A query returns many rows. "The sys_id of the query" is meaningless
+     * unless the plan says WHICH row, so `fromFirstRow` makes that explicit
+     * rather than letting this layer quietly pick one. A plan that wants a
+     * single record should narrow its query to one; if it does not, it is
+     * saying "the first match", and the declaration says so out loud.
+     */
+    outputs: {
+      sys_id: { type: 'sys_id', from: 'sys_id', fromFirstRow: true },
+      /*
+       * PHASE 14 — the same reference fields `get_record` declares, and for the
+       * same reason. Found by the real model on the real instance: asked to
+       * investigate an incident it wrote the obvious plan —
+       *
+       *   step_1  query_records  number=INC0010001
+       *   step_2  get_record     sys_id = $ref step_1.result.assignment_group
+       *   step_3  get_record     sys_id = $ref step_1.result.assigned_to
+       *   ...
+       *
+       * — and every one of those references was refused as
+       * `reference_unknown_output`, because the traversal outputs had been
+       * declared on `get_record` alone. Finding a record by its NUMBER is a
+       * query, so a plan that starts from a number can only continue through
+       * this tool. The full reasoning, and the tradeoff it accepts, is on
+       * `get_record`; it applies identically here.
+       *
+       * `fromFirstRow` carries the same meaning it carries for `sys_id`: these
+       * describe the FIRST matching row, and a plan that has not narrowed its
+       * query to one row is saying "the first match" out loud.
+       */
+      caller_id: { type: 'sys_id', from: 'caller_id', fromFirstRow: true },
+      assigned_to: { type: 'sys_id', from: 'assigned_to', fromFirstRow: true },
+      assignment_group: { type: 'sys_id', from: 'assignment_group', fromFirstRow: true },
+      cmdb_ci: { type: 'sys_id', from: 'cmdb_ci', fromFirstRow: true },
+    },
+    execute: ({ table: t, query, fields, limit, order_by_desc }) => {
+      /*
+       * PHASE 15 — A TOOL MUST FETCH WHAT IT PROMISES.
+       *
+       * MEASURED, and it silently destroyed whole investigations. Asked "what
+       * changed on INC0010093?", the model planned a perfectly good ten-step
+       * investigation whose first step narrowed `fields` to the columns it
+       * wanted to read — omitting `sys_id`. The read succeeded, produced no
+       * declared outputs, and every one of the nine following steps failed with
+       * "step_1 did not produce sys_id". The diagnosis came back with zero
+       * facts, which was honest and useless.
+       *
+       * The declared outputs are a CONTRACT this tool offers to later steps, so
+       * honouring it cannot depend on the caller having remembered to ask for
+       * the right columns. When `fields` is narrowed, the declared output
+       * columns are added back. When it is absent the platform returns
+       * everything and there is nothing to fix.
+       *
+       * The caller still gets exactly what it asked for, plus the columns the
+       * tool had already promised to be able to hand on.
+       */
+      const declared = ['sys_id', 'caller_id', 'assigned_to', 'assignment_group', 'cmdb_ci'];
+      const asked = typeof fields === 'string' && fields.trim() ? fields.split(',').map((f) => f.trim()) : null;
+      const merged = asked ? [...new Set([...asked, ...declared])].join(',') : fields;
+      return table.query(t, {
+        query, fields: merged, limit: Math.min(limit || 10, 50), orderByDesc: order_by_desc,
+      });
+    },
   },
   {
     name: 'get_record',
@@ -287,6 +424,54 @@ export const TOOLS = [
       required: ['table', 'sys_id'],
     },
     execute: ({ table: t, sys_id }) => table.get(t, sys_id),
+    /*
+     * PHASE 12 — what a LATER step may read from this one.
+     *
+     * `from` names the field of the result to read, and the extractor unwraps
+     * the Table API's `{ display_value, value }` cell. That unwrapping is
+     * exactly why an output must be DECLARED rather than scraped: `.sys_id` on
+     * a raw row is an object, not an id, and a plan should not have to know
+     * the transport's shape to say "the record this read found".
+     *
+     * Only `sys_id` is declared, because only `sys_id` exists on every table
+     * this tool can read. Declaring `number` here would make a plan's validity
+     * depend on which table it happened to name, and a reference to an
+     * undeclared output is refused at validation rather than at run time.
+     *
+     * PHASE 14 REVISITS THAT, NARROWLY, AND ACCEPTS THE COST IT NAMES.
+     *
+     * A diagnosis has to walk from a record to the records it points at —
+     * incident to caller, to assignment group, to configuration item — and
+     * §15 requires that walk to use the Phase 12 resolver rather than any
+     * ad-hoc substitution. Reaching a reference field's value is the only way
+     * to do that, so these four are declared.
+     *
+     * The objection above is real and is not being waved away: on a table that
+     * has no `caller_id`, a plan referencing `step_1.result.caller_id`
+     * validates and then fails when it runs. That is a genuine downgrade from
+     * plan-time refusal to run-time refusal, and it is accepted for exactly one
+     * reason — it still FAILS CLOSED. `extractOutputs` omits an output whose
+     * field is absent, the consumer gets `missing_step_output`, and the step
+     * does not run. Nothing is substituted and nothing is guessed; the refusal
+     * simply arrives later than it would for a misspelled output name.
+     *
+     * What is NOT declared is anything table-specific that is not a reference:
+     * no `number`, no `state`, no `short_description`. Those would carry the
+     * same cost without buying the traversal that made it worth paying.
+     *
+     * Each of these holds a sys_id when it is set, which is why the type is
+     * `sys_id` and why the extractor's cell-unwrapping produces an identity
+     * rather than a display name. An EMPTY reference field yields `''`, and
+     * Phase 12 already refuses that with `null_required_output` — so an
+     * unassigned incident cannot carry a blank identity into a later read.
+     */
+    outputs: {
+      sys_id: { type: 'sys_id', from: 'sys_id' },
+      caller_id: { type: 'sys_id', from: 'caller_id' },
+      assigned_to: { type: 'sys_id', from: 'assigned_to' },
+      assignment_group: { type: 'sys_id', from: 'assignment_group' },
+      cmdb_ci: { type: 'sys_id', from: 'cmdb_ci' },
+    },
   },
   {
     name: 'create_record',
@@ -317,6 +502,30 @@ export const TOOLS = [
         ctx, tool: 'create_record', table: t, operation: 'create', data,
         direct: () => table.create(t, data),
       });
+    },
+    /*
+     * PHASE 17 — THE ONE THING A LATER STEP NEEDS FROM A CREATE.
+     *
+     * Phase 12 declared outputs on the READ tools, because that was the shape
+     * every plan had then: find a record, then act on it. "Create a record and
+     * then prove what happened to it" is the other shape, and without a
+     * declared output it is unplannable — a step referencing
+     * `step_1.result.sys_id` is refused at validation as an unknown output, and
+     * the only alternative is to write an identity that does not exist yet,
+     * which `sys_id_not_an_identity` correctly refuses too.
+     *
+     * Only `sys_id`, for the reason `get_record` declares only `sys_id`: it is
+     * the one field every table returns. The insert response carries the whole
+     * record, and declaring more would make a plan's validity depend on which
+     * table it happened to name.
+     *
+     * This widens nothing. The reference resolves only after the create has run
+     * and been verified, `checkWriteTarget` then sees a sys_id with real
+     * provenance from this session's own tool result, and every later step
+     * passes the gate it always did.
+     */
+    outputs: {
+      sys_id: { type: 'sys_id', from: 'sys_id' },
     },
     describeWrite: ({ table: t, data }, result) => ({
       table: t, operation: 'insert', requested: data || {}, sys_id: cellValue(result?.sys_id),
@@ -349,6 +558,207 @@ export const TOOLS = [
     describeWrite: ({ table: t, sys_id, data }) => ({
       table: t, operation: 'update', requested: data || {}, sys_id,
     }),
+  },
+  /* ================================================================== *
+   * PHASE 15 - THE DIAGNOSTIC EVIDENCE SURFACES.
+   *
+   * Six read-only tools that answer "why did this happen?" rather than "what
+   * is true now". Every one is `mutating: false` (§20), scoped to a subject
+   * record (§19), and returns the NORMALISED shape from
+   * `servicenow/diagnostics.js` rather than raw rows (§30).
+   *
+   * They exist as separate tools rather than as `query_records` against
+   * `sys_flow_context` and friends because a normalisation the model performs
+   * is a normalisation the model can get wrong. `query_records` would hand back
+   * 38 columns and leave "did the automation fail?" to be inferred from a
+   * choice value, which is exactly the inference §7 says must be deterministic.
+   * ================================================================== */
+  {
+    name: 'find_flow_executions',
+    description:
+      'Find automation (Flow Designer) executions whose SUBJECT is a specific record. '
+      + 'Answers whether anything ran at all, and in what state. If nothing ran the result is '
+      + 'NO_EXECUTION_FOUND, which does NOT mean the automation failed - it means no execution '
+      + 'evidence exists. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string', description: 'The subject table, e.g. "incident" or "task_sla".' },
+        sys_id: { type: 'string', description: 'The subject record sys_id.' },
+        limit: { type: 'number', description: 'Max executions (platform ceiling 10).' },
+      },
+      required: ['table', 'sys_id'],
+    },
+    execute: (args) => flowExecutionsFor(args),
+    outputs: {
+      /* The chain a diagnosis walks: find executions, then read the most recent
+       * one in detail. The result is an OBJECT whose `executions` array is
+       * already ordered newest-first, so the output names that element rather
+       * than relying on `fromFirstRow`, which is for list RESULTS. */
+      state: { type: 'string', from: 'state' },
+      count: { type: 'number', from: 'count' },
+      found: { type: 'boolean', from: 'found' },
+      execution_sys_id: { type: 'sys_id', path: ['executions', '0', 'sys_id'] },
+    },
+  },
+  {
+    name: 'get_flow_execution',
+    description:
+      'Read one automation execution in detail: its flow, subject record, state, timing and '
+      + 'error message. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { sys_id: { type: 'string', description: 'The sys_flow_context sys_id.' } },
+      required: ['sys_id'],
+    },
+    execute: (args) => flowExecution(args),
+    outputs: {
+      state: { type: 'string', path: ['execution', 'state'] },
+      error: { type: 'string', path: ['execution', 'error'] },
+      execution_id: { type: 'string', path: ['execution', 'execution_id'] },
+      flow_sys_id: { type: 'sys_id', path: ['execution', 'flow', 'sys_id'] },
+    },
+  },
+  {
+    /* ================================================================== *
+     * PHASE 17 — THE BOUNDED WAIT (Sec.19, Sec.20).
+     *
+     * `find_flow_executions` answers "what is the state right now", which is
+     * the wrong question immediately after creating a record: the flow has not
+     * started yet, so "nothing ran" would be a true reading of an instant and a
+     * false answer about the flow.
+     *
+     * This is that same read, repeated under a bound, and it exists so nothing
+     * else has to poll. A caller that loops is a caller reaching the instance
+     * outside the registry; one read-only tool removes the reason to.
+     *
+     * IT NEVER CONVERTS TIME INTO A VERDICT. `settled`, `timed_out` and
+     * `found: false` come back as three separate facts and the caller decides
+     * what they mean. A run that timed out is not reported as a failure here,
+     * and an execution that errored is not reported as a timeout.
+     * ================================================================== */
+    name: 'wait_for_flow_execution',
+    description:
+      'Wait, up to a bounded timeout, for Flow Designer automation on a specific record to finish. '
+      + 'Polls the same execution history find_flow_executions reads and returns the last state seen, how '
+      + 'long it waited, and whether it SETTLED (reached COMPLETE/ERROR/CANCELLED/INTERRUPTED) or TIMED '
+      + 'OUT still running. A timeout is not a failure and "no execution" is not a failure: each is '
+      + 'reported as itself. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string', description: 'The subject table the execution runs against.' },
+        sys_id: { type: 'string', description: 'The subject record sys_id.' },
+        flow_sys_id: {
+          type: 'string',
+          description: 'Optional. Count only executions of THIS flow; other automation on the same record is reported separately.',
+        },
+        timeout_ms: { type: 'number', description: 'Bound on the wait, in milliseconds. Clamped to the platform ceiling.' },
+        poll_ms: { type: 'number', description: 'Interval between reads, in milliseconds. Clamped to the floor.' },
+        limit: { type: 'number', description: 'Max executions to read per poll (platform ceiling 10).' },
+      },
+      required: ['table', 'sys_id'],
+    },
+    execute: (args) => waitForFlowExecution(args),
+    outputs: {
+      state: { type: 'string', from: 'state' },
+      found: { type: 'boolean', from: 'found' },
+      count: { type: 'number', from: 'count' },
+      execution_sys_id: { type: 'sys_id', path: ['executions', '0', 'sys_id'] },
+    },
+  },
+  {
+    name: 'get_record_audit',
+    description:
+      'The field-level change history of one record: which field changed, from what, to what, '
+      + 'by whom and when. ServiceNow only audits fields configured for auditing, so an empty '
+      + 'result means no AUDITED field changed - not that nothing changed. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        sys_id: { type: 'string' },
+        limit: { type: 'number', description: 'Max changes (platform ceiling 50).' },
+      },
+      required: ['table', 'sys_id'],
+    },
+    execute: (args) => auditFor(args),
+    outputs: { count: { type: 'number', from: 'count' } },
+  },
+  {
+    name: 'get_record_journal',
+    description:
+      'Journal entries (work notes, comments) written on one record, with author and time. '
+      + 'These are what PEOPLE wrote, not system state: a note saying "waiting for the network '
+      + 'team" is evidence that somebody believed that, never proof of an assignment. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        sys_id: { type: 'string' },
+        limit: { type: 'number', description: 'Max entries (platform ceiling 30).' },
+      },
+      required: ['sys_id'],
+    },
+    execute: (args) => journalFor(args),
+    outputs: { count: { type: 'number', from: 'count' } },
+  },
+  {
+    /*
+     * NAMED `get_record_slas`, not `get_task_slas`.
+     *
+     * A registry-wide guard (agent-tasks T12) forbids any tool whose NAME
+     * contains "task" or "step": those are NowForge's own control-plane words,
+     * and a tool appearing to touch them could rewrite the record of what the
+     * agent had done. ServiceNow's `task` is an unrelated concept that happens
+     * to share the word, and a name-level guard cannot tell them apart — so the
+     * tool is named for the record it reads. The guard keeps its full strength.
+     */
+    name: 'get_record_slas',
+    description:
+      'The runtime SLAs attached to a record (task_sla), with stage, breach flag and timings. '
+      + 'This is the live SLA clock, not the SLA definition. SLA state is never inferred from '
+      + 'priority. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        record_sys_id: { type: 'string', description: 'The incident/record sys_id.' },
+        limit: { type: 'number', description: 'Max SLAs (platform ceiling 10).' },
+      },
+      required: ['record_sys_id'],
+    },
+    execute: ({ record_sys_id: recordSysId, limit }) => slasFor({ task_sys_id: recordSysId, limit }),
+    outputs: {
+      state: { type: 'string', from: 'state' },
+      count: { type: 'number', from: 'count' },
+      attached: { type: 'boolean', from: 'attached' },
+      /* The hop that makes the measured chain reachable: on this instance an
+       * incident has no flow executions of its own, but its task_sla rows do. */
+      sla_sys_id: { type: 'sys_id', path: ['slas', '0', 'sys_id'] },
+    },
+  },
+  {
+    name: 'get_ci_relationships',
+    description:
+      'The direct (one hop) relationships of a configuration item, upstream and downstream. '
+      + 'Not a CMDB graph traversal. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sys_id: { type: 'string', description: 'The cmdb_ci sys_id.' },
+        limit: { type: 'number', description: 'Max relationships per direction (ceiling 25).' },
+      },
+      required: ['sys_id'],
+    },
+    execute: (args) => ciRelationshipsFor(args),
+    outputs: { count: { type: 'number', from: 'count' } },
   },
   {
     name: 'delete_record',
@@ -426,6 +836,13 @@ export const TOOLS = [
     execute: (input) => catalog.createCatalogItemComposite(input),
     describeWrite: (input, result) => ({
       table: 'sc_cat_item', operation: 'insert', sys_id: result?.item?.sys_id,
+      /*
+       * PHASE 20 — this tool is COMPOSITE: its result is `{ item, variables }`,
+       * not a record. Naming the record lets the read-back verifier diff the
+       * fields that were requested against the row that was written; without it
+       * every catalog item verified as a silent no-op.
+       */
+      record: result?.item?.record ?? null,
       // Only the item's own fields — `variables` is a child collection, and
       // diffing it against the item record would report every one as dropped.
       requested: {
@@ -533,9 +950,36 @@ export const TOOLS = [
       required: [],
     },
     execute: async ({ description, blueprint, updates, artifact_type: artifactType }) => {
-      const spec = description || (blueprint ? JSON.stringify(blueprint, null, 1) : null);
+      /*
+       * WI-4 — AN APPROVED BLUEPRINT IS NOT AN ALTERNATIVE TO A DESCRIPTION.
+       *
+       * This read `description || blueprint`, so whenever BOTH were supplied —
+       * which is exactly what happens after `design_flow_blueprint` produces a
+       * blueprint a human then approves — the blueprint was silently discarded
+       * and the generator worked from prose alone.
+       *
+       * MEASURED: the approved blueprint asked for the work note
+       * "Priority checked by onboarding subflow"; the installed source carries
+       * "Priority check performed." The name and the input type drifted too.
+       * Nothing downstream could catch it, because the approved artifact never
+       * reached any layer that could compare against it.
+       *
+       * Both now reach the generator, blueprint first because it is the thing
+       * that was approved, and the blueprint travels on as STRUCTURE as well as
+       * text so the pre-build gate can assert the source honours it.
+       */
+      const parts = [];
+      if (blueprint) parts.push(`APPROVED BLUEPRINT (authoritative — reproduce its name, inputs and every literal exactly):
+${JSON.stringify(blueprint, null, 1)}`);
+      if (description) parts.push(blueprint ? `ADDITIONAL CONTEXT FROM THE REQUEST:
+${description}` : description);
+      const spec = parts.join('\n\n');
       if (!spec) throw new Error('Provide either description or blueprint.');
-      return createLiveFlow(spec, () => {}, { updates: updates || null, artifactType: artifactType || null });
+      return createLiveFlow(spec, () => {}, {
+        updates: updates || null,
+        artifactType: artifactType || null,
+        blueprint: blueprint || null,
+      });
     },
   },
   {
@@ -1055,6 +1499,148 @@ export const TOOLS = [
       required: ['kind', 'key', 'value'],
     },
     execute: ({ kind, key, value, provenance }) => recordFact({ kind, key, value, provenance }),
+  },
+  /* ---------------------------------------------------------------- *
+   * K3 - knowledge. All five are READ-ONLY with respect to the
+   * instance: none can create, change or delete anything on
+   * ServiceNow, and none can reach an approval, the write guard or the
+   * elevation gate. That is deliberate, and it is the whole safety
+   * argument for adding retrieval - the knowledge layer informs the
+   * plan and has no way to authorise it.
+   * ---------------------------------------------------------------- */
+  {
+    name: 'search_servicenow_docs',
+    description:
+      'Search indexed OFFICIAL ServiceNow documentation - product docs, Glide/REST API reference, Flow Designer '
+      + 'and subflows, ACLs, scripts, SLAs, tables and fields, scoped applications, security, and release notes. '
+      + 'Use it when the request turns on how the PLATFORM behaves rather than on what is on this instance. '
+      + 'Read-only, and it CANNOT AUTHORISE ANYTHING: documentation informs your plan, it is never a substitute '
+      + 'for get_table_schema, a read-back, or a capability check, and "the docs say so" is never grounds for a '
+      + 'mutation. Prefers newer releases when two versions of the same page match, and tells you which signal '
+      + 'decided. The result states how many documents are indexed and whether the search ran semantically or '
+      + 'degraded to keyword matching - quote both if the results look thin. ZERO HITS MEANS NOTHING WAS FOUND, '
+      + 'never that the platform lacks the feature; if "indexed" is 0 the corpus is empty and no conclusion may '
+      + 'be drawn from it at all. Cite only the url the tool returns, never one you composed yourself.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to look up, in plain language' },
+        topic: { type: 'string', description: 'Restrict to one topic, e.g. flow-designer, acl, sla, glide-api' },
+        product: { type: 'string', description: 'Restrict to one product family' },
+        document_type: { type: 'string', description: 'documentation | api-reference | release-note | developer-guide | kb-article | store-listing' },
+        version: { type: 'string', description: 'Restrict to one release. Omit to let version preference pick the newest.' },
+        limit: { type: 'number', description: 'Max results (default 6)' },
+      },
+      required: ['query'],
+    },
+    execute: ({ query, topic, product, document_type, version, limit }) =>
+      searchKnowledge(query, {
+        limit: Math.min(limit || 6, 20),
+        filters: { topic, product, document_type, version },
+      }),
+  },
+  {
+    name: 'knowledge_status',
+    description:
+      'What ServiceNow documentation is actually indexed: how many documents, broken down by source and topic, '
+      + 'how many are embedded, and how many carry a release that is not in the configured release order (those '
+      + 'cannot be ranked newest-first). Call it when a documentation search comes back thin, so you can tell '
+      + '"the corpus does not cover this" from "the corpus is empty" - those look identical from a search result '
+      + 'and mean completely different things. Read-only.',
+    mutating: false,
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    execute: () => knowledgeStats(),
+  },
+  {
+    name: 'resolve_source_conflict',
+    description:
+      'Apply the source-precedence ladder when the sources disagree: live PDI state > actual tool/SDK capability '
+      + '> current official documentation > your own knowledge. Give it the competing claims; it says which wins '
+      + 'and what was overruled. Three parts of the result matter. A claim tagged live_pdi or tool_capability '
+      + 'with no evidence attached is DEMOTED to model knowledge, because an assertion about live state is not a '
+      + 'reading of it. A verdict of "stop_and_ask" - nothing evidenced, or two equally authoritative answers '
+      + 'that contradict - means you STOP and put the returned question to the user rather than picking one. And '
+      + 'when can_authorize is false, the winning claim may inform your plan but may NOT justify an action: '
+      + 'establish the state from the instance first. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The behaviour in dispute, stated as a question' },
+        claims: {
+          type: 'array',
+          description: 'The competing claims, one per source',
+          items: {
+            type: 'object',
+            properties: {
+              source: { type: 'string', description: AUTHORITY_ORDER.join(' | ') },
+              says: { type: 'string', description: 'What this source says the behaviour is' },
+              evidence: { type: 'string', description: 'REQUIRED for live_pdi and tool_capability: the read-back, tool result or capability output. Without it the claim is demoted to model knowledge.' },
+              ref: { type: 'string', description: 'Where it came from - a sys_id, a doc url, a tool name' },
+            },
+            required: ['source', 'says'],
+          },
+        },
+      },
+      required: ['question', 'claims'],
+    },
+    execute: ({ question, claims }) => resolveConflict({ question, claims }),
+  },
+  {
+    name: 'record_verified_observation',
+    description:
+      'Store something SNADA has MEASURED about the SDK, its own tools, or this platform - an SDK limitation you '
+      + 'hit, an approach that worked, an approach that failed, release-specific behaviour, a tooling defect. A '
+      + 'different store from remember_fact: that one is per-instance knowledge broadcast into every prompt, this '
+      + 'one is queried, and every row must carry the ARTIFACT that made it true. The evidence field is required '
+      + 'and must be the error text, the read-back or the compiler output ITSELF, not a description of it. NEVER '
+      + 'record a conclusion you reasoned to rather than observed - the only thing this store is worth is that '
+      + 'everything in it was measured, and one unmeasured row costs it that. Scope it to "*" only when it is a '
+      + 'property of the SDK or the platform rather than of this instance. Does not touch the instance.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: OBSERVATION_CATEGORIES.join(' | ') },
+        subject: { type: 'string', description: 'What it is about - a tool name, a table, an SDK feature, an API' },
+        observation: { type: 'string', description: 'What was observed, in one sentence a future session can act on' },
+        evidence_kind: { type: 'string', description: EVIDENCE_KINDS.join(' | ') },
+        evidence: { type: 'string', description: 'The artifact itself: the error text, the read-back, the compiler output' },
+        instance: { type: 'string', description: '"*" for a property of the SDK or platform; omit for this instance' },
+        platform_version: { type: 'string', description: 'The release, when it was actually determined' },
+      },
+      required: ['category', 'subject', 'observation', 'evidence_kind', 'evidence'],
+    },
+    execute: ({ category, subject, observation, evidence_kind, evidence, instance, platform_version }) =>
+      recordObservation({
+        category, subject, observation,
+        evidenceKind: evidence_kind, evidence,
+        instance, platformVersion: platform_version,
+      }),
+  },
+  {
+    name: 'list_verified_observations',
+    description:
+      'Read what SNADA has verified for itself about the SDK, its tools and this platform. Call it BEFORE '
+      + 'attempting something that has been tried before - an SDK feature, a table operation, an authoring path - '
+      + 'because a recorded limitation is the difference between failing again and knowing not to try. Results '
+      + 'are scoped: universal observations plus ones measured on THIS instance, never ones measured elsewhere. '
+      + 'Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'Substring match on the subject' },
+        category: { type: 'string', description: OBSERVATION_CATEGORIES.join(' | ') },
+        limit: { type: 'number', description: 'Max results (default 25)' },
+      },
+      required: [],
+    },
+    execute: ({ subject, category, limit }) => ({
+      observations: listObservations({ subject, category, limit: Math.min(limit || 25, 100) }),
+      stats: observationStats(),
+    }),
   },
   {
     name: 'list_applications',
