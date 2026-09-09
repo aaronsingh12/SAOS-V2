@@ -1,5 +1,6 @@
 import { table, testConnection } from '../servicenow/client.js';
-import { getSchema, toCompactSchema, referenceLookup, tableLookup } from '../servicenow/schema.js';
+import { getSchema, toCompactSchema, referenceLookup, tableLookup, tableExists } from '../servicenow/schema.js';
+import { flowDesignerTablePolicy } from './write-guard.js';
 import {
   flowExecutionsFor, flowExecution, auditFor, journalFor, slasFor, ciRelationshipsFor,
   waitForFlowExecution, WAIT_LIMITS,
@@ -88,6 +89,35 @@ const UNCREATABLE_TABLES = {
   sys_scope: 'application scope',
   sys_app: 'custom application',
 };
+
+/**
+ * SESSION 1 / WI-4 — THE LAST LINE INSIDE THE THREE RECORD TOOLS.
+ *
+ * The plan validator and the pre-card gate check refuse first; this runs when a
+ * call reaches `execute` anyway. Two refusals, each a first-class RESULT the
+ * mutation pipeline reads as not-attempted (so no ledger row, no drop
+ * registered, no "1 mutation" in a summary):
+ *
+ *   policy_refused   the table is `sys_hub_*` — Flow Designer artifacts are
+ *                    authored through the SDK, never over REST
+ *   unknown_table    the bound instance has no such table
+ *
+ * Nothing reaches the wire on either.
+ */
+async function refuseRecordWrite(tool, t) {
+  const policy = flowDesignerTablePolicy(t);
+  if (!policy.allowed) {
+    return { ok: false, refused: true, reason: policy.reason, table: String(t ?? ''), tool, message: policy.message };
+  }
+  if (!(await tableExists(t))) {
+    return {
+      ok: false, refused: true, reason: 'unknown_table', table: String(t ?? ''), tool,
+      message: `"${t}" is not a table on the bound instance (no sys_db_object row carries that name). Nothing was written. `
+        + 'Find the real table with lookup_table or get_table_schema before writing; do not guess a name.',
+    };
+  }
+  return null;
+}
 
 export function assertCreatableTable(t) {
   const label = UNCREATABLE_TABLES[String(t || '').trim()];
@@ -496,7 +526,9 @@ export const TOOLS = [
     // the record is created BY the impersonated user rather than merely on
     // their behalf. Nothing changes when mode is off.
     impersonable: true,
-    execute: ({ table: t, data }, ctx = {}) => {
+    execute: async ({ table: t, data }, ctx = {}) => {
+      const refusal = await refuseRecordWrite('create_record', t);
+      if (refusal) return refusal;
       assertCreatableTable(t);
       return writeAsCurrentIdentity({
         ctx, tool: 'create_record', table: t, operation: 'create', data,
@@ -551,10 +583,14 @@ export const TOOLS = [
       required: ['table', 'sys_id', 'data'],
     },
     impersonable: true,
-    execute: ({ table: t, sys_id, data }, ctx = {}) => writeAsCurrentIdentity({
-      ctx, tool: 'update_record', table: t, sysId: sys_id, operation: 'update', data,
-      direct: () => table.update(t, sys_id, data),
-    }),
+    execute: async ({ table: t, sys_id, data }, ctx = {}) => {
+      const refusal = await refuseRecordWrite('update_record', t);
+      if (refusal) return refusal;
+      return writeAsCurrentIdentity({
+        ctx, tool: 'update_record', table: t, sysId: sys_id, operation: 'update', data,
+        direct: () => table.update(t, sys_id, data),
+      });
+    },
     describeWrite: ({ table: t, sys_id, data }) => ({
       table: t, operation: 'update', requested: data || {}, sys_id,
     }),
@@ -770,10 +806,14 @@ export const TOOLS = [
       required: ['table', 'sys_id'],
     },
     impersonable: true,
-    execute: ({ table: t, sys_id }, ctx = {}) => writeAsCurrentIdentity({
-      ctx, tool: 'delete_record', table: t, sysId: sys_id, operation: 'delete',
-      direct: () => table.remove(t, sys_id),
-    }),
+    execute: async ({ table: t, sys_id }, ctx = {}) => {
+      const refusal = await refuseRecordWrite('delete_record', t);
+      if (refusal) return refusal;
+      return writeAsCurrentIdentity({
+        ctx, tool: 'delete_record', table: t, sysId: sys_id, operation: 'delete',
+        direct: () => table.remove(t, sys_id),
+      });
+    },
     describeWrite: ({ table: t, sys_id }) => ({ table: t, operation: 'delete', requested: {}, sys_id }),
   },
   {
@@ -913,7 +953,7 @@ export const TOOLS = [
   {
     name: 'flow_authoring_capability',
     description:
-      'Check whether live Flow Designer authoring is available: ServiceNow SDK present, credentials stored, workspace healthy. Call this before promising to build a real flow. If ok is false, the returned fixes[] carry the exact commands, and the Business Rule fallback becomes the only option.',
+      'Check whether live Flow Designer authoring is available: ServiceNow SDK present, credentials stored, workspace healthy. Call this before promising to build a real flow. If ok is false, flow authoring is unavailable in this environment: report that, quote the returned fixes[] as the exact next action, and stop — nothing is substituted for a flow (no Business Rule, no script, no REST write to sys_hub_*).',
     mutating: false,
     inputSchema: {
       type: 'object',
@@ -1681,30 +1721,31 @@ ${description}` : description);
   {
     name: 'create_application',
     description:
-      'Create a REAL custom ServiceNow application (a sys_app) through the SDK. This is the only supported way to make one here: '
-      + 'inserting into sys_scope over REST produces a husk with no technical scope name that Studio will not list. '
-      + 'Give a plain-language name and the scope is derived and validated against this instance vendor prefix and the '
-      + '18-character platform limit, or pass one explicitly. '
-      + 'This SCAFFOLDS the application workspace on disk and does NOT put anything on the instance yet: installing it is a separate step. '
-      + 'Say so when you report back, and do not tell the user the application exists on the instance.',
+      'Establish the NowForge application on the bound instance through the SDK. There is exactly ONE application and its '
+      + 'scope is fixed by the workspace (x_<vendor>_nwforge, where the vendor prefix is issued by this instance): a name or '
+      + 'scope you pass is recorded as the request, never used to mint a second application. '
+      + 'If the application already exists on this instance the call is REFUSED with reason app_exists and nothing is written — '
+      + 'every flow, table and catalog artifact NowForge authors already lives in that application. '
+      + 'If it is absent, this installs the workspace to create it (a whole-application install, minutes not seconds) and reads '
+      + 'the sys_app row back. Requires user approval. Inserting into sys_scope or sys_app over REST is refused separately: it '
+      + 'produces a husk Studio will not list.',
     mutating: true,
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Human-readable application name, e.g. "Fleet Management"' },
-        scope_name: { type: 'string', description: 'Optional explicit scope, e.g. x_<vendor>_fleet, where the vendor prefix is the one THIS instance issues. Derived from the name when omitted.' },
+        name: { type: 'string', description: 'What the user called the application. Recorded with the result; the scope stays the workspace scope.' },
         description: { type: 'string' },
       },
-      required: ['name'],
+      required: [],
     },
-    execute: ({ name, scope_name: scopeName, description }) => createApplication({ name, scopeName, description }),
+    execute: ({ name, description }) => createApplication({ name, description }),
   },
   {
     name: 'check_scope_name',
     description:
-      'Check what scope name a new application would get on this instance, and whether a proposed one is legal, WITHOUT creating anything. '
-      + 'Read-only. Use before create_application when the technical name matters: the scope is permanent, and a wrong vendor prefix '
-      + 'is only a warning at install time, after which the application may not install correctly.',
+      'Check what scope name a name would derive to on this instance, and whether a proposed one is legal, WITHOUT creating anything. '
+      + 'Read-only, and informational: create_application always uses the workspace\'s own fixed scope (x_<vendor>_nwforge) and never '
+      + 'mints a per-request one. The vendor prefix is issued by the instance and the 18-character limit is the platform\'s.',
     mutating: false,
     inputSchema: {
       type: 'object',

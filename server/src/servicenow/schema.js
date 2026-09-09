@@ -13,11 +13,41 @@ import { registerInstanceScopedCache } from './instance-binding.js';
 const hierarchyCache = new Map();
 const schemaCache = new Map();
 const displayFieldCache = new Map();
+const existsCache = new Map();
 
 export function clearSchemaCaches() {
   hierarchyCache.clear();
   schemaCache.clear();
   displayFieldCache.clear();
+  existsCache.clear();
+}
+
+/*
+ * SESSION 1 / WI-4 — DOES THIS TABLE EXIST ON THE BOUND INSTANCE?
+ *
+ * The Table API answers 400 "Invalid table" to a write against a name that is
+ * not a table, so the platform would have refused `create_record` on
+ * `sys_flow` eventually — after a human had approved it. The question is asked
+ * here instead, before the card: one `sys_db_object` read, cached per name for
+ * the life of the binding (the switch handler clears it with the rest).
+ *
+ * `_setTableExistsForTests` replaces the INPUT (the answer) so the record
+ * tools and the planner can be exercised offline; it cannot make a refusal
+ * disappear for a table the override says is absent.
+ */
+let tableExistsOverride = null;
+export function _setTableExistsForTests(fn) { tableExistsOverride = typeof fn === 'function' ? fn : null; }
+
+export async function tableExists(t) {
+  const name = String(t ?? '').trim();
+  if (!name) return false;
+  if (tableExistsOverride) return Boolean(await tableExistsOverride(name));
+  if (schemaCache.has(name) || hierarchyCache.has(name)) return true;
+  if (existsCache.has(name)) return existsCache.get(name);
+  const rows = await table.query('sys_db_object', { query: `name=${name}`, fields: 'name', limit: 1, display: 'false' });
+  const found = rows.length > 0;
+  existsCache.set(name, found);
+  return found;
 }
 
 /*

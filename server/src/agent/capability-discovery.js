@@ -171,8 +171,12 @@ export const CAPABILITIES = Object.freeze({
     mechanism: 'rest', mutating: false, tools: ['list_applications', 'check_scope_name'], verification: 'none',
   },
   application_authoring: {
-    mechanism: 'sdk', mutating: true, tools: ['create_application'], verification: 'read_back',
-    note: 'Scaffolds a workspace on disk; installing it is a separate step.',
+    mechanism: 'sdk', mutating: true, tools: ['create_application'], verification: 'read_back', scoped: true,
+    // SESSION 1 / WI-4 — the application is the workspace's ONE deterministic
+    // scope (x_<vendor>_nwforge). The tool establishes it on the bound instance
+    // when it is absent and refuses with app_exists when it is not; there is
+    // no per-request scope name any more.
+    note: 'Establishes the workspace application on the bound instance (one deterministic scope); refuses with app_exists when it is already there.',
   },
 
   transport_export: {

@@ -1,7 +1,10 @@
+import crypto from 'node:crypto';
 import { Router } from 'express';
-import { flows, designFlowBlueprint, blueprintToBusinessRule } from '../servicenow/flows.js';
+import { flows, designFlowBlueprint } from '../servicenow/flows.js';
 import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, subflowCatalog, verify } from '../servicenow/fluent.js';
 import { startBuildRun, finishBuildRun, auditedEmit } from '../memory/audit.js';
+import { awaitApprovalDecision } from '../agent/orchestrator.js';
+import { log } from '../logging.js';
 
 export const flowsRouter = Router();
 
@@ -23,11 +26,26 @@ flowsRouter.get('/live/catalog', async (_req, res, next) => {
 });
 
 /**
- * POST /api/flows/live { spec } | { blueprint }
+ * POST /api/flows/live { spec } | { blueprint }, optional updates, artifact_type, sessionId
  * Streams SSE progress, mirroring /api/agent/chat.
+ *
+ * SESSION 1 / WI-4 — BEHIND THE ONE APPROVAL GATE.
+ *
+ * This route installs a whole application onto the bound instance, and until
+ * now it did so on a button press with no card: the Flows page was the one
+ * surface where a mutation reached the instance without the gate every other
+ * path passes through. It now waits at the SAME gate the turn loop and the
+ * plan executor use — `awaitApprovalDecision`, the nonce-bound card, and
+ * `POST /api/agent/approve` as the only resolver — so the page renders the
+ * card and the person clicks it, exactly as in the workspace. The pending
+ * entry is registered before the card is emitted (WI-2).
+ *
+ * `sessionId` is whatever the page supplies (it mints one per visit); the gate
+ * needs an address to resolve against, not a chat transcript.
  */
 flowsRouter.post('/live', async (req, res) => {
   const { spec, blueprint, updates, artifact_type: artifactType } = req.body || {};
+  const sessionId = String(req.body?.sessionId || 'flows-page');
   const text = spec || (blueprint ? blueprintToSpec(blueprint) : null);
   if (!text) return res.status(400).json({ message: 'spec (or blueprint) is required' });
   if (artifactType && !['flow', 'subflow'].includes(artifactType)) {
@@ -48,11 +66,50 @@ flowsRouter.post('/live', async (req, res) => {
   const run = startBuildRun({
     kind: 'flow_build',
     label: firstLine(text),
-    request: { spec: text, updates: updates || null, artifactType: artifactType || null },
+    request: { spec: text, updates: updates || null, artifactType: artifactType || null, sessionId },
+    session: sessionId,
   });
   const emit = auditedEmit(run, write);
   const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* noop */ } }, 15000);
+
+  // A closed connection cancels a card that is still waiting; a build that has
+  // started finishes and is recorded, exactly as in the turn loop.
+  const controller = new AbortController();
+  const onClientGone = () => { if (!res.writableEnded) controller.abort(); };
+  res.on('close', onClientGone);
+
   try {
+    const approvalId = crypto.randomUUID();
+    const nonce = crypto.randomBytes(32).toString('base64url');
+    const decisionPending = awaitApprovalDecision(sessionId, approvalId, nonce, controller.signal);
+    emit({
+      type: 'approval_required',
+      approvalId,
+      nonce,
+      sessionId,
+      name: 'create_flow_live',
+      input: { spec: text, updates: updates || null, artifact_type: artifactType || null },
+      operation: updates
+        ? `Regenerate "${updates}" in place and reinstall the application`
+        : `Generate, compile and install a new ${artifactType || 'flow'} into the workspace application`,
+      warning: 'now-sdk install ships the WHOLE application — every managed artifact is redeployed, not just this one.',
+    });
+    log.warn('gate', `approval required: flows page build (${firstLine(text).slice(0, 60)}) — waiting for the user`);
+    const decision = await decisionPending;
+    emit({ type: 'approval_resolved', approvalId, approved: decision.approved, source: decision.source, at: decision.at });
+
+    if (!decision.approved) {
+      const reason = decision.source === 'cancelled' ? 'cancelled' : decision.source === 'timeout' ? 'approval_timeout' : 'rejected';
+      const message = reason === 'cancelled'
+        ? 'The page went away while the card was waiting. Nothing was built and nothing was installed.'
+        : reason === 'approval_timeout'
+          ? 'The approval was never answered and expired. Nothing was built and nothing was installed.'
+          : 'The build was rejected. Nothing was built and nothing was installed.';
+      emit({ type: 'error', reason, message });
+      finishBuildRun(run, { status: 'error', summary: { reason, message } });
+      return undefined;
+    }
+
     const result = await createLiveFlow(text, emit, { updates: updates || null, artifactType: artifactType || null });
     emit(result.ok ? { type: 'done', result } : { type: 'error', ...result });
     finishBuildRun(run, { status: result.ok ? 'ok' : 'error', summary: result });
@@ -61,8 +118,10 @@ flowsRouter.post('/live', async (req, res) => {
     finishBuildRun(run, { status: 'error', summary: { message: err.message } });
   } finally {
     clearInterval(keepAlive);
+    res.off('close', onClientGone);
     res.end();
   }
+  return undefined;
 });
 
 /**
@@ -152,7 +211,7 @@ function blueprintToSpec(bp) {
     t.condition_encoded_query ? `Trigger condition (encoded query): ${t.condition_encoded_query}` : null,
     t.schedule ? `Schedule: ${t.schedule}` : null,
     'Steps:',
-    ...(bp.steps || []).map((s, i) => `  ${s.order ?? i + 1}. [${s.kind}] ${s.summary}${s. _action ? ` (action: ${s.flow_designer_action})` : ''}`),
+    ...(bp.steps || []).map((s, i) => `  ${s.order ?? i + 1}. [${s.kind}] ${s.summary}${s.flow_designer_action ? ` (action: ${s.flow_designer_action})` : ''}`),
   ].filter(Boolean);
   return lines.join('\n');
 }
@@ -175,22 +234,23 @@ flowsRouter.get('/:sysId', async (req, res, next) => {
   try { res.json(await flows.detail(req.params.sysId)); } catch (err) { next(err); }
 });
 
-flowsRouter.post('/:sysId/active', async (req, res, next) => {
-  try { res.json(await flows.setActive(req.params.sysId, Boolean(req.body.active))); } catch (err) { next(err); }
-});
+/*
+ * SESSION 1 / WI-4 — two routes are gone from here on purpose:
+ *
+ *   POST /:sysId/active       flipped sys_hub_flow.active over REST — a raw
+ *                             write to a Flow Designer header, which the
+ *                             policy now refuses everywhere. A flow is
+ *                             activated by installing it through the SDK.
+ *   POST /blueprint-to-rule   created an inactive Business Rule "for
+ *                             environments where the SDK cannot run" — an
+ *                             artifact nobody asked for, substituted for the
+ *                             one they did. Where the SDK cannot run the
+ *                             honest answer is the capability banner.
+ */
 
 flowsRouter.post('/design', async (req, res, next) => {
   try {
     if (!req.body?.description) return res.status(400).json({ message: 'description is required' });
     res.json(await designFlowBlueprint(req.body.description));
-  } catch (err) { next(err); }
-});
-
-flowsRouter.post('/blueprint-to-rule', async (req, res, next) => {
-  try {
-    if (!req.body?.blueprint) return res.status(400).json({ message: 'blueprint is required' });
-    const result = await blueprintToBusinessRule(req.body.blueprint);
-    if (result.error) return res.status(422).json({ message: result.error, ...result });
-    res.status(201).json(result);
   } catch (err) { next(err); }
 });

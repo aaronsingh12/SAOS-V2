@@ -173,7 +173,14 @@ const INVENTORY = {
    * function — it receives an `approve` callback from `routes/plan.js` and
    * therefore cannot be given one by anything that is not a route.
    */
-  awaitApprovalDecision: ['agent/plan/executor.js x1', 'routes/plan.js x3'],
+  /*
+   * SESSION 1 / WI-4 — a fourth: the Flows page build. `POST /api/flows/live`
+   * installed a whole application on a button press with no card at all, the
+   * one surface where a mutation reached the instance around the gate. It now
+   * waits here, on the same nonce-bound card the workspace renders, resolved
+   * only by POST /api/agent/approve. Written down, as this list requires.
+   */
+  awaitApprovalDecision: ['agent/plan/executor.js x1', 'routes/flows.js x1', 'routes/plan.js x3'],
   /*
    * Binding an approval to a fingerprint. One caller, still.
    *

@@ -205,9 +205,15 @@ function buildStep({ component, index, variables }) {
         operation: `create the scoped application "${component.name}"`,
         description: component.purpose ?? 'The application scope everything else lives in.',
         target: {},
-        inputs: { name: component.name, scope_name: component.spec?.scope, description: component.purpose ?? '' },
-        expected_effects: [`a scoped application "${component.spec?.scope ?? component.name}" exists`],
-        verification: { strategy: 'read_back', asserts: [`sys_app.scope is "${component.spec?.scope}"`] },
+        /*
+         * SESSION 1 / WI-4 — no per-request scope. `create_application`
+         * establishes the workspace's one deterministic application
+         * (x_<vendor>_nwforge) and refuses with app_exists when it is already
+         * on the instance; a scope the architecture invented is not passed.
+         */
+        inputs: { name: component.name, description: component.purpose ?? '' },
+        expected_effects: ['the workspace application exists on the bound instance'],
+        verification: { strategy: 'read_back', asserts: ['sys_app.scope is the workspace scope'] },
       };
 
     case COMPONENT.TABLE:

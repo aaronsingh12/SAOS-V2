@@ -984,11 +984,21 @@ test('A4 — no migration was added: user_version is still 23', () => {
   assert.ok(!/\/\/ 24 —/.test(dbSrc), 'a migration 24 appeared');
 });
 
-test('A5 — prompts.js was NOT modified', async () => {
+test('A5 — prompts.js was NOT modified by Phase 12 (the one later change is recorded)', async () => {
+  /*
+   * Phase 12's claim stands: the reference contract is taught through
+   * planner.js (A6 below), and prompts.js was not touched for it. The hash
+   * moved ONCE afterwards, in Session 1 / WI-4 (2026-09-08), for an unrelated
+   * reason — tier C of the preamble stopped offering a Business Rule in place
+   * of a flow. phase10-freeze.test.js F1 carries the full record; this pin
+   * follows it so the two freezes cannot disagree.
+   * Previous value: 99585f7ee9a9f43011ba867c80765cdb.
+   */
   const { createHash } = await import('node:crypto');
   const sha = createHash('sha256').update(read('agent/prompts.js')).digest('hex').slice(0, 32);
-  assert.equal(sha, '99585f7ee9a9f43011ba867c80765cdb',
+  assert.equal(sha, '0eb69ba7c29ba50deae1f27cf5f7210d',
     'prompts.js changed — Phase 12 must teach the reference contract through planner.js');
+  assert.doesNotMatch(read('agent/prompts.js'), /\$ref/, 'the reference contract leaked into prompts.js');
 });
 
 test('A6 — the reference contract is taught through planner.js, not prompts.js', () => {

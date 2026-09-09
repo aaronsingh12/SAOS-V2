@@ -99,10 +99,19 @@ test('B5 — there is exactly ONE cancellation mechanism', () => {
    * registry, no global in-flight map, and nothing that aborts a tool mid-call.
    */
   const controllers = filesMatching(/new AbortController\(\)/);
-  // The two SSE routes, and nowhere else. The DBA pane's writes are job-based
-  // rather than streamed, so it has no cancellation surface of its own.
-  assert.deepEqual(controllers.sort(), ['routes/agent.js', 'routes/plan.js'],
-    `an AbortController appeared outside the two streaming handlers: ${controllers.join(', ')}`);
+  /*
+   * The SSE routes, and nowhere else. The DBA pane's writes are job-based
+   * rather than streamed, so it has no cancellation surface of its own.
+   *
+   * SESSION 1 / WI-4 — `routes/flows.js` joins the list. Its `/live` build now
+   * waits at the approval gate, and a page that goes away while the card is
+   * open must cancel the card the same way the other two routes do: the
+   * client's own fetch abort → the server sees `close` → the controller
+   * aborts → the gate resolves `cancelled`. Same mechanism, third route; no
+   * registry, no in-flight map, nothing aborted mid-tool.
+   */
+  assert.deepEqual(controllers.sort(), ['routes/agent.js', 'routes/flows.js', 'routes/plan.js'],
+    `an AbortController appeared outside the three streaming handlers: ${controllers.join(', ')}`);
   for (const f of sources()) {
     const b = body(f);
     assert.ok(!/^const\s+\w*(inflight|IN_FLIGHT|activeRuns|runningTasks)\w*\s*=\s*new (Map|Set)/m.test(b),
@@ -307,7 +316,17 @@ test('B17 — no test-only bypass exists in any production path', () => {
      * status ladder. Without them the stale-while-revalidate rule could only be
      * asserted by waiting 30 s against a real CLI.
      */
+    /*
+     * SESSION 1 / WI-4 — two more INPUT seams. `_setApplicationProbesForTests`
+     * replaces who the workspace says it is, whether that scope exists, and the
+     * establisher; `_setTableExistsForTests` replaces the answer to "is this a
+     * table on the bound instance". Neither can lift a refusal: a policy-refused
+     * table stays refused whatever the override says, and an override that says
+     * "absent" still produces unknown_table.
+     */
+    'servicenow/app-create.js',   // the application identity / existence / establisher probes
     'servicenow/fluent.js',       // the SDK capability probe and its cache
+    'servicenow/schema.js',       // the table-existence answer
   ].sort(), `a new test seam appeared: ${seams.join(', ')}`);
 
   // And none of them sits on a control path.

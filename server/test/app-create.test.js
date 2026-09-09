@@ -152,12 +152,24 @@ test('create_application is a mutation and check_scope_name is not', () => {
   assert.equal(toolMap.get('check_scope_name').mutating, false);
 });
 
-test('the tool description says scaffolding is not installing', () => {
-  // The overclaim this whole work item exists to stop: "created" when nothing
-  // is on the instance yet.
+test('the tool description states the ONE-application contract: fixed scope, app_exists refusal, whole-app install', () => {
+  /*
+   * SESSION 1 / WI-4. This used to assert "does NOT put anything on the
+   * instance": the tool scaffolded a per-request workspace and stopped. That
+   * path is gone — seven empty server/app-x_* directories were what it
+   * produced on 2026-09-08 — and the tool now either refuses (the application
+   * already exists) or establishes the workspace's one deterministic
+   * application through the guarded install. The overclaim the old assertion
+   * guarded against ("created" when nothing exists) is now impossible in the
+   * other direction: the result is read back from sys_app, or it is a refusal.
+   */
   const d = toolMap.get('create_application').description;
-  assert.match(d, /does NOT put anything on the instance/);
-  assert.match(d, /do not tell the user the application exists on the instance/);
+  assert.match(d, /exactly ONE application/);
+  assert.match(d, /app_exists/);
+  assert.match(d, /never used to mint a second application/);
+  assert.match(d, /whole-application install/);
+  const props = Object.keys(toolMap.get('create_application').inputSchema.properties);
+  assert.ok(!props.includes('scope_name'), 'a per-request scope_name is still accepted');
 });
 
 test('the manual route is always available, whatever the SDK is doing', () => {
@@ -216,31 +228,37 @@ test('WI-1 — a multi-word value survives the REAL spawn boundary as ONE argume
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('WI-1 — createApplication supplies a template, because the CLI prompts without one', async () => {
+test('WI-1 / Session 1 WI-4 — no tool can reach `now-sdk init` any more; the scope is the workspace\'s', async () => {
   /*
-   * MEASURED against SDK 4.10.1: `now-sdk init` with appName, packageName and
-   * scopeName all supplied still renders an interactive template picker with no
-   * default. Under execFile the child's stdin is a pipe nobody writes to, so it
-   * waits until the timeout kills it — which surfaces as `exit -1` and looks
-   * like an argument bug.
+   * WHAT THIS REPLACES. The previous assertion pinned two facts about the
+   * `now-sdk init` call `createApplication` made: that `--template base` was
+   * supplied (measured: the CLI stops at an interactive picker without it) and
+   * that every argv element was passed whole. Both facts stay true of
+   * `runSdk` — the argv test above still exercises the real spawn boundary —
+   * but the init path itself is gone (Session 1, WI-4): `createApplication`
+   * establishes the workspace's one deterministic application or refuses with
+   * app_exists, and never scaffolds a per-request scope. It also could not
+   * have worked as written: it called `runSdk` without importing it, which is
+   * the "runSdk is not defined" every attempt on 2026-09-08 recorded.
    *
-   * Read from the source, because the alternative is scaffolding a real
-   * application in a test to find out.
+   * So the guard now pins the absence: no `now-sdk init`, no per-request scope,
+   * and the two probes that decide the outcome are the identity and existence
+   * reads, not a name the model chose.
    */
   const fs = await import('node:fs');
   const url = await import('node:url');
   const path = await import('node:path');
   const here = path.dirname(url.fileURLToPath(import.meta.url));
-  const src = fs.readFileSync(path.join(here, '..', 'src', 'servicenow', 'app-create.js'), 'utf8');
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'servicenow', 'app-create.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
-  const args = src.slice(src.indexOf('const args = ['), src.indexOf(']', src.indexOf('const args = [')));
-  assert.match(args, /'--template', 'base'/, 'init would stop at the template picker and be killed by the timeout');
-  /* And every value is its own array element — nothing is concatenated. */
-  assert.match(args, /'--appName', String\(name\)\.trim\(\)/);
-  assert.ok(!/`\s*--appName/.test(args), 'an argument is built by string interpolation');
-
-  /* A killed process must not be reported as an exit code. */
-  assert.match(src, /res\.timedOut/, 'a timeout is still reported as a bare exit code');
+  assert.ok(!/['"]init['"]/.test(src), 'a now-sdk init path is still reachable');
+  assert.ok(!/suggestScopeName\(name/.test(src.slice(src.indexOf('export async function createApplication'))),
+    'createApplication still derives a scope from the request');
+  const fn = src.slice(src.indexOf('export async function createApplication'));
+  assert.match(fn, /readAppIdentity/, 'the scope must come from the workspace identity');
+  assert.match(fn, /app_exists/);
+  assert.match(fn, /establishApplication/);
 });
 
 test('WI-3 — the app-existence guard is INVERTED for establish, never skipped', async () => {

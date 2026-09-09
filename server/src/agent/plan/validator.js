@@ -6,6 +6,7 @@ import { derivationOf } from '../../servicenow/semantic/tables.js';
 import { ARTIFACTS, referenceFieldOf } from '../../servicenow/semantic/artifacts.js';
 import { STATUS } from '../../servicenow/semantic/provenance.js';
 import { executionOrder } from './store.js';
+import { flowDesignerTablePolicy } from '../write-guard.js';
 
 /**
  * PHASE 4 — THE DETERMINISTIC PLAN VALIDATOR.
@@ -160,12 +161,49 @@ function validateCapabilities(plan, { discover, discoverOpts }) {
  * Safety — approval and verification
  * ------------------------------------------------------------------ */
 
-function validateSafety(plan, { discover, discoverOpts }) {
+function validateSafety(plan, { discover, discoverOpts, knownTables = null }) {
   const out = [];
   for (const s of plan.steps || []) {
     if (!s?.id) continue;
     const cap = s.capability && CAPABILITIES[s.capability] ? discover(s.capability, discoverOpts) : null;
     const mutating = s.mutating === true || cap?.mutating === true;
+
+    /*
+     * SESSION 1 / WI-4 — WHERE A WRITE IS AIMED, checked before anyone is asked.
+     *
+     * Two refusals, both measured on 2026-09-08:
+     *
+     *   policy_refused   a mutating step whose table is `sys_hub_*`. Flow
+     *                    Designer artifacts are authored through the SDK, and a
+     *                    REST write to a flow header is a draft pretending to be
+     *                    published. Pure, offline, no exceptions.
+     *
+     *   unknown_table    a mutating step whose table the planner could not find
+     *                    on the bound instance. With the SDK cache cold the model
+     *                    planned `create_record` on `sys_flow`, which does not
+     *                    exist, and the plan validated. This layer reads no live
+     *                    schema of its own; `generatePlan` resolves the tables
+     *                    it is about to validate and hands the confirmed set in
+     *                    as `knownTables`. Absent that set the rule does not run
+     *                    — the validator does not guess.
+     */
+    if (mutating && s.tool && toolMap.has(s.tool) && toolMap.get(s.tool).mutating) {
+      const aimed = canonicalExecutionArgs(s).args?.table ?? s.target?.table ?? null;
+      if (typeof aimed === 'string' && aimed.trim()) {
+        const policy = flowDesignerTablePolicy(aimed);
+        if (!policy.allowed) {
+          out.push(problem('policy_refused',
+            `Step ${s.id} would write ${aimed} over REST. ${policy.message}`,
+            { step: s.id, detail: { table: aimed, tool: s.tool } }));
+        } else if (knownTables && !knownTables.has(aimed.trim())) {
+          out.push(problem('unknown_table',
+            `Step ${s.id} writes to "${aimed}", which could not be found on the bound instance (no sys_db_object row `
+            + 'was confirmed for it). A write to a table that does not exist cannot be approved, and this layer '
+            + 'does not guess at the table that was meant — read the schema or use lookup_table first.',
+            { step: s.id, detail: { table: aimed, tool: s.tool } }));
+        }
+      }
+    }
 
     if (mutating) {
       // A step may not opt out of the gate. The declared flag must agree with
@@ -601,6 +639,13 @@ export function validatePlan(plan, {
    * for it.
    */
   readOnly = false,
+  /*
+   * SESSION 1 / WI-4 — the tables the caller CONFIRMED exist on the bound
+   * instance (a Set of names). `generatePlan` resolves them live before
+   * validating; offline callers pass nothing and the unknown_table rule is
+   * simply not applied. Never inferred here.
+   */
+  knownTables = null,
 } = {}) {
   const structural = validateStructure(plan);
   // A plan whose SHAPE is wrong cannot be meaningfully checked for capability
@@ -649,7 +694,7 @@ export function validatePlan(plan, {
     ...validateCapabilities(plan, { discover, discoverOpts }),
     ...dataflow,
     ...readOnlyProblems,
-    ...validateSafety(plan, { discover, discoverOpts }),
+    ...validateSafety(plan, { discover, discoverOpts, knownTables }),
     ...validateSemantics(plan, { derivation }),
   ];
 

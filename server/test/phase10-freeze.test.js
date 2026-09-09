@@ -314,9 +314,16 @@ test('N2 — the safety layers reach a model through the neutral gateway, or not
   }
   assert.deepEqual(reachesModel, [],
     `a safety layer imports the provider stack: ${reachesModel.join(', ')}`);
-  // Only the planner does, and only through the neutral `chatOnce`.
+  /*
+   * Only the planner does, and only through the neutral gateway. Since
+   * Session 1 / WI-5 it imports `chatTurn` rather than `chatOnce`: the same
+   * seam one layer down (chatOnce is a wrapper over it), for the one field
+   * chatOnce discards — `stopReason` — which is how a completion cut off by
+   * the budget is reported as plan_truncated instead of "not valid JSON".
+   * The property this guards is unchanged: no adapter is named here.
+   */
   const planner = read('agent/plan/planner.js');
-  assert.match(planner, /import \{ chatOnce \} from '\.\.\/providers\/index\.js'/);
+  assert.match(planner, /import \{ (chatOnce|chatTurn) \} from '\.\.\/providers\/index\.js'/);
   assert.ok(!/providers\/(anthropic|openaiCompat)/.test(planner),
     'the planner imports a specific adapter');
 });
@@ -384,7 +391,17 @@ test('F1 — prompts.js is frozen: the sentinel and the operating rules are inta
    * If this fails, do not update the hash. Find out what edited the file.
    */
   const sha = crypto.createHash('sha256').update(src).digest('hex').slice(0, 32);
-  assert.equal(sha, '99585f7ee9a9f43011ba867c80765cdb',
+  /*
+   * SESSION 1 / WI-4 (2026-09-08) — the hash moved ONCE, deliberately, and this
+   * is the record of why. Tier C of the preamble offered "Business Rule
+   * fallback (create_record on sys_script) — ONLY when flow_authoring_capability
+   * reports ok:false". That substituted an artifact nobody asked for, and it
+   * was the only prompt text inviting a REST write around the SDK. It now says
+   * flow authoring is unavailable, quotes fixes[] as the exact next action, and
+   * that nothing is substituted. The 33 numbered operating rules are untouched
+   * (the count below still holds). Previous value: 99585f7ee9a9f43011ba867c80765cdb.
+   */
+  assert.equal(sha, '0eb69ba7c29ba50deae1f27cf5f7210d',
     'prompts.js changed. The prompt is frozen: establish what edited it before touching this value.');
   assert.equal(src.split(String.fromCharCode(10)).filter((l) => l.includes('knowledgeNote')).length, 2,
     'the knowledgeNote parameter moved');

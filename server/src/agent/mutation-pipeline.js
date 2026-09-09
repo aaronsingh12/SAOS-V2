@@ -95,6 +95,27 @@ function unverified(reason) {
  * rather than being diffed against a shape they never promised.
  */
 export async function verifyMutation({ descriptor, result, before, toolName }) {
+  /*
+   * SESSION 1 / WI-4 — A REFUSAL IS NOT A WRITE TO VERIFY.
+   *
+   * The record tools now answer `{ ok: false, refused: true, reason }` for a
+   * policy-refused or unknown table, and they carry a descriptor like any
+   * other write. Diffing that answer against the descriptor's requested fields
+   * would report every field "not returned at all", label the call a no-op,
+   * and register the drops — a confident account of a write that was never
+   * attempted. The tool's own verdict is the evidence, and it is conclusive.
+   */
+  if (result && result.ok === false && result.refused === true) {
+    const why = `${toolName} refused before writing (${result.reason ?? 'refused'}); nothing was attempted`;
+    return {
+      verified: false, status: 'unverified', summary: why,
+      applied: [], dropped: [], transformed: [],
+      unverifiable: [{ field: '(all)', reason: why }], noOpSignal: null,
+      verifiedBy: toolName,
+      notAttempted: true,
+      refused: result.reason ?? 'refused',
+    };
+  }
   if (!descriptor) {
     /*
      * WI-5 — A TOOL THAT REPORTED FAILURE HAS NOT SELF-VERIFIED ANYTHING.

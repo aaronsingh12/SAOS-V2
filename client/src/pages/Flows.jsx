@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, sse, val, disp } from '../api.js';
-import { confirmDestructive, confirmAction, CONSEQUENCE } from '../components/confirm.js';
+import { confirmDestructive, CONSEQUENCE } from '../components/confirm.js';
 import { toast } from '../components/toast.js';
 import { SkeletonRows, SkeletonLines, LoadingRegion, EmptyState } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
@@ -41,7 +41,7 @@ function CapabilityBanner({ cap }) {
   }
   return (
     <div className="note warn">
-      <b>Live flow authoring unavailable.</b> NowHelpAssist falls back to blueprint + Business Rule until this is fixed.
+      <b>Live flow authoring unavailable.</b> Nothing is substituted for a flow — apply the fixes below, then build.
       {cap.cli && !cap.cli.present && <div style={{ marginTop: 4 }}>ServiceNow SDK not found.</div>}
       {cap.auth?.error && <div style={{ marginTop: 4 }}>{cap.auth.error}</div>}
       {cap.workspace?.error && <div style={{ marginTop: 4 }}>{cap.workspace.error}</div>}
@@ -159,20 +159,42 @@ function LiveBuild({ capOk, seedSpec, managed = [], onDeployed }) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [failure, setFailure] = useState(null);
+  /*
+   * Session 1 / WI-4 — the build now waits at the same approval gate the
+   * workspace uses. The page mints one gate address per visit and answers the
+   * card through the one resolver, POST /api/agent/approve, exactly as the
+   * workspace's card does. The click only says "sending"; `approval_resolved`
+   * from the stream is what clears the card.
+   */
+  const [sessionId] = useState(() => `flows-page-${Math.random().toString(36).slice(2, 10)}`);
+  const [approval, setApproval] = useState(null);
 
   useEffect(() => { if (seedSpec) setSpec(seedSpec); }, [seedSpec]);
 
   const run = async () => {
-    setRunning(true); setEvents([]); setResult(null); setFailure(null);
+    setRunning(true); setEvents([]); setResult(null); setFailure(null); setApproval(null);
     try {
-      await sse('/flows/live', { spec, updates: updates || undefined, artifact_type: artifactType }, (e) => {
+      await sse('/flows/live', { spec, updates: updates || undefined, artifact_type: artifactType, sessionId }, (e) => {
+        if (e.type === 'approval_required') { setApproval(e); return; }
+        if (e.type === 'approval_resolved') { setApproval(null); return; }
         if (e.type === 'done' && e.result) { setResult(e.result); onDeployed?.(); }
         else if (e.type === 'error') setFailure(e);
         else setEvents((prev) => [...prev, e]);
       });
     } catch (e) {
       setFailure({ message: e.message });
-    } finally { setRunning(false); }
+    } finally { setRunning(false); setApproval(null); }
+  };
+
+  const decide = async (approved) => {
+    if (!approval) return;
+    setApproval((a) => (a ? { ...a, sending: approved } : a));
+    try {
+      const r = await api.post('/agent/approve', { sessionId, approvalId: approval.approvalId, approved, nonce: approval.nonce });
+      if (!r?.ok) setFailure({ message: 'The gate was no longer waiting for this card — it was already answered, or it timed out.' });
+    } catch (e) {
+      setFailure({ message: e.message });
+    }
   };
 
   return (
@@ -212,6 +234,21 @@ function LiveBuild({ capOk, seedSpec, managed = [], onDeployed }) {
           Editing “{updates}”: it keeps its sys_id and history rather than becoming a second artifact. An artifact cannot
           change kind, so the type selector does not apply.
         </p>
+      )}
+      {approval && (
+        <div className="approval-card" style={{ marginTop: 10 }}>
+          <div className="title">Approval required — this installs to the instance</div>
+          <p style={{ margin: '6px 0' }}>{approval.operation}</p>
+          {approval.warning && <p className="note" style={{ margin: '6px 0' }}>{approval.warning}</p>}
+          <div className="row">
+            <button className="btn amber sm" onClick={() => decide(true)} disabled={approval.sending !== undefined} aria-busy={approval.sending === true}>
+              {approval.sending === true ? 'Sending…' : 'Approve'}
+            </button>
+            <button className="btn sm" onClick={() => decide(false)} disabled={approval.sending !== undefined}>
+              {approval.sending === false ? 'Sending…' : 'Reject'}
+            </button>
+          </div>
+        </div>
       )}
       {!updates && artifactType === 'subflow' && (
         <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0' }}>
@@ -557,9 +594,7 @@ function KV({ record, keys }) {
 }
 
 function Blueprint({ bp, capOk, onDeploy }) {
-  const [ruleResult, setRuleResult] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [error] = useState('');
 
   const download = () => {
     const blob = new Blob([JSON.stringify(bp, null, 2)], { type: 'application/json' });
@@ -570,23 +605,11 @@ function Blueprint({ bp, capOk, onDeploy }) {
     URL.revokeObjectURL(a.href);
   };
 
-  const createRule = async () => {
-    const ok = await confirmAction({
-      action: 'Create an equivalent Business Rule for',
-      subject: bp.name,
-      detail: 'It is created INACTIVE on the instance for your review. This is the Tier 3 fallback — '
-        + 'it is not a flow, and nothing activates it for you.',
-      confirmLabel: 'Create rule',
-    });
-    if (!ok) return;
-    setBusy(true); setError('');
-    try { setRuleResult(await api.post('/flows/blueprint-to-rule', { blueprint: bp })); }
-    catch (e) { setError(e.message); }
-    finally { setBusy(false); }
-  };
-
-  const recordTriggered = String(bp.trigger?.type || '').startsWith('record');
-
+  /*
+   * Session 1 / WI-4 — the "Business Rule fallback" button is gone. It created
+   * an inactive sys_script in place of the flow that was designed; where the
+   * SDK cannot run the banner above says so and nothing is substituted.
+   */
   return (
     <div className="card" style={{ marginTop: 14 }}>
       <div className="spread">
@@ -596,11 +619,6 @@ function Blueprint({ bp, capOk, onDeploy }) {
           {capOk && (
             <button className="btn primary sm" onClick={() => onDeploy?.(bp)}>
               Deploy as real flow
-            </button>
-          )}
-          {recordTriggered && (
-            <button className="btn amber sm" onClick={createRule} aria-busy={busy} disabled={busy}>
-              {busy ? 'Creating…' : 'Business Rule fallback'}
             </button>
           )}
         </div>
@@ -657,14 +675,6 @@ function Blueprint({ bp, capOk, onDeploy }) {
         </>
       )}
       {bp.notes && <p className="note" style={{ marginTop: 12 }}>{bp.notes}</p>}
-
-      {ruleResult?.rule && (
-        <div className="note" style={{ marginTop: 12, borderLeftColor: 'var(--verdigris)' }}>
-          Created Business Rule <b>{disp(ruleResult.rule, 'name')}</b> on <span className="mono">{disp(ruleResult.rule, 'collection')}</span> —
-          created <b>inactive</b>. Review the script on your instance, then activate.
-          <span className="mono" style={{ display: 'block', fontSize: 11 }}>sys_id {val(ruleResult.rule, 'sys_id')}</span>
-        </div>
-      )}
       {error && <p className="error-text">{error}</p>}
     </div>
   );
@@ -731,16 +741,12 @@ export default function Flows() {
     } catch (e) { setError(e.message); }
   };
 
-  const toggleActive = async () => {
-    const id = val(detail.flow, 'sys_id');
-    const next = val(detail.flow, 'active') !== 'true';
-    try {
-      await api.post(`/flows/${id}/active`, { active: next });
-      const d = await api.get(`/flows/${id}`);
-      setDetail(d);
-      load();
-    } catch (e) { setError(e.message); }
-  };
+  /*
+   * Session 1 / WI-4 — the Activate/Deactivate toggle is gone. It PATCHed
+   * sys_hub_flow.active over REST, which the policy now refuses everywhere: a
+   * header flipped that way is a draft pretending to be published. A flow is
+   * activated by installing it through the SDK.
+   */
 
   const design = async () => {
     setDesigning(true); setBp(null); setBpError('');
@@ -757,9 +763,9 @@ export default function Flows() {
       <div className="note">
         Flows are authored through ServiceNow's own SDK (Fluent): NowHelpAssist generates TypeScript, compiles it
         offline — so nothing reaches the instance unless it compiles — then installs it and reads the result back.
-        There is still no REST API for writing <span className="mono">sys_hub_*</span> directly, and NowHelpAssist never
-        attempts it. Blueprint and the inactive Business Rule remain the fallback tier for environments where the
-        SDK cannot run.
+        There is still no REST API for writing <span className="mono">sys_hub_*</span> directly, and NowHelpAssist refuses
+        to attempt it. Where the SDK cannot run, flow authoring is unavailable and the banner says what to fix — nothing
+        is substituted for a flow.
       </div>
 
       <CapabilityBanner cap={cap} />
@@ -845,9 +851,9 @@ export default function Flows() {
                     {val(detail.flow, 'type') || 'flow'}
                   </span>
                 </div>
-                <button className="btn sm" onClick={toggleActive}>
-                  {val(detail.flow, 'active') === 'true' ? 'Deactivate' : 'Activate'}
-                </button>
+                <span className={`badge ${val(detail.flow, 'active') === 'true' ? 'green' : ''}`}>
+                  {val(detail.flow, 'active') === 'true' ? 'active' : 'inactive'}
+                </span>
               </div>
               <p style={{ color: 'var(--muted)' }}>{disp(detail.flow, 'description') || 'No description.'}</p>
               <KV record={detail.flow} keys={['status', 'sys_scope', 'sys_created_by', 'sys_updated_on']} />

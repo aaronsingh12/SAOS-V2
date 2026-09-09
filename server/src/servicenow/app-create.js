@@ -122,117 +122,71 @@ function workspacePathFor(scopeName) {
   return { dir, exists: fs.existsSync(dir) };
 }
 
-/**
- * Scaffold a real custom application through the SDK.
+/*
+ * SESSION 1 / WI-4 — ONE APPLICATION, ONE DETERMINISTIC SCOPE.
  *
- * Deliberately stops after `init`. `install` ships a whole application to the
- * instance and is a separate, separately-approved step (trap #8) — and a tool
- * that scaffolded AND installed in one call would make "create an app" a much
- * larger action than it reads as. What comes back names the exact next command.
+ * WHAT THIS REPLACES. `createApplication` used to derive a per-request scope
+ * from whatever name the model passed, `now-sdk init` a fresh workspace
+ * directory for it under server/, and stop there ("nothing is on the instance
+ * yet"). Measured 2026-09-08: seven empty `server/app-x_*` directories from
+ * seven failed attempts, each for a scope that will never hold anything —
+ * every artifact NowForge authors lives in the workspace application
+ * `x_<vendor>_nwforge`, and a second scope per request is a second place an
+ * address can live (the class of defect the binding work removed).
+ *
+ * THE CONTRACT NOW. The scope is the workspace's, read from the tracked
+ * identity file. If that application already exists on the bound instance the
+ * call is REFUSED with `app_exists` as a first-class result — nothing written,
+ * nothing scaffolded. If it is absent the call establishes it through
+ * `establishApplication` (the existing, separately-guarded install path), which
+ * is what "REQUIRES_MANUAL_ACTION with consent" means here: the tool is
+ * mutating, the approval card names the install, and the read-back decides.
+ *
+ * The three probes are INPUTS, injectable for the offline suite: who the
+ * workspace says it is, whether that scope exists, and the establisher.
  */
-export async function createApplication({ name, scopeName = null, description = '' } = {}) {
-  if (!name || !String(name).trim()) throw new SnowError('An application name is required.', 400);
+let appProbes = null;
+export function _setApplicationProbesForTests(p) { appProbes = p && typeof p === 'object' ? p : null; }
 
-  const prefix = await vendorPrefix();
-  const proposed = scopeName || suggestScopeName(name, prefix);
-  const check = validateScopeName(proposed, prefix);
-  if (!check.ok) {
-    throw new SnowError(
-      `The scope name "${proposed}" cannot be used on this instance:\n- ${check.errors.join('\n- ')}\n\n`
-      + `A name derived from "${name}" that would work: ${suggestScopeName(name, prefix) || `${prefix}<up to ${check.budget} chars>`}`,
-      422,
-      { errors: check.errors, prefix, budget: check.budget },
-    );
-  }
-
-  // Already on the instance? Creating a second app at the same scope is not
-  // possible, and finding out from the SDK is slower and less clear.
-  const existing = await table.query('sys_scope', {
-    query: `scope=${check.scopeName}`, fields: 'sys_id,name,scope,sys_class_name', limit: 1, display: 'false',
+async function scopeRowFor(scope) {
+  const rows = await table.query('sys_scope', {
+    query: `scope=${scope}`, fields: 'sys_id,name,scope,sys_class_name,version', limit: 1, display: 'false',
   });
-  if (existing.length) {
-    throw new SnowError(
-      `Scope "${check.scopeName}" already exists on this instance as "${existing[0].name}" `
-      + `(${existing[0].sys_class_name}, sys_id ${existing[0].sys_id}). Pick a different scope name.`,
-      409,
-    );
+  return rows[0] ?? null;
+}
+
+export async function createApplication({ name = null, description = '' } = {}) {
+  const identity = await (appProbes?.identity ?? readAppIdentity)();
+  const scope = identity?.scope;
+  if (!scope) throw new SnowError('The workspace declares no application scope, so there is nothing to establish.', 500);
+
+  const existing = await (appProbes?.exists ?? scopeRowFor)(scope);
+  if (existing) {
+    return {
+      ok: false,
+      refused: true,
+      reason: 'app_exists',
+      scope,
+      sys_id: existing.sys_id ?? null,
+      name: existing.name ?? identity.name ?? null,
+      requestedName: name ? String(name).trim() : null,
+      message:
+        `The NowForge application already exists on the bound instance as "${existing.name ?? scope}" (scope ${scope}`
+        + `${existing.sys_id ? `, sys_id ${existing.sys_id}` : ''}). Nothing was created: every artifact NowForge authors `
+        + 'lives in that application, so build the tables, flows and catalog items inside it rather than a second scope.',
+    };
   }
 
-  const { dir, exists } = workspacePathFor(check.scopeName);
-  if (exists) throw new SnowError(`A workspace directory already exists at ${dir}. Remove it or choose another scope name.`, 409);
-
-  await fsp.mkdir(dir, { recursive: true });
-  const args = [
-    'init',
-    '--appName', String(name).trim(),
-    '--packageName', check.scopeName.replace(/_/g, '-'),
-    '--scopeName', check.scopeName,
-    /*
-     * `--template` IS NOT OPTIONAL FOR US, AND OMITTING IT IS WHY THIS HUNG.
-     *
-     * MEASURED against SDK 4.10.1 on 2026-09-07. `now-sdk init` with every
-     * other flag supplied still stops and renders an interactive template
-     * picker ("Select a template: > now-sdk boilerplate ..."). There is no
-     * default. Under `execFile` the child's stdin is a pipe nobody writes to,
-     * so the picker waits, the 4-minute timeout kills the process, and the
-     * caller sees `exit -1` — a killed process, with no clue that a prompt was
-     * the reason.
-     *
-     * With stdin at /dev/null the same command instead prints
-     * "ERROR: User force closed the prompt with 0 null", which is the same
-     * defect wearing a readable message.
-     *
-     * `base` is the boilerplate template — "an empty NowSDK application with
-     * only the necessary boilerplate" — which is what a Fluent app scaffolded
-     * by this tool should be. Anything else would ship React or Vue starters
-     * into a workspace that only ever holds `.now.ts` sources.
-     */
-    '--template', 'base',
-  ];
-  log.info('sdk', `now-sdk init for ${check.scopeName} in ${dir}`);
-  const res = await runSdk(args, INIT_TIMEOUT_MS, dir);
-
-  if (!res.ok) {
-    // Leave nothing half-scaffolded behind.
-    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
-    /*
-     * A KILLED PROCESS AND A REJECTED COMMAND ARE DIFFERENT FAILURES.
-     *
-     * `runSdk` reports `code: -1` for both a signal kill and an unset exit
-     * code, so "exit -1" alone sent the last investigation looking for an
-     * argument-parsing bug that did not exist. `timedOut` is the fact that
-     * separates them, and it is now said out loud.
-     */
-    const why = res.timedOut
-      ? `it did not finish within ${Math.round(INIT_TIMEOUT_MS / 1000)}s and was killed. The CLI prompts `
-        + 'interactively when a required choice is missing, and a prompt with no terminal waits forever'
-      : `it exited with code ${res.code}`;
-    throw new SnowError(
-      `now-sdk init failed for scope "${check.scopeName}": ${why}. The workspace directory was removed.`,
-      502, (res.stderr || res.stdout || '').slice(0, 1200),
-    );
-  }
-
-  refreshWorkspaces();
-  const config = await fsp.readFile(path.join(dir, 'now.config.json'), 'utf8').then(JSON.parse).catch(() => null);
-
+  const established = await (appProbes?.establish ?? establishApplication)({});
   return {
-    ok: true,
-    scaffolded: true,
-    installed: false,
-    name: String(name).trim(),
-    scope: check.scopeName,
-    prefix,
-    workspace: dir,
-    config,
+    ...established,
+    scope: established?.scope ?? scope,
+    requestedName: name ? String(name).trim() : null,
     description,
-    // Said plainly, because "created" would be the same overclaim this whole
-    // work item exists to stop: nothing is on the instance yet.
-    note:
-      `The application workspace was scaffolded at ${dir} with scope "${check.scopeName}". `
-      + 'Nothing exists on the instance yet — a scoped application is created there by INSTALLING it, which ships '
-      + 'the whole application and is a separate approved step. It will appear in Studio once installed.',
-    nextStep: `cd ${dir} && now-sdk install`,
+    note: established?.ok
+      ? `${established.note ?? `Application ${scope} established.`} The scope is the workspace's own; the requested name `
+        + `${name ? `"${String(name).trim()}" ` : ''}was recorded, not used to mint a second application.`
+      : established?.message ?? established?.note ?? 'The application could not be established.',
   };
 }
 
