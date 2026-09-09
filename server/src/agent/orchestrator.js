@@ -1640,7 +1640,15 @@ export async function runTurn(sessionId, userText, emit, { retry = false, signal
       + `removing ${surface.removed.join(', ')}`);
   }
 
-  let profile = buildContextProfile({ goal: userText, tools: surface.tools, capability: null });
+  /*
+   * SESSION 1 / WI-7 — the previous turn's domains are handed in as a floor,
+   * and this turn's classified set becomes the next turn's floor. Kept on the
+   * per-session live state (one turn deep), never accumulated.
+   */
+  const sessionLive = liveState(sessionId);
+  const priorCapabilities = sessionLive.lastCapabilities ?? null;
+  let profile = buildContextProfile({ goal: userText, tools: surface.tools, capability: null, priorCapabilities });
+  if (profile.capabilities) sessionLive.lastCapabilities = profile.capabilities;
   {
     const diag = contextDiagnostics(profile, { allTools: surface.tools });
     logProfile(diag);

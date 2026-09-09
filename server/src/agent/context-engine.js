@@ -5,6 +5,7 @@ import { ALL_RULE_IDS } from './prompts.js';
 import {
   classifyRequest, selectTools, selectRuleIds, selectFactKeys, retrievalQuery,
 } from './context-selection.js';
+import { expandCapabilities, isCapability } from './context-capabilities.js';
 
 /**
  * PHASE 2 — THE CONTEXT ENGINE.
@@ -73,17 +74,43 @@ function fullProfile({ goal, reason, totals }) {
  * strictly worse than one that runs with a larger prompt — the same rule
  * `retrieveForTurn` and the plan-time trap check already follow.
  */
-export function buildContextProfile({ goal, tools, capability = null } = {}) {
+export function buildContextProfile({ goal, tools, capability = null, priorCapabilities = null } = {}) {
   const all = Array.isArray(tools) ? tools : [];
   const totals = { tools: all };
 
   try {
+    /*
+     * SESSION 1 / WI-7 — THE PREVIOUS TURN IS A FLOOR, NOT A MEMORY.
+     *
+     * MEASURED 2026-09-08: turn one "When an incident is created, run a
+     * subflow…" was classified flow_authoring + incident; turn two, "use the
+     * Incident table", was classified incident / record_* only, so
+     * `create_flow_live` was scoped out, the model asked for it, and an
+     * iteration was spent widening. The classifier reads one sentence; the
+     * conversation does not.
+     *
+     * So the caller may hand in the previous turn's capabilities. They are
+     * ADDED to whatever this turn classifies as (never substituted), and a
+     * turn with no domain noun at all inherits them instead of falling back to
+     * the whole registry. Only one turn deep — the caller passes the last
+     * profile's capabilities, not an accumulation — so the union is bounded
+     * by two classifications and the budget assertion holds. Unknown names
+     * are dropped, not widened; widening still happens the one way it always
+     * did (`widenProfile`, on a tool the model asked for).
+     */
+    const prior = Array.isArray(priorCapabilities) ? priorCapabilities.filter(isCapability) : [];
     const verdict = classifyRequest(goal, { explicitCapability: capability });
-    if (!verdict.confident) {
+    if (!verdict.confident && !prior.length) {
       return fullProfile({ goal, reason: verdict.reason, totals });
     }
 
-    const caps = verdict.capabilities;
+    const own = verdict.confident ? verdict.capabilities : [];
+    const carried = prior.filter((c) => !own.includes(c));
+    const caps = expandCapabilities([...new Set([...own, ...prior])]);
+    const matched = [
+      ...(verdict.confident ? verdict.matched : []),
+      ...carried.map((c) => ({ capability: c, term: '(prior turn)' })),
+    ];
     const selectedTools = selectTools(all, caps);
 
     /*
@@ -102,10 +129,11 @@ export function buildContextProfile({ goal, tools, capability = null } = {}) {
 
     return Object.freeze({
       capabilities: caps,
-      matched: verdict.matched,
+      matched,
       confident: true,
       fallback: false,
       fallbackReason: null,
+      floor: carried.length ? carried : null,
       tools: selectedTools,
       ruleIds: selectRuleIds(ALL_RULE_IDS, caps),
       factKeys,
