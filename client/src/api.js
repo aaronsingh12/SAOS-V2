@@ -65,12 +65,41 @@ export const api = {
  * failure already uses and renders as the same red bubble. No new UI, and one
  * fewer way for this app to fail silently.
  */
-export async function sse(path, body, onEvent, method = 'POST') {
-  const res = await fetch(BASE + path, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+/**
+ * Phase 0 — was this failure US, stopping on purpose?
+ *
+ * A cancelled fetch reaches the caller as an AbortError, and without this it
+ * would be reported as a network failure or — worse — as the truncated-stream
+ * defect below, telling a user who just pressed Stop that the connection was
+ * lost and they should check the server terminal.
+ */
+const isAbortError = (err) => err?.name === 'AbortError';
+
+function cancelledError() {
+  const err = new Error('Stopped.');
+  err.cancelled = true;
+  return err;
+}
+
+/**
+ * `signal` (Phase 0) aborts the request. The server sees the disconnect and
+ * stops its turn at the next safe boundary — so the caller's `catch` runs while
+ * the server is still winding down, and must not claim anything about what the
+ * turn did or did not finish.
+ */
+export async function sse(path, body, onEvent, method = 'POST', { signal } = {}) {
+  let res;
+  try {
+    res = await fetch(BASE + path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal,
+    });
+  } catch (err) {
+    if (isAbortError(err) || signal?.aborted) throw cancelledError();
+    throw err;
+  }
   if (!res.ok || !res.body) {
     let msg = 'Stream failed';
     try { msg = (await res.json()).message || msg; } catch { /* keep default */ }
@@ -80,10 +109,20 @@ export async function sse(path, body, onEvent, method = 'POST') {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
-  // Set by the `done`/`error` frame. Its ABSENCE at end-of-stream is the bug.
+  // Set by the `done`/`error`/`cancelled` frame. Its ABSENCE at end-of-stream
+  // is the bug.
   let terminated = false;
   for (;;) {
-    const { done, value } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      // Aborting the fetch tears down the reader mid-read. That is not a lost
+      // connection, it is the Stop button working.
+      if (isAbortError(err) || signal?.aborted) throw cancelledError();
+      throw err;
+    }
+    const { done, value } = chunk;
     if (done) break;
     buf += dec.decode(value, { stream: true });
     let idx;
@@ -96,7 +135,10 @@ export async function sse(path, body, onEvent, method = 'POST') {
           try { evt = JSON.parse(line.slice(6)); }
           catch (err) { logToServer('warn', `${path} sent an unparseable SSE frame: ${err.message}`); }
           if (evt) {
-            if (evt.type === 'done' || evt.type === 'error') terminated = true;
+            // Phase 0 — `cancelled` is a third terminal state, not an error and
+            // not a completion. A stream that ends on one has ended correctly,
+            // so it must satisfy the invariant below exactly as the other two do.
+            if (evt.type === 'done' || evt.type === 'error' || evt.type === 'cancelled') terminated = true;
             // The failure that started all this arrived here, was rendered as
             // a red box, and was never written down anywhere.
             if (evt.type === 'error') logToServer('error', `${path} stream error: ${evt.message}`, evt.detail);

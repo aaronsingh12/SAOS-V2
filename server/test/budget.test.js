@@ -20,14 +20,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  computeBudget, probeContextWindow, clearContextProbeCache,
+  computeBudget, probeContextWindow, clearContextProbeCache, clearStarvationLog,
   SANE_CONTEXT_CAP, OUTPUT_HEADROOM, FALLBACK_CONTEXT,
 } from '../src/memory/budget.js';
+import { TOOLS } from '../src/agent/tools.js';
+import { buildSystemPrompt } from '../src/agent/prompts.js';
 import { estimateTextTokens } from '../src/memory/tokens.js';
 import { MIN_COMPACTION_GAIN } from '../src/memory/compaction.js';
 
 const realFetch = globalThis.fetch;
-test.afterEach(() => { globalThis.fetch = realFetch; clearContextProbeCache(); });
+test.afterEach(() => { globalThis.fetch = realFetch; clearContextProbeCache(); clearStarvationLog(); });
 
 /** The daemon's answer for gpt-oss, verbatim in shape. */
 function showReturns(contextLength, key = 'gptoss.context_length') {
@@ -103,15 +105,64 @@ test('the budget subtracts the fixed overhead the request actually carries', asy
   assert.equal(loaded.budget, loaded.ceiling - loaded.fixed - loaded.headroom);
 });
 
-test('the history budget is a real share of the window, not 4% of it', async () => {
+/* ------------------------------------------------------------------ *
+ * WI-BUDGET-1 T4 — THE REGRESSION GUARD ASSERTS AGAINST THE LIVE ARTIFACT
+ *
+ * This test used to run on a fixture: `'x'.repeat(20_586)` and one fake tool,
+ * a frozen snapshot of the D-7 shape (37 tools, 12,548 fixed). It asserted
+ * `budget > 10_000` and passed continuously while the real prompt and registry
+ * grew to 30,868 fixed and drove the live budget onto the 4,000 floor — worse
+ * than the 5,452 this very test calls the defect.
+ *
+ * That is trap #59 arriving inside the guard written to prevent it: a snapshot
+ * of a growing system goes stale by staying correct. A test that defends a
+ * budget must measure what the adapter will actually send, so the artifact
+ * growing past the line is what fails.
+ *
+ * The fixture version is kept below under an honest name — it pins the
+ * ARITHMETIC (does the subtraction happen at all), which is a different claim
+ * from "does today's request fit".
+ * ------------------------------------------------------------------ */
+
+test('T4: the LIVE prompt and registry leave a real share of the window for history', async () => {
+  showReturns(131_072);
+  const system = buildSystemPrompt({});
+  const { budget, fixed, ceiling, headroom, starved } = await computeBudget({
+    system, tools: TOOLS, maxTokens: 4096,
+  });
+
+  assert.equal(starved, false,
+    `the envelope is over-full: fixed ${fixed} + headroom ${headroom} >= ceiling ${ceiling}`);
+  // The measured old value was 5,452, and the floor it later collapsed to was
+  // 4,000. Anything in that region is the defect, not a tuning choice.
+  assert.ok(budget > 10_000,
+    `history budget is ${budget} against live fixed ${fixed}; the thrash starts around 5,452 and the floor is 4,000`);
+  // The floor must be headroom nobody is standing on. A budget sitting exactly
+  // on MIN_HISTORY_TOKENS means the subtraction went negative and was absorbed.
+  assert.notEqual(budget, 4_000, 'the budget is on the floor — the floor is not an allowance');
+});
+
+test('T4: the test measures the same fixed cost computeBudget does', async () => {
+  // No fixture-derived magic numbers anywhere in this file's live assertions:
+  // the expected value is recomputed from the same two artifacts the adapter
+  // serialises, so the two cannot drift apart silently.
+  showReturns(131_072);
+  const system = buildSystemPrompt({});
+  const { fixed } = await computeBudget({ system, tools: TOOLS });
+  const independently = estimateTextTokens(system) + estimateTextTokens(JSON.stringify(TOOLS));
+  assert.equal(fixed, independently,
+    'the budget must be measured from the serialised system prompt and the serialised registry');
+});
+
+test('the budget arithmetic subtracts a fixed overhead at all (constructed)', async () => {
+  // NOT the regression guard — see T4 above. This pins the SHAPE of the
+  // subtraction on synthetic inputs, so a refactor that stopped counting the
+  // tool schemas fails here even if the live registry happens to be small.
   showReturns(131_072);
   const system = 'x'.repeat(20_586);
   const tools = [{ name: 'a', description: 'y'.repeat(23_330), inputSchema: {} }];
   const { budget } = await computeBudget({ system, tools });
-
-  // The measured old value was 5,452 on exactly this input. Anything in that
-  // region is the defect, not a tuning choice.
-  assert.ok(budget > 10_000, `history budget regressed to ${budget}; the thrash starts around 5,452`);
+  assert.ok(budget > 10_000, `constructed budget regressed to ${budget}`);
 });
 
 test('a small model caps the budget below our own ceiling', async () => {
@@ -145,10 +196,26 @@ test('the history allowance never collapses to nothing', async () => {
 });
 
 test('the self-imposed cap stays well inside the measured-safe range', () => {
-  // Re-measured 2026-08-19, single attempt, no retry, 5 shots per size:
-  // 35/35 succeeded from ~5,798 to 51,429 real prompt tokens, latency flat.
-  // The estimator runs ~40% high, so a 32,000-token estimate is ~23,000 real.
-  assert.ok(SANE_CONTEXT_CAP <= 40_000, 'the cap should stay inside what was actually measured');
+  /*
+   * Re-measured 2026-08-19, single attempt, no retry, 5 shots per size:
+   * 35/35 succeeded from ~5,798 to 51,429 real prompt tokens, latency flat.
+   * The estimator runs ~40% high, so an estimated cap of N is ~N/1.4 real.
+   *
+   * The upper bound is DERIVED from that measurement rather than picked: the
+   * largest request proven to work was 51,429 real, which is ~72,000 estimated.
+   * A cap above that would be sending sizes nobody has shot. The previous
+   * bound of 40,000 was not the measurement — it was headroom above the
+   * then-current 32,000, and it expired the moment the cap moved.
+   *
+   * NOTE (WI-BUDGET-1): that latency table is a snapshot of the upstream dated
+   * 2026-08-19 and single-attempt. It has not been re-shot since, and it is the
+   * sole evidence under the 60,000 cap. Re-measure it before raising further.
+   */
+  const MEASURED_SAFE_REAL = 51_429;
+  const ESTIMATOR_INFLATION = 1.4;
+  const measuredSafeEstimated = Math.round(MEASURED_SAFE_REAL * ESTIMATOR_INFLATION);
+  assert.ok(SANE_CONTEXT_CAP <= measuredSafeEstimated,
+    `cap ${SANE_CONTEXT_CAP} is past the largest request ever measured (~${measuredSafeEstimated} estimated)`);
   assert.ok(SANE_CONTEXT_CAP >= 24_000, 'below this the 5,452-token thrash comes back');
 });
 
@@ -168,4 +235,77 @@ test('the minimum compaction gain is large enough to break the thrash loop', () 
   // under the line, where the next tool result pushed it straight back over.
   // A floor below ~1,000 would not have stopped any of the three.
   assert.ok(MIN_COMPACTION_GAIN >= 1_000, 'too low to prevent the observed thrash');
+});
+
+
+/* ------------------------------------------------------------------ *
+ * WI-BUDGET-1 — STARVATION IS LOUD
+ *
+ * `Math.max(MIN_HISTORY_TOKENS, ...)` is a floor, and a floor is silent: once
+ * the subtraction goes negative it returns 4,000 and the arithmetic that got
+ * there vanishes. That is how the ratchet hid — at cap 32,000 the real prompt
+ * and the real 90 tool schemas put fixed + headroom at 37,012 against a 32,000
+ * ceiling, and nothing said so. These pin the reporting, not the repair: the
+ * returned budget is deliberately unchanged.
+ * ------------------------------------------------------------------ */
+
+/** Count the BUDGET STARVED lines a block of work emits. Errors go to stderr. */
+async function captureStarvationLog(fn) {
+  const realWrite = process.stderr.write.bind(process.stderr);
+  const lines = [];
+  process.stderr.write = (chunk, ...rest) => {
+    lines.push(String(chunk));
+    return typeof rest[rest.length - 1] === 'function' ? rest[rest.length - 1]() : true;
+  };
+  try { return { result: await fn(), starvedLines: lines.filter((l) => l.includes('BUDGET STARVED')) }; }
+  finally { process.stderr.write = realWrite; }
+}
+
+test('an over-ceiling envelope is reported as starved rather than absorbed by the floor', async () => {
+  showReturns(131_072);
+  // Deliberately bigger than the 60,000 ceiling on its own, so the subtraction
+  // is negative and only the floor is left.
+  const system = 'x'.repeat(60_000 * 4);
+  const { result, starvedLines } = await captureStarvationLog(() => computeBudget({ system, tools: [] }));
+
+  assert.equal(result.starved, true, 'the state must be reported on the result');
+  assert.ok(result.fixed + result.headroom >= result.ceiling, 'the fixture must actually starve');
+  // The repair is a human decision about the cap or the registry. The floor
+  // still applies and the returned value is untouched.
+  assert.equal(result.budget, 4_000, 'the floor still holds — this reports, it does not repair');
+  assert.equal(starvedLines.length, 1, `expected exactly one loud line, got ${starvedLines.length}`);
+  assert.match(starvedLines[0], /BUDGET STARVED/);
+});
+
+test('the same starvation logs once, not once per iteration of the agent loop', async () => {
+  showReturns(131_072);
+  const system = 'x'.repeat(60_000 * 4);
+  const { starvedLines } = await captureStarvationLog(async () => {
+    // computeBudget runs on every iteration of every turn; an unconditional
+    // error here would be tens of identical lines per turn.
+    for (let i = 0; i < 5; i++) await computeBudget({ system, tools: [] });
+  });
+  assert.equal(starvedLines.length, 1, `deduped per distinct state, got ${starvedLines.length} lines`);
+});
+
+test('a starvation that gets WORSE is a new line, not a suppressed one', async () => {
+  showReturns(131_072);
+  const { starvedLines } = await captureStarvationLog(async () => {
+    await computeBudget({ system: 'x'.repeat(60_000 * 4), tools: [] });
+    await computeBudget({ system: 'x'.repeat(70_000 * 4), tools: [] });
+  });
+  assert.equal(starvedLines.length, 2, 'the signature is the numbers, so a bigger overflow reports again');
+});
+
+test('the LIVE artifacts are not starved at the current cap', async () => {
+  // The regression this WI closes. Asserted against the real system prompt and
+  // the real registry, never a fixture — see the note on the live-artifact
+  // tests below.
+  showReturns(131_072);
+  const { result, starvedLines } = await captureStarvationLog(
+    () => computeBudget({ system: buildSystemPrompt({}), tools: TOOLS, maxTokens: 4096 }),
+  );
+  assert.equal(result.starved, false,
+    `live fixed ${result.fixed} + headroom ${result.headroom} >= ceiling ${result.ceiling} — the envelope is over-full`);
+  assert.equal(starvedLines.length, 0, 'nothing to say when the envelope has room');
 });

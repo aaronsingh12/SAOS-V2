@@ -160,7 +160,31 @@ export function diagnoseFailure({ status, statusText, detail = '', message = nul
   };
 }
 
-async function snowFetch(pathname, { method = 'GET', body, params } = {}) {
+/**
+ * SESSION 2 — THE TRANSPORT, SPLIT FROM THE POLICY THAT THROWS ON IT.
+ *
+ * Every REST call in this project went through one function that threw a
+ * `SnowError` for any non-2xx. That is the right policy for the Table API,
+ * where a 4xx means the call was wrong. It is the WRONG policy for at least one
+ * endpoint we now have to call: the platform's own flow-activation processor,
+ * `POST /api/now/wfa_fluent/activate_flows`, answers **HTTP 422 as a normal
+ * response** meaning "every flow failed to activate", and the body carries the
+ * per-flow reasons. Read from the SDK's own client
+ * (sdk-api/dist/flow-activation.js:34), which deliberately parses 422 rather
+ * than treating it as an error. Throwing there would discard the only
+ * explanation of what went wrong.
+ *
+ * So this returns the response — status, parsed body, raw text — and NEVER
+ * throws on an HTTP status. It throws only when the instance could not be
+ * reached at all, because that is not a response.
+ *
+ * It is exported so the flow layer can reach a non-Table-API endpoint without
+ * a second HTTP client appearing outside `servicenow/`. It is deliberately
+ * low-level and deliberately narrow: `snowFetch` below is still the funnel
+ * every ordinary read and write goes through, and still applies the diagnosis
+ * and the throw.
+ */
+export async function instanceRequest(pathname, { method = 'GET', body, params } = {}) {
   const c = conn();
   const url = new URL(c.instanceUrl.replace(/\/$/, '') + pathname);
   if (params) {
@@ -182,19 +206,26 @@ async function snowFetch(pathname, { method = 'GET', body, params } = {}) {
   } catch (err) {
     throw new SnowError(`Could not reach ${url.host}: ${err.message}. Is the instance URL correct and the PDI awake?`, 502);
   }
-  if (res.status === 204) return null;
+  if (res.status === 204) return { ok: true, status: 204, json: null, text: '', host: url.host };
   const text = await res.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { /* HTML error pages etc. */ }
+  return { ok: res.ok, status: res.status, statusText: res.statusText, json, text, host: url.host, method, pathname };
+}
+
+async function snowFetch(pathname, { method = 'GET', body, params } = {}) {
+  const c = conn();
+  const res = await instanceRequest(pathname, { method, body, params });
+  if (res.status === 204) return null;
   if (!res.ok) {
-    const detail = json?.error?.detail || text.slice(0, 500);
+    const detail = res.json?.error?.detail || res.text.slice(0, 500);
     const diagnosed = diagnoseFailure({
       status: res.status, statusText: res.statusText, detail,
-      message: json?.error?.message, host: url.host, username: c.username, method, pathname,
+      message: res.json?.error?.message, host: res.host, username: c.username, method, pathname,
     });
     throw new SnowError(diagnosed.message, diagnosed.status, detail);
   }
-  return json;
+  return res.json;
 }
 
 /**

@@ -3,3 +3,9 @@ dist/
 server/data/
 .env
 *.log
+
+# A1 — the SDK build schema REQUIRES scopeId, and a scope sys_id is instance-local.
+# now.config.json is therefore GENERATED from now.config.template.json and carries
+# the resolved id; the template is the tracked source of truth. Untracked so no
+# commit timing can ever capture the pin (it captured one once).
+server/fluent-workspace/now.config.json

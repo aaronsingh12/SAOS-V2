@@ -1,5 +1,5 @@
 import zlib from 'node:zlib';
-import { table } from './client.js';
+import { table, instanceRequest, SnowError } from './client.js';
 import { chatOnce } from '../agent/providers/index.js';
 
 /**
@@ -24,21 +24,28 @@ import { chatOnce } from '../agent/providers/index.js';
  *   1. "fluentSdk"       (shipped)  — generate Fluent TypeScript, compile it
  *                                     offline, install it. See fluent.js.
  *   2. "blueprint"       (shipped)  — LLM designs a precise build spec.
- *   3. "classicFallback" (shipped)  — record-triggered blueprints become an
- *                                     inactive Business Rule, for environments
- *                                     where the SDK cannot run.
+ *
+ * SESSION 1 / WI-4 — the third tier is gone. A record-triggered blueprint used
+ * to become an inactive Business Rule "for environments where the SDK cannot
+ * run". That substituted a different artifact for the one that was asked for;
+ * where the SDK cannot run the honest answer is that flow authoring is
+ * unavailable, with the exact next action. A Business Rule is created only
+ * when a user asks for one by name, through the ordinary gated write.
  */
 
 const PART_FAMILIES = {
   v2: {
     triggers: { table: 'sys_hub_trigger_instance_v2', fields: 'sys_id,trigger_type,name,comment,trigger_inputs' },
     actions: { table: 'sys_hub_action_instance_v2', fields: 'sys_id,order,action_type,comment' },
-    logic: { table: 'sys_hub_flow_logic_instance_v2', fields: 'sys_id,order,logic_definition,comment' },
+    /* PHASE 18 adds `ui_id`/`parent_ui_id`. They are the identity a diff matches
+     * containers on across two states — the row sys_id differs between a flow and
+     * its snapshot, and `order` moves whenever anything is inserted. */
+    logic: { table: 'sys_hub_flow_logic_instance_v2', fields: 'sys_id,order,logic_definition,comment,ui_id,parent_ui_id' },
     // A subflow CALL is not an action instance. It has its own table, and
     // omitting it made a flow whose only step is a call read back as
     // "1 trigger, 0 actions, 0 logic" — a flow that does nothing. Measured on
     // the §32 A4 caller, which had exactly that shape.
-    subflows: { table: 'sys_hub_sub_flow_instance_v2', fields: 'sys_id,order,comment,subflow,wait_for_completion,subflow_inputs' },
+    subflows: { table: 'sys_hub_sub_flow_instance_v2', fields: 'sys_id,order,comment,subflow,wait_for_completion,subflow_inputs,ui_id,parent_ui_id' },
   },
   legacy: {
     triggers: { table: 'sys_hub_trigger_instance', fields: 'sys_id,trigger_type,table,condition,active,sys_class_name' },
@@ -53,6 +60,101 @@ const raw = (record, field) => {
   const v = record?.[field];
   return v && typeof v === 'object' ? v.value : v;
 };
+
+/* ------------------------------------------------------------------ *
+ * SESSION 1 / WI-6 — PUBLISHED IS A THREE-WAY AGREEMENT
+ * ------------------------------------------------------------------ */
+
+/**
+ * The ways a flow can fail to be published, each named.
+ *
+ * MEASURED on dev424910, 2026-09-08. Every one of the 33 flows the SDK had
+ * installed was `active=false, status=draft, latest_snapshot=''` — and one of
+ * them ALSO had a `sys_hub_flow_snapshot` row with `status=published` under
+ * that draft header. OOTB published flows (303 of them) agree three ways: the
+ * header names a snapshot, that row exists and is published, and the header
+ * is active. Two OOTB flows are active with no snapshot at all. So neither
+ * `active` alone nor a snapshot row alone is proof; the agreement is.
+ */
+export const PUBLISH_MISMATCH = Object.freeze({
+  NO_SNAPSHOT: 'no_snapshot',
+  ACTIVE_WITHOUT_SNAPSHOT: 'active_without_snapshot',
+  HEADER_DRAFT_WITH_PUBLISHED_SNAPSHOT: 'header_draft_with_published_snapshot',
+  LATEST_SNAPSHOT_MISSING_ROW: 'latest_snapshot_missing_row',
+  LATEST_SNAPSHOT_UNREADABLE: 'latest_snapshot_unreadable',
+  SNAPSHOT_NOT_PUBLISHED: 'snapshot_not_published',
+  INACTIVE_WITH_SNAPSHOT: 'inactive_with_snapshot',
+});
+
+/**
+ * Decide, from the header and the snapshot rows, whether a flow is published.
+ *
+ * Pure: cells may be `{ value, display_value }` or plain strings, and the
+ * VALUE is read every time — a label is never compared. `published: true`
+ * requires all three facts to agree; a disagreement is `false` with the
+ * specific one named, so a caller can say WHICH half is missing rather than
+ * "not published".
+ *
+ * `named` is the row the header's `latest_snapshot` points at, fetched by
+ * sys_id — MEASURED 2026-09-09 on dev424910: the parent_flow query returns it
+ * for most OOTB flows, but on some ("Change - Conflict Detection") the row the
+ * header names is not readable over REST at all while an older parent-linked
+ * row is. So "the named row could not be read" is `published: null`
+ * (UNKNOWN, honestly) and never `false`: a guess in either direction would be
+ * the confident wrong answer this whole layer exists to prevent.
+ */
+export function publishedVerdict({ header, snapshots = [], named = null, namedUnreadable = false } = {}) {
+  const h = header ?? {};
+  const active = String(raw(h, 'active') ?? '') === 'true';
+  const latest = String(raw(h, 'latest_snapshot') ?? '').trim();
+  const norm = (s) => ({
+    sys_id: String(raw(s, 'sys_id') ?? ''),
+    status: String(raw(s, 'status') ?? ''),
+    active: String(raw(s, 'active') ?? '') === 'true',
+  });
+  const rows = (Array.isArray(snapshots) ? snapshots : []).map(norm);
+  const published = rows.filter((r) => r.status === 'published');
+  const pointed = named ? norm(named) : (latest ? rows.find((r) => r.sys_id === latest) ?? null : null);
+
+  const verdict = (mismatch, note, value = false) => ({
+    published: value, mismatch, snapshot: pointed?.sys_id ?? published[0]?.sys_id ?? null, active, latest_snapshot: latest || null, note,
+  });
+
+  if (!latest) {
+    if (published.length) {
+      /*
+       * SESSION 2 — THIS NOTE USED TO ASSERT A CAUSE THE EVIDENCE CONTRADICTS.
+       *
+       * It said "the publish did not complete on the header". Measured on
+       * dev424910 2026-09-09 from syslog_transaction: the ONLY action ever
+       * taken against the flow in this shape was
+       * POST /api/now/processflow/flow/<sys_id>/test, and no activate
+       * transaction exists anywhere on the instance. Pressing Test in Flow
+       * Designer publishes a snapshot to run against and never touches the
+       * header, so this shape is the ORDINARY result of testing a draft.
+       *
+       * The state is reported; the cause is not guessed at.
+       */
+      return verdict(PUBLISH_MISMATCH.HEADER_DRAFT_WITH_PUBLISHED_SNAPSHOT,
+        `the header is ${active ? 'active' : 'a draft'} with no latest_snapshot, yet ${published.length} published snapshot row(s) exist. `
+        + 'Two things produce this: somebody pressed Test in Flow Designer (which publishes a snapshot to run against '
+        + 'and leaves the header alone), or a publish set the snapshot and never reached the header. This read cannot '
+        + 'tell them apart — syslog_transaction can, by whether a /test or an /activate call was made.');
+    }
+    if (active) return verdict(PUBLISH_MISMATCH.ACTIVE_WITHOUT_SNAPSHOT, 'the header is active but names no snapshot and none exists; active alone is not published');
+    return verdict(PUBLISH_MISMATCH.NO_SNAPSHOT, 'the header is a draft and no snapshot row exists');
+  }
+  if (!pointed) {
+    if (namedUnreadable) {
+      return verdict(PUBLISH_MISMATCH.LATEST_SNAPSHOT_UNREADABLE,
+        `the header names snapshot ${latest}, which this connection cannot read — published state is UNKNOWN, not false`, null);
+    }
+    return verdict(PUBLISH_MISMATCH.LATEST_SNAPSHOT_MISSING_ROW, `the header names snapshot ${latest}, and no such row exists`);
+  }
+  if (pointed.status !== 'published') return verdict(PUBLISH_MISMATCH.SNAPSHOT_NOT_PUBLISHED, `the header names snapshot ${latest}, whose status is "${pointed.status}"`);
+  if (!active) return verdict(PUBLISH_MISMATCH.INACTIVE_WITH_SNAPSHOT, `snapshot ${latest} is published but the header is inactive`);
+  return { published: true, mismatch: null, snapshot: latest, active: true, latest_snapshot: latest, note: 'header, snapshot row and active flag agree' };
+}
 
 /** A table that does not exist on this instance answers 400 "Invalid table X". */
 const isMissingTable = (err) => err?.status === 400 && /invalid table/i.test(err.message || '');
@@ -80,6 +182,36 @@ function decodeInputs(encoded) {
     return config;
   } catch {
     // Format changed or the blob is not gzip — surface absence, never a guess.
+    return null;
+  }
+}
+
+/**
+ * PHASE 17 — the same blob, keeping the RAW values.
+ *
+ * `decodeInputs` above prefers `displayValue`, which is right for a human
+ * reading what a trigger listens to: "Change Management Worker" is the answer
+ * to that question. It is the wrong answer for anything that has to ACT on the
+ * trigger — a fixture has to be created on `chg_mgt_worker`, and no amount of
+ * label-to-table guessing is as good as the value the platform already stored
+ * beside the label.
+ *
+ * Additive and separate rather than a change to the decoder above: every
+ * existing reader of `config` keeps the labels it has always been given, and a
+ * caller that needs identities asks for identities.
+ */
+function decodeInputValues(encoded) {
+  if (!encoded) return null;
+  try {
+    const json = zlib.gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8');
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return null;
+    const values = {};
+    for (const p of parsed) {
+      if (p?.name && p.value !== '' && p.value != null) values[p.name] = p.value;
+    }
+    return values;
+  } catch {
     return null;
   }
 }
@@ -146,7 +278,26 @@ export const flows = {
    * have to infer from an empty array.
    */
   async detail(sysId) {
-    const flow = await table.get('sys_hub_flow', sysId);
+    /*
+     * PHASE 18 — READ THE BASE CLASS, so a SNAPSHOT resolves as well as a flow.
+     *
+     * MEASURED on dev424910. Flow Designer keeps a published copy of every flow
+     * in `sys_hub_flow_snapshot`, and that copy is a full second state of the
+     * artifact: the action and trigger instances carry the SNAPSHOT's sys_id in
+     * their `flow` column exactly as they carry the live flow's, so the reads
+     * below already work on one without knowing which it has.
+     *
+     * The only thing that did not work was this line. `sys_hub_flow` holds the
+     * live record and nothing else; the snapshot lives in a sibling table, and
+     * both extend `sys_hub_flow_base`. Reading the BASE resolves either, and
+     * the returned row carries `sys_class_name` so a caller can still tell them
+     * apart — which Phase 18 needs, because "the live flow" and "the version
+     * that was published" are the two states a diff is between.
+     *
+     * This widens what can be READ and nothing else. There is no write path
+     * here, and a sys_id that is neither still 404s.
+     */
+    const flow = await table.get('sys_hub_flow_base', sysId);
     if (!flow) throw Object.assign(new Error(`No flow found with sys_id ${sysId}`), { status: 404 });
 
     let result = await readFamily('v2', sysId);
@@ -182,8 +333,9 @@ export const flows = {
     // Attach decoded trigger configuration (table / condition / strategy).
     const triggers = result.triggers.rows.map((t) => {
       const config = decodeInputs(raw(t, 'trigger_inputs'));
+      const configValues = decodeInputValues(raw(t, 'trigger_inputs'));
       const { trigger_inputs: _drop, ...rest } = t; // the raw blob is noise for clients
-      return { ...rest, config };
+      return { ...rest, config, configValues };
     });
 
     // Subflow calls, with the input mapping decoded out of the same kind of blob.
@@ -304,6 +456,33 @@ export const flows = {
     return rows.map((r) => ({ sys_id: r.sys_id, name: r.name, type: r.type, active: r.active === 'true' }));
   },
 
+  /**
+   * SESSION 1 / WI-6 — the live three-way read behind `publishedVerdict`.
+   *
+   * Two reads, both off the instance: the header's own `active`, `status` and
+   * `latest_snapshot`, and every snapshot row whose `parent_flow` is this flow.
+   * Returns the verdict plus the raw header cells, so a caller can hand the
+   * header to the read-back verifier rather than a summary of it.
+   */
+  async publishedProof(sysId) {
+    const header = await table.get('sys_hub_flow', sysId, 'false');
+    if (!header) throw Object.assign(new Error(`No flow found with sys_id ${sysId}`), { status: 404 });
+    const snapshots = await table.query('sys_hub_flow_snapshot', {
+      query: `parent_flow=${sysId}`, fields: 'sys_id,status,active,sys_created_on', limit: 50, display: 'false',
+    }).catch((err) => { if (isMissingTable(err)) return []; throw err; });
+    /* The row the header actually names, by sys_id. Unreadable is a distinct
+     * answer from absent — see publishedVerdict. */
+    const latest = String(raw(header, 'latest_snapshot') ?? '').trim();
+    let named = null;
+    let namedUnreadable = false;
+    if (latest) {
+      try { named = await table.get('sys_hub_flow_snapshot', latest, 'false'); } catch { namedUnreadable = true; }
+      if (named === undefined || named === null) named = null;
+    }
+    const verdict = publishedVerdict({ header, snapshots, named, namedUnreadable: namedUnreadable && !named });
+    return { ...verdict, header, snapshotRows: snapshots.length, namedRowReadable: latest ? Boolean(named) : null };
+  },
+
   executions: (flowSysId) =>
     table.query('sys_flow_context', {
       query: flowSysId ? `flow=${flowSysId}` : '',
@@ -312,9 +491,131 @@ export const flows = {
       limit: 25,
     }),
 
-  setActive: (sysId, active) =>
-    table.update('sys_hub_flow', sysId, { active: active ? 'true' : 'false' }),
+  /*
+   * SESSION 2 — `setActive` IS GONE, AND ITS ABSENCE IS THE POINT.
+   *
+   * It was `table.update('sys_hub_flow', sysId, { active })` — a raw REST write
+   * to a Flow Designer header — and it had no callers left once Session 1
+   * removed the route that used it. Leaving it was leaving the obvious
+   * shortcut for "activate this flow" lying where the next person would find
+   * it, and it does not activate anything: it sets `active` without a
+   * published snapshot, which is the state `publishedVerdict` names
+   * ACTIVE_WITHOUT_SNAPSHOT and refuses to call published. The policy already
+   * refuses that write everywhere else; this closes the last door to it.
+   *
+   * Activation goes through `activateFlows()`, which asks the platform's own
+   * activation processor and proves the result with the three-way read-back.
+   */
 };
+
+/* ------------------------------------------------------------------ *
+ * SESSION 2 / W1a — ACTIVATION, THROUGH THE PLATFORM'S OWN PROCESSOR
+ * ------------------------------------------------------------------ */
+
+/** Where the platform publishes flows. Read off SDK 4.10.1, not invented. */
+export const ACTIVATE_FLOWS_PATH = '/api/now/wfa_fluent/activate_flows';
+
+/**
+ * Ask the instance to publish specific flows.
+ *
+ * ═══ WHY THIS EXISTS, AND WHY IT IS NOT A RAW WRITE ═══
+ *
+ * A flow is published when its header names a snapshot, that snapshot row is
+ * `published`, and the header is `active` — three facts that agree. Only the
+ * platform can produce that state: it compiles the definition into a snapshot
+ * and points the header at it. Setting `active` over the Table API produces a
+ * header that claims to be on and has nothing to run, which is why that write
+ * is refused everywhere in this build and why `flows.setActive` was deleted.
+ *
+ * So this calls the same processor SDK 4.10.1 calls after an install
+ * (sdk-api/dist/flow-activation.js). It is a REST call, and it is not a raw
+ * write: the endpoint is the platform's own publish operation, and what lands
+ * is decided by the platform.
+ *
+ * ═══ EVERY DETAIL BELOW IS READ FROM THE SDK, NOT GUESSED ═══
+ *
+ *   the path                `api/now/wfa_fluent/activate_flows`
+ *   the scope               `sysparm_transaction_scope=<sys_scope sys_id>`
+ *   the body                `{ flows: [{sys_id, active: '', state: ''}], actions: [] }`
+ *                           — the two empty strings are literal; the server
+ *                           interprets them, and no other value has been tested
+ *   422                     a NORMAL response meaning every flow failed. The
+ *                           status is not the verdict; `result.summary` is
+ *   "does not represent any resource"
+ *                           the endpoint is absent on this instance. The SDK
+ *                           logs that at DEBUG and returns silently, which is
+ *                           how an install can publish nothing and say nothing.
+ *                           HERE IT IS A LOUD FAILURE.
+ *
+ * ═══ WHAT IT WILL NOT DO ═══
+ *
+ * It sends ONLY the sys_ids it is given. The SDK's own post-install task sends
+ * every non-deleted key in the project (all 33 flows in this workspace today,
+ * 31 of them experiments, several record-triggered on `incident`), so
+ * activating through an install is an all-or-nothing act on the whole
+ * application. This is scoped by construction.
+ *
+ * It decides nothing about success — it reports what the platform said. The
+ * caller proves publication by reading the three-way proof back.
+ */
+export async function activateFlows({ flowSysIds = [], actionSysIds = [], scopeId } = {}) {
+  const flows_ = [...new Set(flowSysIds.filter(Boolean))];
+  if (!flows_.length) throw new SnowError('activateFlows was given no flow to activate.', 400);
+  if (!scopeId) throw new SnowError('activateFlows needs the scope sys_id the flows live in; the platform scopes the transaction by it.', 400);
+
+  const res = await instanceRequest(ACTIVATE_FLOWS_PATH, {
+    method: 'POST',
+    params: { sysparm_transaction_scope: scopeId },
+    body: {
+      flows: flows_.map((sys_id) => ({ sys_id, active: '', state: '' })),
+      actions: actionSysIds.map((sys_id) => ({ sys_id, active: '', state: '' })),
+    },
+  });
+
+  const message = res.json?.result?.error?.message ?? res.json?.error?.message ?? res.json?.message ?? res.statusText ?? '';
+
+  /*
+   * The endpoint is missing. SDK 4.10.1 swallows this at DEBUG and returns, so
+   * an install "succeeds" having published nothing. Refusing loudly is the
+   * whole reason this function exists rather than a second `now-sdk install`.
+   */
+  if (String(message).includes('does not represent any resource')) {
+    throw new SnowError(
+      `This instance has no flow-activation endpoint (${ACTIVATE_FLOWS_PATH} does not resolve). Flows cannot be published `
+      + 'from here: the ServiceNow IDE / Fluent support that provides that scripted REST resource is not installed. '
+      + 'Nothing was activated. The SDK hides this failure at debug level; it is reported here because an install that '
+      + 'publishes nothing and says nothing is the exact failure this step exists to stop.',
+      501, { path: ACTIVATE_FLOWS_PATH, status: res.status, message },
+    );
+  }
+  /* 422 is a real answer; anything else that is not ok is a transport failure. */
+  if (!res.ok && res.status !== 422) {
+    throw new SnowError(
+      `Flow activation was refused by ${res.host} (HTTP ${res.status}): ${message || res.text.slice(0, 300)}`,
+      res.status, { path: ACTIVATE_FLOWS_PATH, body: res.text.slice(0, 800) },
+    );
+  }
+
+  const result = res.json?.result ?? {};
+  const summary = result.summary ?? null;
+  const results = Array.isArray(result.results) ? result.results : [];
+  return {
+    /* What the PLATFORM said. Not a verdict — the read-back is the verdict. */
+    reported: summary
+      ? { total: Number(summary.total ?? 0), succeeded: Number(summary.succeeded ?? 0), failed: Number(summary.failed ?? 0) }
+      : null,
+    perFlow: results.map((r) => ({
+      sys_id: r.sys_id ?? r.sysId ?? null,
+      status: r.status ?? null,
+      message: r.message ?? r.error ?? null,
+    })),
+    httpStatus: res.status,
+    requested: flows_,
+    scopeId,
+    /* Bounded, so an unrecognised shape is still inspectable rather than lost. */
+    raw: res.text.slice(0, 4000),
+  };
+}
 
 const BLUEPRINT_SYSTEM = `You are a senior ServiceNow Flow Designer architect. Given a plain-language automation request, design a precise flow blueprint.
 
@@ -359,42 +660,3 @@ export async function designFlowBlueprint(description) {
   }
 }
 
-const RULE_SYSTEM = `You convert a ServiceNow flow blueprint into an equivalent server-side Business Rule when the trigger is record-based. Respond with ONLY JSON:
-{
-  "name": "...",
-  "when": "after" | "before" | "async",
-  "action_insert": true|false,
-  "action_update": true|false,
-  "condition_encoded_query": "...",
-  "script": "ES5 GlideRecord script using (function executeRule(current, previous) { ... })(current, previous); Use gs.info for logging. No modern JS syntax."
-}
-The script must faithfully implement the blueprint steps that are implementable server-side; note skipped steps in comments.`;
-
-export async function blueprintToBusinessRule(blueprint) {
-  const t = blueprint?.trigger || {};
-  if (!t.table || !String(t.type || '').startsWith('record')) {
-    return { error: 'Classic fallback only applies to record-triggered blueprints (created/updated on a table).' };
-  }
-  const raw = await chatOnce({
-    system: RULE_SYSTEM,
-    user: JSON.stringify(blueprint),
-    maxTokens: 3000,
-  });
-  const cleaned = raw.replace(/```json|```/g, '').trim();
-  let spec;
-  try { spec = JSON.parse(cleaned); } catch {
-    return { error: 'Model did not return valid JSON for the business rule.', raw: cleaned };
-  }
-  const record = await table.create('sys_script', {
-    name: spec.name || `NowHelpAssist: ${blueprint.name}`,
-    collection: t.table,
-    when: spec.when || 'after',
-    action_insert: spec.action_insert ? 'true' : 'false',
-    action_update: spec.action_update ? 'true' : 'false',
-    filter_condition: spec.condition_encoded_query || t.condition_encoded_query || '',
-    script: spec.script || '// empty',
-    description: `Generated by NowHelpAssist from flow blueprint "${blueprint.name}". Review before activating.`,
-    active: 'false', // always created inactive — review first
-  });
-  return { rule: record, spec };
-}

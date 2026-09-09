@@ -1,0 +1,44 @@
+{
+  "setup": {
+    "table": "incident",
+    "payload": {
+      "short_description": "Onboarding Priority Check Flow test incident"
+    }
+  },
+  "wait": {
+    "flowName": "Onboarding Priority Check Flow",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "value": "Priority check added."
+      },
+      "note": "subflow adds a priority‑check work note"
+    },
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "value": "Flow completed successfully."
+      },
+      "note": "flow records its own completion work note"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      }
+    }
+  ]
+}

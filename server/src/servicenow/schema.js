@@ -1,4 +1,5 @@
 import { table } from './client.js';
+import { registerInstanceScopedCache } from './instance-binding.js';
 
 /**
  * Reference/table handling core.
@@ -12,12 +13,51 @@ import { table } from './client.js';
 const hierarchyCache = new Map();
 const schemaCache = new Map();
 const displayFieldCache = new Map();
+const existsCache = new Map();
 
 export function clearSchemaCaches() {
   hierarchyCache.clear();
   schemaCache.clear();
   displayFieldCache.clear();
+  existsCache.clear();
 }
+
+/*
+ * SESSION 1 / WI-4 — DOES THIS TABLE EXIST ON THE BOUND INSTANCE?
+ *
+ * The Table API answers 400 "Invalid table" to a write against a name that is
+ * not a table, so the platform would have refused `create_record` on
+ * `sys_flow` eventually — after a human had approved it. The question is asked
+ * here instead, before the card: one `sys_db_object` read, cached per name for
+ * the life of the binding (the switch handler clears it with the rest).
+ *
+ * `_setTableExistsForTests` replaces the INPUT (the answer) so the record
+ * tools and the planner can be exercised offline; it cannot make a refusal
+ * disappear for a table the override says is absent.
+ */
+let tableExistsOverride = null;
+export function _setTableExistsForTests(fn) { tableExistsOverride = typeof fn === 'function' ? fn : null; }
+
+export async function tableExists(t) {
+  const name = String(t ?? '').trim();
+  if (!name) return false;
+  if (tableExistsOverride) return Boolean(await tableExistsOverride(name));
+  if (schemaCache.has(name) || hierarchyCache.has(name)) return true;
+  if (existsCache.has(name)) return existsCache.get(name);
+  const rows = await table.query('sys_db_object', { query: `name=${name}`, fields: 'name', limit: 1, display: 'false' });
+  const found = rows.length > 0;
+  existsCache.set(name, found);
+  return found;
+}
+
+/*
+ * B5 — a schema cache is about ONE instance.
+ *
+ * Consulted after a switch it answers with fields that are all real and none of
+ * which describe the instance the user is looking at. Registered so the switch
+ * handler empties it without this module having to know a switch happened.
+ */
+registerInstanceScopedCache('schema-cache', clearSchemaCaches);
 
 export async function getTableHierarchy(t) {
   if (hierarchyCache.has(t)) return hierarchyCache.get(t);
@@ -174,8 +214,42 @@ const RANK = { id: 0, exact: 1, 'exact-display': 2, 'starts-with': 3, contains: 
 async function keyFieldsFor(t) {
   const df = await getDisplayField(t);
   const configured = KEY_FIELDS[t];
+
+  // A curated entry names columns that were chosen for this table on purpose.
   if (configured) return { df, keys: [...new Set([...configured, df])] };
-  return { df, keys: [...new Set([df, 'name'].filter(Boolean))] };
+
+  /*
+   * PHASE 13 — A FIELD THAT DOES NOT EXIST MATCHES EVERYTHING.
+   *
+   * Measured on the live instance. `incident` has no KEY_FIELDS entry, so this
+   * fallback asked for `name` — a column `incident` does not have. ServiceNow
+   * did not reject the query: an unknown field in an encoded query is SILENTLY
+   * DROPPED, and what remains matches every row. So
+   *
+   *     referenceLookup('incident', 'INC0010001')
+   *
+   * returned six records — five unrelated incidents ranked `exact` because
+   * `name=INC0010001` matched all of them, ahead of the one true
+   * `exact-display` hit — and resolved to INC0000009.
+   *
+   * The ambiguity verdict caught it, so nothing was written to the wrong
+   * incident. But resolving an incident by its number is the most ordinary
+   * thing anyone will ask for, and it could not work at all.
+   *
+   * Only the SPECULATIVE half of the fallback is checked. `name` is a guess
+   * that most tables happen to satisfy; the display field is not, because
+   * `getDisplayField` read it off this table's own dictionary. If the schema
+   * cannot be read, the guess is dropped rather than sent — an unverified
+   * column is exactly what caused the defect.
+   */
+  if (!df) return { df, keys: [] };
+  let hasName = false;
+  try {
+    const schema = await getSchema(t);
+    hasName = schema.fields.some((f) => f.name === 'name');
+  } catch { /* unreadable schema: do not speculate */ }
+
+  return { df, keys: hasName ? [...new Set([df, 'name'])] : [df] };
 }
 
 /**

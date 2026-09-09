@@ -100,12 +100,18 @@ export async function embed(inputs) {
   return vecs;
 }
 
-const toBlob = (vec) => {
+/*
+ * float32 <-> BLOB. Exported because the knowledge store (K1) keeps its own
+ * vectors in its own table and must encode them IDENTICALLY — two encoders for
+ * one format is how a dimension mismatch becomes a silently meaningless cosine
+ * score rather than an error.
+ */
+export const toBlob = (vec) => {
   const f = new Float32Array(vec);
   return new Uint8Array(f.buffer, f.byteOffset, f.byteLength);
 };
 
-const fromBlob = (blob) => {
+export const fromBlob = (blob) => {
   const bytes = blob instanceof Uint8Array ? blob : new Uint8Array(blob);
   // Copy rather than aliasing: the source may not be 4-byte aligned.
   const copy = new Uint8Array(bytes.byteLength);

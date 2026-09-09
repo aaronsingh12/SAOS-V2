@@ -74,7 +74,7 @@ import { estimateTextTokens } from './tokens.js';
  * iteration of a 15-iteration tool loop, and nothing in this product needs a
  * conversation that long. Raising it is safe if a session ever justifies it.
  */
-export const SANE_CONTEXT_CAP = 32_000;
+export const SANE_CONTEXT_CAP = 60_000;
 
 /**
  * Room reserved for the answer, and deliberately more than we ask for.
@@ -167,10 +167,77 @@ export async function computeBudget({ system, tools, maxTokens = 4096 } = {}) {
   const model = llm.model || '';
   const { tokens: modelCtx, source } = await probeContextWindow(model, llm.baseUrl);
 
-  const fixed = estimateTextTokens(system) + estimateTextTokens(JSON.stringify(tools ?? []));
+  /*
+   * PHASE 2 — the fixed cost, itemised.
+   *
+   * `fixed` is unchanged and is still the sum of the two halves, so every
+   * existing assertion about it holds. What is new is that the two halves are
+   * REPORTED separately, because "the fixed overhead is 31,759" was a number
+   * nobody could act on: it did not say whether the prompt or the registry was
+   * the weight, and the answer (20,856 of it tool schemas) is what decided
+   * where Phase 2 spent its effort.
+   */
+  const systemTokens = estimateTextTokens(system);
+  const toolSchemaTokens = estimateTextTokens(JSON.stringify(tools ?? []));
+  const fixed = systemTokens + toolSchemaTokens;
   const headroom = Math.max(OUTPUT_HEADROOM, maxTokens);
   const ceiling = Math.min(modelCtx, SANE_CONTEXT_CAP);
+  /*
+   * WI-BUDGET-1 — STARVATION, SAID OUT LOUD.
+   *
+   * `Math.max` below is a floor, and a floor is silent by construction: once
+   * `ceiling - fixed - headroom` goes negative it returns MIN_HISTORY_TOKENS
+   * and the arithmetic that produced it disappears. That is how the ratchet
+   * hid. Measured at cap 32,000 with the real prompt and the real 90 tool
+   * schemas: fixed 30,868 + headroom 6,144 = 37,012 against a 32,000 ceiling,
+   * so the subtraction was -5,012 and every turn silently ran on the 4,000
+   * floor — LESS conversation than the 5,452 D-7 calls the defect.
+   *
+   * The envelope is over-full BEFORE a single word of history: there is no
+   * allowance left to divide, and no compaction can make one. Reported rather
+   * than repaired, because the repair is a decision about the cap or the
+   * registry that belongs to a human, and a budget that quietly rewrote itself
+   * is what this whole file exists to stop.
+   */
+  const starved = fixed + headroom >= ceiling;
   const budget = Math.max(MIN_HISTORY_TOKENS, ceiling - fixed - headroom);
 
-  return { modelCtx, modelCtxSource: source, cap: SANE_CONTEXT_CAP, ceiling, fixed, headroom, budget };
+  if (starved) reportStarvation({ fixed, headroom, ceiling, budget, tools });
+
+  return {
+    modelCtx, modelCtxSource: source, cap: SANE_CONTEXT_CAP, ceiling,
+    fixed, headroom, budget, starved,
+    // Phase 2 — the breakdown, so a context optimisation is measurable rather
+    // than asserted. Additive: nothing that read this object before reads less.
+    systemTokens, toolSchemaTokens, toolCount: Array.isArray(tools) ? tools.length : 0,
+  };
+}
+
+/**
+ * One line per DISTINCT starvation, not one per turn.
+ *
+ * `computeBudget` runs on every iteration of every turn, so an unconditional
+ * error would emit tens of identical lines per turn and become the noise it is
+ * meant to be the signal against. The signature is the three numbers that
+ * define the state, so a starvation that gets WORSE — another tool, a longer
+ * digest — is a new line rather than a suppressed one.
+ */
+const starvationSeen = new Set();
+
+function reportStarvation({ fixed, headroom, ceiling, budget, tools }) {
+  const signature = `${fixed}:${headroom}:${ceiling}`;
+  if (starvationSeen.has(signature)) return;
+  starvationSeen.add(signature);
+  const toolCount = Array.isArray(tools) ? tools.length : 0;
+  log.error('llm',
+    `BUDGET STARVED: fixed ${fixed} + output headroom ${headroom} = ${fixed + headroom}, which is at or over `
+    + `the ${ceiling}-token ceiling. There is no history allowance left to compute, so the budget fell back to `
+    + `the ${budget}-token floor and the conversation is running on it. This is not something compaction can `
+    + `fix — the request is over budget before any history is added. Raise SANE_CONTEXT_CAP, or shrink the `
+    + `system prompt or the ${toolCount} tool schemas.`);
+}
+
+/** Only for tests — the dedupe set is per-process otherwise. */
+export function clearStarvationLog() {
+  starvationSeen.clear();
 }

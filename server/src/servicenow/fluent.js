@@ -6,6 +6,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSettings } from '../config/store.js';
+import {
+  sdkAuthEnv, boundInstance, parseSdkInstanceEcho, instanceKeyFrom, registerInstanceScopedCache,
+} from './instance-binding.js';
 import { chatOnce } from '../agent/providers/index.js';
 import { codegenDecoding } from '../agent/decoding.js';
 import {
@@ -13,6 +16,8 @@ import {
   pinArtifactNames,
   groundLiterals,
   checkPromisedLiterals,
+  blueprintPromises,
+  checkBlueprintFidelity,
   lintTriggerStrategy,
   RetryLedger,
 } from './codegen-guards.js';
@@ -31,15 +36,20 @@ import { getSchema, referenceLookup } from './schema.js';
 import { queryFieldRoots } from './conditions.js';
 import { assertTaskSla, findSla, SLA_TOLERANCE_DEFAULT_SEC } from './sla.js';
 import { factBlock } from '../memory/facts.js';
-import { flows } from './flows.js';
-import { table } from './client.js';
+import { flows, activateFlows } from './flows.js';
+import { table, SnowError } from './client.js';
+// `log.error` was already called on two paths in this file with nothing
+// importing it — a latent ReferenceError that would only fire the moment
+// something went wrong, which is the worst possible time for the reporter to be
+// the thing that breaks.
+import { log } from '../logging.js';
 
 const pexec = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const SERVER_ROOT = path.resolve(__dirname, '../..');
 const REPO_ROOT = path.resolve(SERVER_ROOT, '..');
-const WORKSPACE = path.join(SERVER_ROOT, 'fluent-workspace');
+export const WORKSPACE = path.join(SERVER_ROOT, 'fluent-workspace');
 const FLOWS_DIR = path.join(WORKSPACE, 'src/fluent/flows');
 const STAGED_DIR = path.join(WORKSPACE, 'staged');
 const STATE_FILE = path.join(SERVER_ROOT, 'data/fluent-state.json');
@@ -53,6 +63,8 @@ const MAX_VERIFY_ATTEMPTS = 4;
 const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 const QUICK_TIMEOUT_MS = 2 * 60 * 1000;
+/** The binding probe is one authenticated round trip; the CLI start-up dominates it. */
+const PROBE_TIMEOUT_MS = 120_000;
 
 /**
  * Live Flow Designer authoring via the ServiceNow SDK (Fluent).
@@ -128,12 +140,45 @@ export async function runSdk(args, timeout = QUICK_TIMEOUT_MS, cwd = WORKSPACE) 
   if (!entry) {
     return { ok: false, code: -1, stdout: '', stderr: 'ServiceNow SDK not found. Install it with: npm i -g @servicenow/sdk', missing: true };
   }
+  /*
+   * THE SDK'S INSTANCE BINDING IS DERIVED HERE, PER INVOCATION.
+   *
+   * It used to come from a standing credential alias, which is a second place
+   * an instance address could live — and did, pointing at a retired PDI while
+   * the REST tier had moved on. Passing the CI environment derived from the
+   * UI config makes the alias irrelevant: MEASURED 2026-08-31, the env vars
+   * override the stored alias completely ("Running in CI mode, using instance
+   * <url>"), verified with a discriminator table present on one host only.
+   *
+   * When nothing is bound in the UI, no env is injected and the CLI falls back
+   * to whatever it has. That is fine for unauthenticated commands like
+   * `--version`; anything that touches an instance goes through
+   * assertTiersAgree() first, which fails closed on an unbound app.
+   */
+  const authEnv = sdkAuthEnv();
+  /*
+   * SESSION 2 — THE SDK'S LOG LEVEL IS PINNED, NOT INHERITED.
+   *
+   * `env` forwarded `process.env` verbatim, so whatever LOG_LEVEL the SERVER
+   * was started with silently decided how much the CLI said. That matters
+   * because SDK 4.10.1 reports four distinct flow-activation outcomes — an
+   * absent endpoint, no flows to send, a task that threw, a task that never
+   * ran — at DEBUG and nowhere else, and a post-install task that throws is
+   * caught and logged at DEBUG while the install still exits 0. What the
+   * install told us was therefore a property of an environment variable rather
+   * than of the deploy.
+   *
+   * Derived from the args so the two stay in step: a call that asks for `-d`
+   * gets a debug logger, everything else gets `info`.
+   */
+  const logLevel = args.includes('-d') || args.includes('--debug') ? 'debug' : 'info';
   try {
     const { stdout, stderr } = await pexec(process.execPath, [entry, ...args], {
       cwd,
       timeout,
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
+      env: { ...process.env, ...(authEnv || {}), LOG_LEVEL: logLevel },
     });
     return { ok: true, code: 0, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
   } catch (err) {
@@ -148,11 +193,336 @@ export async function runSdk(args, timeout = QUICK_TIMEOUT_MS, cwd = WORKSPACE) 
 }
 
 /* ------------------------------------------------------------------ *
+ * The shared binding preflight — every mutating deploy passes through it
+ * ------------------------------------------------------------------ */
+
+/**
+ * Ask the SDK which instance it actually used, by reading its own echo.
+ *
+ * Not the alias list, and not the env we intended to pass: what the CLI SAYS it
+ * targeted, on a real authenticated round trip. That is the only observation
+ * that catches a derivation or injection bug, which is precisely what this
+ * guard exists to be a backstop for now that both tiers derive from one source.
+ *
+ * Costs one cheap query (~8s of CLI start-up). An install costs minutes, so
+ * this is noise on the path that matters.
+ */
+export async function resolveSdkTarget() {
+  const res = await runSdk(['query', 'sys_user', '-q', 'user_name=NOWHELPASSIST_BINDING_PROBE', '-f', 'sys_id', '--limit', '1'], PROBE_TIMEOUT_MS);
+  const echoed = parseSdkInstanceEcho(`${res.stdout || ''}
+${res.stderr || ''}`);
+  return { host: echoed, ok: res.ok, raw: `${res.stdout || ''}${res.stderr || ''}`.slice(0, 400) };
+}
+
+/**
+ * REFUSE ANY MUTATING DEPLOY WHEN THE TWO TIERS DO NOT NAME THE SAME INSTANCE.
+ *
+ * With a single UI-owned source that both tiers derive from, this should never
+ * fire. That is the point: its job is no longer to catch a human forgetting to
+ * repoint an alias, it is to catch a bug in the derivation — an env var that
+ * did not reach the child process, a settings read that returned stale data, a
+ * CLI version that ignores the CI variables. Any of those silently restores the
+ * original failure, where an install succeeds against the wrong instance and
+ * every read-back honestly reports nothing.
+ *
+ * Fails CLOSED: unbound, unknown, or mismatched all refuse.
+ */
+export async function assertTiersAgree({ probe = true, expectMissingApp = false } = {}) {
+  const bound = boundInstance();
+  if (!bound.configured) {
+    throw Object.assign(new Error(
+      'No ServiceNow instance is bound. Set the instance URL and credentials in Settings — nothing may be '
+      + 'installed until the UI specifies where.'
+    ), { status: 409, detail: { restHost: null } });
+  }
+  if (!sdkAuthEnv()) {
+    throw Object.assign(new Error(
+      `The bound instance ${bound.host} has no usable credentials for the SDK tier. Basic auth needs a username `
+      + 'and password; OAuth needs a client id and secret. The SDK binding is derived from those, so an install '
+      + 'cannot be authorised without them.'
+    ), { status: 409, detail: { restHost: bound.host } });
+  }
+  if (!probe) return { ok: true, host: bound.host, probed: false };
+
+  const sdk = await resolveSdkTarget();
+  if (!sdk.host) {
+    throw Object.assign(new Error(
+      `Could not confirm which instance the ServiceNow SDK is targeting, so an install cannot be authorised. `
+      + `The CLI named no instance in its output. Expected it to echo "using instance ${bound.url}".`
+    ), { status: 409, detail: { restHost: bound.host, sdkHost: null, raw: sdk.raw } });
+  }
+  if (sdk.host !== bound.host) {
+    throw Object.assign(new Error(
+      `REFUSING TO INSTALL: the two tiers resolved to DIFFERENT INSTANCES. The Table API reads and verifies `
+      + `against "${bound.host}" (the instance set in the UI), but the ServiceNow SDK reported it is targeting `
+      + `"${sdk.host}". Both are supposed to derive from the same UI config, so this is a derivation bug, not a `
+      + `stale alias — an install would succeed and land the artifacts where the read-back cannot see them.`
+    ), { status: 409, detail: { restHost: bound.host, sdkHost: sdk.host, raw: sdk.raw } });
+  }
+  /*
+   * WI-3 — `expectMissingApp` INVERTS this clause; it never skips it.
+   *
+   * The default is unchanged and is the only thing any existing caller reaches:
+   * the host agreeing is necessary and not sufficient, so the APPLICATION the
+   * workspace names must also exist on that host.
+   *
+   * The one caller that passes `true` is `establishApplication`, whose entire
+   * purpose is the first-time case — and it then refuses if the application
+   * DOES exist. So the two conditions are mutually exclusive: there is no
+   * instance state in which both an install and an establish are permitted, and
+   * no call can select the weaker of two checks. Everything above this line —
+   * an instance bound, credentials the SDK can use, and the SDK echoing the
+   * same host the Table API reads — runs identically either way.
+   */
+  if (expectMissingApp) {
+    return { ok: true, host: bound.host, probed: true, scope: null, scopeId: null, appExpectedMissing: true };
+  }
+  const app = await assertAppBinding();
+  return { ok: true, host: bound.host, probed: true, scope: app.scope, scopeId: app.scopeId };
+}
+
+/**
+ * The APPLICATION is instance-specific too, and `now.config.json` pins it.
+ *
+ * MEASURED 2026-08-31, and it is why section D could not close on the first
+ * attempt. The workspace was pinned to a scope name minted under the RETIRED
+ * PDI's vendor prefix, together with that instance's scope sys_id — and a
+ * sys_id is only meaningful on the instance that minted it. On the newly bound
+ * instance neither existed, so `now-sdk install` answered:
+ *
+ *   "Unable to install application as application was null"
+ *
+ * and blanking `scopeId` does not help — the build refuses with
+ * `requires property "scopeId"`.
+ *
+ * Worse, the scope NAME itself was uncreatable here: the vendor prefix is
+ * issued by the instance, not chosen (`glide.appcreator.company.code`), so the
+ * old name could never be registered on this PDI. The project has since adopted
+ * the instance-issued name as its canonical identity, and the scope sys_id is
+ * no longer pinned at all — see readAppIdentity/resolveScopeId above.
+ *
+ * So this refuses before the install with the actual reason, instead of letting
+ * the CLI report a null-pointer-shaped message that names nothing.
+ */
+export async function assertAppBinding() {
+  const bound = boundInstance();
+  let cfg;
+  try {
+    cfg = await readAppIdentity();
+  } catch (err) {
+    throw Object.assign(new Error(`The Fluent workspace has no readable application identity (${err.message}), so nothing can be installed.`), { status: err.status ?? 409 });
+  }
+
+  const rows = await table.query('sys_scope', {
+    query: `scope=${cfg.scope}`, fields: 'sys_id,scope,name', display: 'false', limit: 1,
+  }).catch(() => []);
+
+  if (!rows.length) {
+    let localPrefix = null;
+    try {
+      const p = await table.query('sys_properties', { query: 'name=glide.appcreator.company.code', fields: 'value', display: 'false', limit: 1 });
+      localPrefix = p[0]?.value ?? null;
+    } catch { /* the advice is better with it, still correct without */ }
+    const pinned = /^x_(\d+)_/.exec(cfg.scope || '')?.[1] ?? null;
+    const prefixNote = localPrefix && pinned && localPrefix !== pinned
+      ? ` This instance issues vendor prefix "${localPrefix}", but the scope name carries "${pinned}" — vendor `
+        + `prefixes are issued by the instance, so this scope name cannot be created here. An application created `
+        + `on ${bound.host} would be x_${localPrefix}_<name>.`
+      : '';
+    throw Object.assign(new Error(
+      `REFUSING TO INSTALL: the application "${cfg.scope}" does not exist on the bound instance ${bound.host}. `
+      + `The workspace names it as its canonical identity, but no sys_scope row carries that name here.${prefixNote} `
+      + 'Re-establishing this application on the bound instance is a deliberate action — a new scope name and a new '
+      + 'app record — not something an install should do as a side effect.'
+    ), { status: 409, detail: { scope: cfg.scope, boundHost: bound.host, localVendorPrefix: localPrefix } });
+  }
+
+  /*
+   * The identity can no longer carry a stale pin — `readAppIdentity` refuses a
+   * tracked scopeId outright — so the drift worth checking is the per-instance
+   * CACHE. A cached id that no longer matches the instance means the app was
+   * deleted and recreated, or the cache was written under a different binding;
+   * either way an install would target a sys_app that is not the one the scope
+   * name resolves to now.
+   */
+  const onInstance = rows[0].sys_id;
+  const cached = readInstanceState(bound.host).scopeIds?.[cfg.scope];
+  if (cached && cached !== onInstance) {
+    throw Object.assign(new Error(
+      `REFUSING TO INSTALL: "${cfg.scope}" resolves to ${onInstance} on ${bound.host}, but the cached scope id for `
+      + `this instance is ${cached}. Installing against a stale app sys_id is how artifacts land in the wrong `
+      + 'application. Re-resolve with resolveScopeId(scope, { refresh: true }).'
+    ), { status: 409, detail: { scope: cfg.scope, cached, onInstance, boundHost: bound.host } });
+  }
+
+  return { ok: true, scope: cfg.scope, scopeId: onInstance, host: bound.host };
+}
+
+/* ------------------------------------------------------------------ *
+ * Application identity: the NAME is source, the SYS_ID is instance-local
+ * ------------------------------------------------------------------ */
+
+const APP_CONFIG = path.join(WORKSPACE, 'now.config.json');
+const APP_CONFIG_TEMPLATE = path.join(WORKSPACE, 'now.config.template.json');
+
+/**
+ * THE DISTINCTION THAT GOVERNS THIS FILE.
+ *
+ *   scope NAME   canonical project identity. The same on every instance the app
+ *                installs to, and legitimately fixed in source.
+ *   scope SYS_ID instance-local. A sys_id means nothing on an instance that did
+ *                not mint it, so pinning one in static config is the "fourth
+ *                pin" that blocked section D — removed here as a CLASS, not
+ *                just for one host.
+ *
+ * `now.config.json` in git therefore carries `{ scope, name }` and no sys_id.
+ * The SDK's build schema requires `scopeId` (blanking it fails with `requires
+ * property "scopeId"`), so it is MATERIALISED around a build/install and the
+ * committed shape is restored afterwards — the pin exists for the seconds the
+ * CLI needs it and never in source.
+ */
+export async function readAppIdentity() {
+  /*
+   * A1 — the TEMPLATE is the tracked source of truth.
+   *
+   * Restoring `now.config.json` in a `finally` left a window in which a commit
+   * could capture the materialised pin, and one did. Fixing the working tree is
+   * not enough, because the failure is about TIMING, not content: any
+   * restore-based scheme has a window.
+   *
+   * So the generated config is gitignored and the identity lives in a tracked
+   * template that no build ever writes. The tracked tree cannot carry the pin at
+   * any instant, whatever a commit happens to coincide with.
+   */
+  const raw = await fsp.readFile(APP_CONFIG_TEMPLATE, 'utf8')
+    .catch(() => fsp.readFile(APP_CONFIG, 'utf8'));
+  const cfg = JSON.parse(raw);
+  if (!cfg.scope) throw Object.assign(new Error('The workspace identity names no scope; now.config.template.json is missing or malformed.'), { status: 409 });
+  if (cfg.scopeId) {
+    throw Object.assign(new Error(
+      'now.config.template.json carries a scopeId. A scope sys_id is instance-local and must never be tracked — '
+      + 'it is resolved live per instance and written only into the generated now.config.json.'
+    ), { status: 409 });
+  }
+  return { scope: cfg.scope, name: cfg.name || cfg.scope };
+}
+
+/** The generated config, written from the template when absent (fresh clone). */
+export async function ensureWorkspaceConfig() {
+  const identity = await readAppIdentity();
+  const existing = await fsp.readFile(APP_CONFIG, 'utf8').then(JSON.parse).catch(() => null);
+  if (existing?.scope === identity.scope) return existing;
+  await fsp.writeFile(APP_CONFIG, `${JSON.stringify(identity, null, 4)}
+`, 'utf8');
+  return identity;
+}
+
+/**
+ * The scope's sys_id ON THE BOUND INSTANCE, resolved by NAME.
+ *
+ * Cached per instance, namespaced exactly like the rest of the B5 state, so a
+ * switch cannot serve one instance's app id to another.
+ *
+ * When the scope does not exist on the bound instance a fresh sys_id is MINTED
+ * and cached. That is not trap #89 — nothing is being passed off as a
+ * researched reference to an existing record. It is the id the application will
+ * be CREATED with by `now-sdk install`, exactly as `now-sdk init` mints one
+ * locally, and `assertAppBinding` still refuses to install against a scope that
+ * is absent unless the caller is deliberately establishing it.
+ */
+export async function resolveScopeId(scopeName, { refresh = false } = {}) {
+  const bound = boundInstance();
+  if (!bound.host) throw Object.assign(new Error('No instance is bound, so the application scope cannot be resolved.'), { status: 409 });
+
+  const cached = readInstanceState(bound.host).scopeIds?.[scopeName];
+  if (cached && !refresh) return { scopeId: cached, source: 'cached-per-instance', existsOnInstance: true };
+
+  const rows = await table.query('sys_scope', {
+    query: `scope=${scopeName}`, fields: 'sys_id,scope,name', display: 'false', limit: 1,
+  }).catch(() => []);
+
+  if (rows.length) {
+    const scopeId = rows[0].sys_id;
+    const prev = readInstanceState(bound.host).scopeIds || {};
+    writeInstanceState(bound.host, { scopeIds: { ...prev, [scopeName]: scopeId } });
+    return { scopeId, source: 'resolved-live-by-scope-name', existsOnInstance: true };
+  }
+
+  const minted = crypto.randomUUID().replace(/-/g, '');
+  const prev = readInstanceState(bound.host).scopeIds || {};
+  writeInstanceState(bound.host, { scopeIds: { ...prev, [scopeName]: minted } });
+  return { scopeId: minted, source: 'minted-for-first-install', existsOnInstance: false };
+}
+
+/**
+ * Run a job with `now.config.json` temporarily carrying the resolved scopeId.
+ *
+ * `finally` restores the committed shape whatever happens, so a crashed build
+ * cannot leave an instance-local sys_id sitting in a tracked file.
+ */
+export async function withMaterializedConfig(job) {
+  const identity = await readAppIdentity();
+  const { scopeId, source } = await resolveScopeId(identity.scope);
+  await fsp.writeFile(APP_CONFIG, `${JSON.stringify({ ...identity, scopeId }, null, 4)}
+`, 'utf8');
+  try {
+    return await job({ ...identity, scopeId, scopeIdSource: source });
+  } finally {
+    // The file is gitignored, so this is hygiene rather than the guarantee —
+    // the guarantee is that it is not tracked at all.
+    await fsp.writeFile(APP_CONFIG, `${JSON.stringify(identity, null, 4)}
+`, 'utf8').catch(() => {});
+  }
+}
+
+/**
+ * A2 — THE VERIFICATION SIGNAL FOR AN SDK INSTALL IS `sys_update_version`.
+ *
+ * MEASURED on the bound instance immediately after a successful install that
+ * demonstrably created a table:
+ *
+ *   sys_update_xml      nameLIKE<scope>     0 rows
+ *   sys_update_version  nameLIKE<scope>    31 rows   (20 for the table alone)
+ *
+ * An application install writes APPLICATION FILE version records. `sys_update_xml`
+ * is the update-set capture path, and artifacts that arrive as application files
+ * never pass through it. Checking it to confirm an SDK install therefore returns
+ * a confident zero about a change that plainly happened — the exact shape of
+ * wrongness this project exists to prevent.
+ *
+ * So: `sys_update_xml` is reserved for update-set / UI-captured changes
+ * (transport.js, transport-export.js, capture.js and the elevated-write cleanup
+ * in execution-harness.js all use it correctly for that). Nothing on the SDK
+ * path may consult it.
+ */
+export async function readInstallVersionRecords(namePattern, { max = 500 } = {}) {
+  const rows = await table.query('sys_update_version', {
+    query: `nameLIKE${namePattern}`,
+    fields: 'name,state,type,source,sys_recorded_at',
+    display: 'false',
+    limit: max,
+  }).catch(() => []);
+  return {
+    pattern: namePattern,
+    count: rows.length,
+    types: [...new Set(rows.map((r) => r.type).filter(Boolean))],
+    current: rows.filter((r) => r.state === 'current').length,
+    rows: rows.slice(0, 25),
+    signal: 'sys_update_version',
+    note: 'sys_update_version is the SDK-install signal. sys_update_xml is the update-set path and is EMPTY after '
+        + 'an application install — checking it would report no change for a change that happened.',
+  };
+}
+
+/* ------------------------------------------------------------------ *
  * Invariant (c): one build/install at a time
  * ------------------------------------------------------------------ */
 
 let queueTail = Promise.resolve();
 let queueDepth = 0;
+
+/** Live depth of the build/install queue — >0 means a deploy is in flight. */
+export const deployQueueDepth = () => queueDepth;
 
 function serialize(job) {
   queueDepth += 1;
@@ -168,15 +538,58 @@ function serialize(job) {
  * Persisted state (last install)
  * ------------------------------------------------------------------ */
 
-function readState() {
+function readRawState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
 }
 
-function writeState(patch) {
-  const next = { ...readState(), ...patch };
+function writeRawState(next) {
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(next, null, 2));
   return next;
+}
+
+/**
+ * B5 — install state is namespaced by instance, and a foreign entry is inert.
+ *
+ * The file used to hold one flat `lastInstall`. After the PDI swap it still
+ * carried `rollbackUrl: https://dev442675.../sys_rollback_context.do?sys_id=…`
+ * while the app was bound to dev428633 — a live, clickable instruction to roll
+ * something back on a retired instance. A rollback URL from instance A must be
+ * impossible to fire against instance B, so state is filed under the host and
+ * a read for the wrong host returns NOTHING rather than the other host's row.
+ *
+ * The legacy flat shape is migrated on first read: it is moved under the
+ * instance it names, recovered from its own rollback URL, and quarantined if
+ * that cannot be determined. It is never silently adopted as the current
+ * instance's state.
+ */
+function migrateLegacyState(raw) {
+  if (!raw || raw.byInstance || !raw.lastInstall) return raw;
+  const owner = instanceKeyFrom(raw.lastInstall.rollbackUrl || '') || null;
+  const { lastInstall, ...rest } = raw;
+  const next = { ...rest, byInstance: {} };
+  if (owner) {
+    next.byInstance[owner] = { lastInstall: { ...lastInstall, instance: owner } };
+  } else {
+    next.quarantined = [{ reason: 'a legacy flat lastInstall naming no instance', entry: lastInstall }];
+  }
+  return writeRawState(next);
+}
+
+/** The host every per-instance record is filed under. */
+export const boundHost = () => boundInstance().host;
+
+export function readInstanceState(host) {
+  const raw = migrateLegacyState(readRawState());
+  if (!host) return {};
+  return raw.byInstance?.[host] ?? {};
+}
+
+export function writeInstanceState(host, patch) {
+  const raw = migrateLegacyState(readRawState());
+  const byInstance = { ...(raw.byInstance || {}) };
+  byInstance[host] = { ...(byInstance[host] || {}), ...patch };
+  return writeRawState({ ...raw, byInstance });
 }
 
 /* ------------------------------------------------------------------ *
@@ -567,8 +980,73 @@ function parseAuthList(stdout) {
 }
 
 let capCache = { at: 0, value: null };
-const CAP_TTL_MS = 30_000;
+export const CAP_TTL_MS = 30_000;
 let capRefreshing = null;
+
+/*
+ * SESSION 1 / WI-3 — STALENESS IS NOT IGNORANCE.
+ *
+ * MEASURED 2026-09-08. `cachedCapability()` returned null the moment its TTL
+ * expired, for the ~8 s a refresh takes, while it still HELD the last probe.
+ * Discovery reads null as `unknown`; unknown is never available; so on every
+ * refresh every SDK capability vanished from the planner prompt, and the
+ * planner — offered only REST — produced a VALID plan to `create_record` on a
+ * flow table. The Application Builder read the same window as REQUIRES_SDK.
+ *
+ * The rule now: a value the probe already established is served while the
+ * next probe runs, and it is DOWNGRADED to unknown only when a probe actually
+ * fails (throws) — never because the clock moved. A cold process is unknown
+ * until its first probe, which `primeCapability()` runs at boot and which the
+ * per-instance flush re-runs after a switch, so the window is start-up only.
+ *
+ * `capProbe` is the seam the offline suite injects; in production it is the
+ * real probe, FORCED so the refresh cannot be answered from the cache it is
+ * trying to renew.
+ */
+let capProbe = null;
+const realProbe = () => capability({ force: true });
+
+function refreshCapability() {
+  if (capRefreshing) return capRefreshing;
+  // The probe STARTS now, synchronously — a caller that observes "a refresh
+  // was triggered" must be able to observe it without yielding.
+  let started;
+  try { started = Promise.resolve((capProbe ?? realProbe)()); } catch (err) { started = Promise.reject(err); }
+  capRefreshing = started
+    .then((value) => {
+      if (value) capCache = { at: Date.now(), value };
+      return value ?? null;
+    })
+    .catch((err) => {
+      // A probe that FAILED is the one thing that may take a known value away.
+      log.warn('fluent', `the SDK capability probe failed — SDK availability is UNKNOWN until the next probe succeeds: ${err.message}`);
+      capCache = { at: Date.now(), value: null, error: err.message };
+      return null;
+    })
+    .finally(() => { capRefreshing = null; });
+  return capRefreshing;
+}
+
+/** Run the probe now rather than on the first request that needs it. Resolves to the value (or null on failure). */
+export function primeCapability() {
+  return refreshCapability();
+}
+
+/** Test seams. `null` restores the real probe / an empty cache. */
+export function _setCapabilityProbeForTests(fn) { capProbe = typeof fn === 'function' ? fn : null; capRefreshing = null; }
+export function _setCapCacheForTests(next) { capCache = next ?? { at: 0, value: null }; capRefreshing = null; }
+
+/*
+ * A probe result is a fact about ONE instance. Switching the binding flushes
+ * it (so the old host's answer is never served against the new one) and
+ * starts the new host's probe immediately, rather than leaving it to whichever
+ * request happens to arrive first.
+ */
+registerInstanceScopedCache('sdk-capability', () => {
+  capCache = { at: 0, value: null };
+  capRefreshing = null;
+  refreshCapability();
+});
 
 /**
  * The cached probe, or null — never a wait.
@@ -587,13 +1065,11 @@ let capRefreshing = null;
  * broken" are different answers and only one of them prints fix commands.
  */
 export function cachedCapability() {
-  if (capCache.value && Date.now() - capCache.at < CAP_TTL_MS) return capCache.value;
-  if (!capRefreshing) {
-    capRefreshing = capability()
-      .catch(() => null)
-      .finally(() => { capRefreshing = null; });
-  }
-  return null;
+  const fresh = Boolean(capCache.value) && Date.now() - capCache.at < CAP_TTL_MS;
+  if (!fresh) refreshCapability();
+  // Stale-while-revalidate: the last known value, or null only when nothing
+  // was ever established (cold) or the last probe FAILED.
+  return capCache.value ?? null;
 }
 
 /**
@@ -610,6 +1086,40 @@ export function cachedCapability() {
  * -f sys_id --limit 1`, the cheapest genuinely authenticated SDK command, which
  * is what actually proves the credential is valid.
  */
+/**
+ * The `auth.verified` states that mean flow authoring can proceed.
+ *
+ * A SET, not an equality test, and that distinction is the whole bug this fixes.
+ *
+ * `verified` has four values and they are not a flat enum — they are a ladder of
+ * increasing evidence:
+ *
+ *   'unknown'  nothing was derived; no credentials.        NOT ready.
+ *   'derived'  the UI config produced usable credentials.  Ready.
+ *   'live'     those credentials were PROVEN against the
+ *              instance by the deep probe.                 Ready, and more so.
+ *   'failed'   the probe was rejected by the instance.     NOT ready.
+ *
+ * Readiness was written as `auth.verified === 'derived'`, which quietly meant
+ * "ready only while unproven". The deep probe UPGRADES 'derived' to 'live' on
+ * success, so `capability({ deep: true })` reported `ok: false` precisely when
+ * the credentials had just been proven to work — and with an EMPTY `fixes`
+ * array, because nothing had gone wrong to push a fix for.
+ *
+ * Live 2026-09-02 is what that cost. A deep check returned CLI 4.10.1 present,
+ * auth verified 'live', workspace present with 25 sources, `lastInstall.ok:
+ * true` from three hours earlier — and `ok: false`. The agent obeyed its own
+ * rule C ("Business Rule fallback ONLY when flow_authoring_capability reports
+ * ok:false"), told the user native Flow Designer was unavailable, and offered
+ * to write a business rule instead of the flow and subflow that had been
+ * working all along. The shallow check the UI polls stayed 'derived' and kept
+ * saying ok:true, so the page and the agent disagreed with each other.
+ *
+ * Adding a value to this ladder now means adding it here, where the ordering is
+ * written down, rather than to an equality buried in an expression.
+ */
+export const AUTH_READY = new Set(['derived', 'live']);
+
 export async function capability({ deep = false, force = false } = {}) {
   if (!deep && !force && capCache.value && Date.now() - capCache.at < CAP_TTL_MS) {
     return capCache.value;
@@ -632,48 +1142,81 @@ export async function capability({ deep = false, force = false } = {}) {
     }
   }
 
-  // --- auth ---
+  /* --- auth ---
+   *
+   * B3 — THE SDK NO LONGER HAS A BINDING OF ITS OWN.
+   *
+   * This used to read the stored credential alias and report which host it
+   * pointed at. That store is exactly the second place an instance address
+   * could live, and it drifted: it named a retired PDI for weeks while the REST
+   * tier had moved on, and an install landed there, successfully, unnoticed.
+   *
+   * The alias is gone. Authentication is derived per invocation from the UI
+   * config, so what this reports is whether that derivation produces usable
+   * credentials — and any remaining stored alias is listed as INERT, because it
+   * no longer decides anything and reporting it as the binding would be a lie.
+   */
   const settings = getSettings();
-  const nowhelpassistHost = (settings.connection.instanceUrl || '').replace(/\/+$/, '');
+  const bound = boundInstance();
+  /*
+   * WI-2 — `credentials: []` AND `alias: null` ARE GONE, AND THAT IS THE FIX.
+   *
+   * They were vestigial: after the alias was removed as a binding, neither
+   * field could ever hold anything, so both reported empty on a perfectly
+   * authenticated instance. A reader — human or model — sees "credentials: [],
+   * alias: null" and concludes the SDK is unauthenticated. That is exactly the
+   * conclusion an investigation reached on 2026-09-07 while the SDK was in fact
+   * logging into dev424910 successfully on every call.
+   *
+   * A field that is structurally always empty does not report a fact; it
+   * invents one. `mechanism` says what actually authorises the CLI, and it is
+   * the only auth input there is.
+   */
   const auth = {
-    credentials: [], alias: null, host: null, username: null,
+    source: 'derived-from-ui-config',
+    mechanism: 'ci-env',
+    host: bound.host, username: bound.username,
     verified: 'unknown', matchesNowHelpAssistInstance: null, error: null,
+    inertStoredAliases: [],
   };
+  if (!bound.configured) {
+    auth.error = 'No instance is bound. Set the instance URL and credentials in Settings.';
+    fixes.push({ problem: 'No instance bound', command: 'Open Settings and save the instance URL, username and password.' });
+  } else if (!sdkAuthEnv()) {
+    auth.error = `The bound instance ${bound.host} has no credentials the SDK can use (basic needs a password; OAuth needs a client id and secret).`;
+    fixes.push({ problem: 'SDK credentials incomplete', command: 'Open Settings and complete the connection credentials.' });
+  } else {
+    auth.verified = 'derived';
+    // True by construction now — both tiers read one config — and reported so
+    // the UI can keep showing agreement rather than silently dropping the field.
+    auth.matchesNowHelpAssistInstance = true;
+  }
   if (cli.present && !cli.error) {
     const a = await runSdk(['auth', '--list']);
     if (a.ok) {
-      auth.credentials = parseAuthList(a.stdout);
-      const def = auth.credentials.find((c) => c.isDefault) || auth.credentials[0] || null;
-      if (def) {
-        auth.alias = def.alias;
-        auth.host = def.host;
-        auth.username = def.username;
-        auth.verified = 'stored';
-        if (nowhelpassistHost && def.host) {
-          auth.matchesNowHelpAssistInstance = def.host.replace(/\/+$/, '') === nowhelpassistHost;
-        }
-      } else {
-        auth.error = 'No stored SDK credentials.';
-        fixes.push({
-          problem: 'SDK not authenticated',
-          command: `now-sdk auth --add ${nowhelpassistHost || 'https://<instance>.service-now.com'} --type basic --alias nowhelpassist`,
-        });
-      }
-    } else {
-      auth.error = (a.stderr || 'now-sdk auth --list failed').slice(0, 400);
+      auth.inertStoredAliases = parseAuthList(a.stdout).map((c) => ({ ...c, inert: true }));
     }
   }
 
-  if (deep && auth.alias) {
+  if (deep && auth.verified === 'derived') {
     const probe = await runSdk(['query', 'sys_user', '-q', 'user_name=admin', '-f', 'sys_id', '--limit', '1', '-o', 'json']);
     if (probe.ok && /"ok"\s*:\s*true/.test(probe.stdout)) {
       auth.verified = 'live';
     } else {
       auth.verified = 'failed';
       auth.error = (probe.stderr || probe.stdout || 'Authenticated probe failed').slice(0, 400);
+      /*
+       * The remedy has to name the thing that actually decides. It used to say
+       * `now-sdk auth --add ... --alias ${auth.alias}` — with `auth.alias`
+       * permanently null it rendered "--alias null", and it pointed at the
+       * credential store this design deliberately abandoned. Following it would
+       * recreate the second binding whose drift caused an install to land on a
+       * retired PDI.
+       */
       fixes.push({
-        problem: 'Stored SDK credential rejected by the instance',
-        command: `now-sdk auth --add ${auth.host || nowhelpassistHost} --type basic --alias ${auth.alias}`,
+        problem: `The instance rejected the credentials derived from Settings for ${auth.host}`,
+        command: 'Open Settings and re-enter the username and password for this instance. '
+          + 'The SDK is authenticated per invocation from that config — there is no stored alias to repair.',
       });
     }
   }
@@ -691,7 +1234,7 @@ export async function capability({ deep = false, force = false } = {}) {
     workspace.error = `now.config.json unreadable: ${err.message}`;
     fixes.push({
       problem: 'Fluent workspace missing',
-      command: 'now-sdk init --appName "NowForge Flows" --packageName nowforge-flows --scopeName x_2196302_nwforge --template base',
+      command: 'now-sdk init --appName "NowForge Flows" --packageName nowforge-flows --scopeName x_2002152_nwforge --template base',
     });
   }
   workspace.sources = await listSourceFiles();
@@ -706,9 +1249,13 @@ export async function capability({ deep = false, force = false } = {}) {
     fixes.push({ problem: 'Codegen cheatsheet missing', command: 'restore docs/fluent-flow-cheatsheet.md' });
   }
 
-  const state = readState();
+  // Only this instance's install history is visible; another host's is not ours to report.
+  const state = readInstanceState(boundInstance().host);
   const value = {
-    ok: Boolean(cli.present && !cli.error && auth.alias && !workspace.error && cheatsheet.present && auth.verified !== 'failed'),
+    // `auth.alias` used to be the readiness signal. There is no alias any more —
+    // the binding is derived from the UI config — so readiness is now "the
+    // derivation produced usable credentials and they have not been proven bad".
+    ok: Boolean(cli.present && !cli.error && AUTH_READY.has(auth.verified) && !workspace.error && cheatsheet.present),
     cli,
     auth,
     workspace,
@@ -719,6 +1266,41 @@ export async function capability({ deep = false, force = false } = {}) {
     fixes,
     checkedAt: new Date().toISOString(),
   };
+
+  /*
+   * THE INVARIANT THAT WOULD HAVE CAUGHT THE BUG ABOVE, checked out loud.
+   *
+   * Every path that makes this report NOT ready also pushes a fix — a missing
+   * CLI, an unbound instance, incomplete credentials, a rejected probe, a
+   * broken workspace, an absent cheatsheet. So `ok: false` with an empty
+   * `fixes` is not a state this function has a way to legitimately produce: it
+   * means readiness was decided by something that never explained itself.
+   *
+   * It is not a cosmetic gap. The agent's operating rule is "Business Rule
+   * fallback ONLY when flow_authoring_capability reports ok:false — if you fall
+   * back, tell the user why, quoting the fixes[] commands". An unexplained
+   * refusal is therefore an instruction to abandon flow authoring with nothing
+   * to say about it, which is exactly what happened on 2026-09-02.
+   *
+   * Reported rather than thrown: a capability check that explodes takes the
+   * Flows page down with it, and a contradictory report is still more useful
+   * than none. But it is LOUD, and it ships the contradiction to the caller as
+   * a fix entry so the refusal at least says that it cannot justify itself.
+   */
+  if (!value.ok && fixes.length === 0) {
+    const detail =
+      `cli.present=${cli.present} cli.error=${cli.error ? 'set' : 'null'} ` +
+      `auth.verified=${auth.verified} workspace.error=${workspace.error ? 'set' : 'null'} ` +
+      `cheatsheet.present=${cheatsheet.present}`;
+    log.error('fluent',
+      `capability reported ok:false with NO fixes — every not-ready path pushes one, so readiness was ` +
+      `decided by something that did not explain itself. ${detail}`);
+    fixes.push({
+      problem: 'Flow authoring reported unavailable, but no check failed. This is a bug in the capability report itself, not a problem with your instance.',
+      command: `Do NOT fall back to a Business Rule on the strength of this. Sub-checks: ${detail}`,
+    });
+  }
+
   if (!deep) capCache = { at: Date.now(), value };
   return value;
 }
@@ -1022,12 +1604,23 @@ export function extractSource(raw) {
 
 function extractDiagnostics(result) {
   const text = `${result.stdout}\n${result.stderr}`;
-  const lines = text.split('\n').filter((l) => /ERROR|error TS|Build failed|diagnostic/i.test(l));
+  /*
+   * `timed out` and `Command failed` earn their place here by measurement.
+   *
+   * A failed install reported only "Command failed: …node.exe …index.js install"
+   * — the command, not the cause — while the line that actually explained it,
+   * "[now-sdk] ERROR: The deployment request timed out waiting for a response.",
+   * sat in stdout and matched no filter. Naming the command instead of the
+   * reason is trap #51 committed in our own code.
+   */
+  const lines = text.split('\n').filter((l) => /ERROR|error TS|Build failed|diagnostic|timed out|Command failed/i.test(l));
   return (lines.length ? lines.join('\n') : text).slice(0, 6000).trim();
 }
 
 async function build() {
-  return serialize(() => runSdk(['build'], BUILD_TIMEOUT_MS));
+  // The scopeId the CLI's schema demands exists only for the duration of the
+  // call; the committed config carries the scope NAME and nothing instance-local.
+  return serialize(() => withMaterializedConfig(() => runSdk(['build'], BUILD_TIMEOUT_MS)));
 }
 
 /* ------------------------------------------------------------------ *
@@ -1050,8 +1643,56 @@ export async function buildWorkspace() {
 }
 
 /** Install the workspace. Serialized against every other build/install. */
-export async function installWorkspace() {
-  return serialize(() => runSdk(['install'], INSTALL_TIMEOUT_MS));
+/**
+ * Install the workspace. Serialized against every other build/install.
+ *
+ * `timeoutMs` exists because the default is a CEILING, not a floor for
+ * answering. Measured whole-app installs on this instance take 249-344s; the
+ * 15-minute default therefore means a stalled install spins for a quarter of an
+ * hour with nothing to tell a stall from slow progress.
+ *
+ * A caller that intends to READ BACK afterwards should pass a tighter bound.
+ * Cutting the client short does not cancel the deployment — §44 measured the
+ * server completing a request the client had given up on — so the bound is a
+ * decision about when to go and LOOK, not about when to give up.
+ */
+/*
+ * F1 — state the SDK model cannot express, re-applied after every deploy.
+ *
+ * The dependency points ONE WAY on purpose: the installer knows a hook exists,
+ * not what it does. post-install-state.js registers itself, exactly as
+ * instance-binding.js lets a cache register itself for the instance switch.
+ * Importing it here would be a cycle — it needs readInstanceState from this file.
+ */
+const postInstallHooks = new Set();
+
+export function registerPostInstallHook(fn) {
+  postInstallHooks.add(fn);
+  return () => postInstallHooks.delete(fn);
+}
+
+export async function installWorkspace({ timeoutMs = INSTALL_TIMEOUT_MS, emit = () => {} } = {}) {
+  const result = await serialize(() => withMaterializedConfig(() => runSdk(['install'], timeoutMs)));
+
+  /*
+   * Runs on BOTH paths, deliberately. A red install is only a claim (§44) — the
+   * server may have completed a request the client abandoned — so an install
+   * that REPORTED failure can still have re-applied the app from source and
+   * reverted an out-of-model flag. Skipping the reconciler on failure would
+   * leave exactly that case undetected, which is the drift F1 exists to close.
+   */
+  const reconciliation = [];
+  for (const hook of postInstallHooks) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      reconciliation.push(await hook({ emit }));
+    } catch (err) {
+      // A hook that throws must not turn a completed install into an exception.
+      log.error('fluent', `a post-install hook threw: ${err.message}`);
+      reconciliation.push({ ran: false, error: err.message });
+    }
+  }
+  return reconciliation.length ? { ...result, reconciliation } : result;
 }
 
 export { extractDiagnostics };
@@ -1074,7 +1715,7 @@ export const WORKSPACE_DIRS = {
  * not assumed, so a failed generation provably leaves nothing behind and never
  * reaches the instance — invariants (a), (b) and (d).
  */
-export async function generateAndValidate(spec, emit = () => {}, { updates = null, artifactType = null } = {}) {
+export async function generateAndValidate(spec, emit = () => {}, { updates = null, artifactType = null, blueprint = null } = {}) {
   const settings = getSettings();
   emit({ type: 'generating' });
 
@@ -1099,6 +1740,24 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
   // intersected with the spec text — it can narrow the guard, never invent it.
   const promisedLiterals = groundLiterals(spec, intent?.promised_literals || []);
   if (promisedLiterals.length) emit({ type: 'promised_literals', literals: promisedLiterals });
+
+  /*
+   * WI-4 — the APPROVED blueprint's own promises, which need no grounding.
+   *
+   * `groundLiterals` keeps only claims it can find in the spec text, because a
+   * model-proposed literal that appears nowhere in the request is unfounded. A
+   * blueprint is the opposite: a human approved it, so its name, inputs and
+   * written values are authoritative and are checked as-is.
+   */
+  const promises = blueprint ? blueprintPromises(blueprint) : null;
+  if (promises && (promises.name || promises.inputs.length || promises.literals.length)) {
+    emit({
+      type: 'blueprint_promises',
+      name: promises.name,
+      inputs: promises.inputs.map((i) => i.name),
+      literals: promises.literals,
+    });
+  }
 
   const context = await buildLiveContext(intent);
   if (context.resolved.length) emit({ type: 'resolved', resolved: context.resolved });
@@ -1231,6 +1890,23 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
       staticErrors.push(litCheck.diagnostic);
       stages.push('literals');
       emit({ type: 'literals_rejected', attempt, missing: litCheck.missing });
+    }
+
+    /*
+     * WI-4 — THE ARTIFACT BUILT MUST BE THE ARTIFACT APPROVED.
+     *
+     * In the same gate as the literal check, and for the same reason: this is a
+     * PRE-BUILD static comparison, so a drifted candidate never compiles, never
+     * installs and never reaches the instance. Running it after the install
+     * would be a report about something already deployed.
+     */
+    if (promises) {
+      const bpCheck = checkBlueprintFidelity(source, promises);
+      if (!bpCheck.ok) {
+        staticErrors.push(bpCheck.diagnostic);
+        stages.push('blueprint_fidelity');
+        emit({ type: 'blueprint_drift', attempt, drift: bpCheck.drift });
+      }
     }
 
     // Step 1 — the artifact that was asked for is the artifact that must come
@@ -1367,13 +2043,83 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
   };
 }
 
-function parseInstall(result) {
+/**
+ * SESSION 2 — WHAT AN INSTALL ACTUALLY SAID ABOUT ACTIVATION.
+ *
+ * `activation` used to be one regex capture or `null`, and `null` meant four
+ * different things. Read from the SDK 4.10.1 source
+ * (sdk-api/dist/flow-activation.js, orchestrator.js), flow activation is a
+ * POST-INSTALL TASK, and:
+ *
+ *   - it runs only AFTER the deployment wait succeeds, inside the same try, so
+ *     a deployment timeout means activation was never attempted at all;
+ *   - if the endpoint is absent the SDK logs at DEBUG and RETURNS;
+ *   - if there is nothing to send it logs "No flows to activate" at DEBUG;
+ *   - if it THROWS, `runPostInstallTasks` catches it, logs at DEBUG, and the
+ *     install still exits 0.
+ *
+ * So a clean `now-sdk install` is compatible with zero flows published, and
+ * `activation: null` was the same word for "it worked and said nothing",
+ * "the endpoint is missing", and "it failed". Three-valued now, with the
+ * reason named — and `activation` keeps its old meaning so existing readers
+ * are untouched.
+ */
+export const ACTIVATION = Object.freeze({
+  SUCCEEDED: 'succeeded',
+  PARTIAL: 'partial',
+  FAILED: 'failed',
+  ABSENT: Object.freeze({
+    value: 'absent',
+    reasons: Object.freeze(['endpoint_not_found', 'no_flows_to_activate', 'task_threw', 'unknown']),
+  }),
+});
+
+/** How many characters of the SDK's own output are kept as evidence. */
+const SDK_OUTPUT_KEEP = 16 * 1024;
+
+export function parseInstall(result) {
   const text = `${result.stdout}\n${result.stderr}`;
+  const complete = text.match(/Flow activation complete:\s*(\d+)\/(\d+)\s*succeeded(?:,\s*(\d+)\s*failed)?/i);
+
+  let activationOutcome = null;
+  let activationReason = null;
+  let activationCounts = null;
+
+  if (complete) {
+    const succeeded = Number(complete[1]);
+    const total = Number(complete[2]);
+    const failed = complete[3] !== undefined ? Number(complete[3]) : Math.max(0, total - succeeded);
+    activationCounts = { succeeded, total, failed };
+    if (failed > 0) activationOutcome = succeeded > 0 ? ACTIVATION.PARTIAL : ACTIVATION.FAILED;
+    else activationOutcome = ACTIVATION.SUCCEEDED;
+  } else {
+    activationOutcome = ACTIVATION.ABSENT.value;
+    // The four silent paths, each identified by the string the SDK emits at
+    // DEBUG. `unknown` is the honest fifth answer, not a default to lean on.
+    if (/Flow activation endpoint not found/i.test(text)) activationReason = 'endpoint_not_found';
+    else if (/No flows to activate/i.test(text)) activationReason = 'no_flows_to_activate';
+    else if (/Post-install task .* failed|Failed to activate flows/i.test(text)) activationReason = 'task_threw';
+    else activationReason = 'unknown';
+  }
+
   return {
-    activation: text.match(/Flow activation complete:\s*(\d+\/\d+)\s*succeeded/i)?.[1] || null,
+    // Unchanged: "N/M" when the line was printed, null otherwise.
+    activation: complete ? `${complete[1]}/${complete[2]}` : null,
+    activationOutcome,
+    activationReason,
+    activationCounts,
     rollbackUrl: text.match(/(https?:\/\/\S*sys_rollback_context\.do\?sys_id=\w+)/i)?.[1] || null,
     appUrl: text.match(/(https?:\/\/\S*sys_app\.do\?sys_id=\w+)/i)?.[1] || null,
   };
+}
+
+/** The SDK's own account of a deploy, bounded, kept as evidence on every path. */
+function sdkOutputOf(res) {
+  const tail = (s) => {
+    const t = String(s ?? '');
+    return t.length > SDK_OUTPUT_KEEP ? `…(truncated ${t.length - SDK_OUTPUT_KEEP} chars)…${t.slice(-SDK_OUTPUT_KEEP)}` : t;
+  };
+  return { code: res.code ?? null, timedOut: res.timedOut === true, stdout: tail(res.stdout), stderr: tail(res.stderr) };
 }
 
 /**
@@ -1381,7 +2127,7 @@ function parseInstall(result) {
  * `now-sdk install` ships the WHOLE application, so the returned `shipped` list
  * names every artifact the deploy touched — not just the requested one.
  */
-export async function deploy(name, emit = () => {}) {
+export async function deploy(name, emit = () => {}, { skipFlowActivation = false } = {}) {
   // `install` ships whatever is in dist/, which is only as fresh as the last
   // build. Deploying without building silently installs a stale package — a
   // restored source file appeared to deploy 3/3 while never reaching the
@@ -1393,22 +2139,78 @@ export async function deploy(name, emit = () => {}) {
     return { ok: false, message: 'Build failed; nothing was installed.', diagnostics: extractDiagnostics(pre) };
   }
 
-  emit({ type: 'deploying' });
-  const res = await serialize(() => runSdk(['install'], INSTALL_TIMEOUT_MS));
-  const parsed = parseInstall(res);
+  /*
+   * B7 — the binding preflight, on the flow/SLA/catalog path too.
+   *
+   * This path was unguarded while the DBA one was, which is backwards: it is
+   * the older and busier of the two. It runs after the build (so a spec that
+   * was never going to compile is not charged a probe) and before the install
+   * (because the install is the thing that becomes untrue).
+   */
+  emit({ type: 'binding_check' });
+  let binding;
+  try {
+    binding = await assertTiersAgree();
+  } catch (err) {
+    return { ok: false, message: err.message, bindingRefused: true, detail: err.detail ?? null };
+  }
+  emit({ type: 'binding_ok', host: binding.host });
 
-  writeState({
+  emit({ type: 'deploying' });
+  /*
+   * SESSION 2 — `-d`, because the four ways activation can silently not happen
+   * are DEBUG-level strings and nothing else distinguishes them. Without it a
+   * clean install that published nothing is indistinguishable from one that
+   * published everything. `runSdk` pins LOG_LEVEL to match the flag.
+   */
+  /*
+   * SESSION 2 — `skipFlowActivation` EXISTS BECAUSE THE SDK'S ACTIVATION IS
+   * APP-WIDE AND OURS IS NOT.
+   *
+   * The SDK's post-install task publishes every non-deleted key in the project
+   * (sdk-api/dist/orchestrator.js:533 -> getRecordIdsByTable), not the artifact
+   * that was just built. On this workspace that is all 33 flows, 31 of them
+   * experiments and several record-triggered on `incident` — so an install run
+   * to REMOVE artifacts would publish everything still present, and start them
+   * firing on live records. There is no way to narrow it from the CLI; the only
+   * control is the documented `--skip-flow-activation` flag.
+   *
+   * Default false, so every existing caller behaves exactly as before. The
+   * removal path passes true and publishes deliberately afterwards, scoped, via
+   * `activateManagedFlow`.
+   */
+  const installArgs = skipFlowActivation ? ['install', '-d', '--skip-flow-activation'] : ['install', '-d'];
+  const res = await serialize(() => withMaterializedConfig(() => runSdk(installArgs, INSTALL_TIMEOUT_MS)));
+  const parsed = parseInstall(res);
+  const sdkOutput = sdkOutputOf(res);
+  if (skipFlowActivation) {
+    parsed.activationOutcome = ACTIVATION.ABSENT.value;
+    parsed.activationReason = 'skipped_by_request';
+  }
+
+  /*
+   * B5 — install state is filed UNDER the instance it happened on.
+   *
+   * A rollback URL is an instruction to undo something on a specific host. The
+   * flat `lastInstall` this replaced held a dev442675 URL long after the app
+   * had been rebound to dev428633, so the one piece of state whose whole
+   * purpose is to point at a real thing pointed at the wrong system.
+   */
+  writeInstanceState(binding.host, {
     lastInstall: {
       at: new Date().toISOString(),
       ok: res.ok,
       activation: parsed.activation,
+      activationOutcome: parsed.activationOutcome,
+      activationReason: parsed.activationReason,
       rollbackUrl: parsed.rollbackUrl,
       requested: name || null,
+      instance: binding.host,
     },
   });
 
   if (!res.ok) {
-    return { ok: false, message: 'now-sdk install failed.', diagnostics: extractDiagnostics(res), ...parsed };
+    return { ok: false, message: 'now-sdk install failed.', diagnostics: extractDiagnostics(res), sdkOutput, ...parsed };
   }
 
   emit({ type: 'verifying' });
@@ -1431,21 +2233,66 @@ export async function deploy(name, emit = () => {}) {
       const sysId = row.sys_id?.value ?? row.sys_id;
       const detail = await flows.detail(sysId);
       const type = detail.flow.type?.value ?? detail.flow.type;
+      /*
+       * SESSION 1 / WI-6 — PUBLISHED IS READ, NOT INFERRED FROM `active`.
+       *
+       * `active` alone was the whole read-back, and on dev424910 it was false
+       * for every installed flow while the SDK's own log said nothing about
+       * activation. The three-way proof (header `latest_snapshot`, a published
+       * snapshot row, `active`) is read here, and the EXPECTED scope is the
+       * workspace's — resolved by name, before the header is consulted — so
+       * `describeWrite` can hand the verifier a request that does not depend
+       * on what came back.
+       */
+      const proof = await flows.publishedProof(sysId).catch((err) => ({
+        published: false, mismatch: 'unreadable', note: `published proof could not be read: ${err.message}`, header: null, snapshot: null,
+      }));
+      let expectedScopeId = null;
+      let scopeName = null;
+      try {
+        const identity = await readAppIdentity();
+        scopeName = identity?.scope ?? null;
+        if (scopeName) expectedScopeId = (await resolveScopeId(scopeName)).scopeId ?? null;
+      } catch { /* reported as null; the verifier then treats scope as unverifiable rather than guessed */ }
+      const cell = (v) => (v && typeof v === 'object' && 'value' in v ? v.value : v);
+      const headerCells = proof.header ?? detail.flow;
+      const header = {
+        sys_id: sysId,
+        name: cell(headerCells?.name) ?? null,
+        active: String(cell(headerCells?.active) ?? ''),
+        status: cell(headerCells?.status) ?? null,
+        latest_snapshot: cell(headerCells?.latest_snapshot) ?? '',
+        sys_scope: cell(headerCells?.sys_scope) ?? null,
+        type,
+      };
       verified = {
         sys_id: sysId,
-        name: detail.flow.name?.value ?? detail.flow.name,
+        table: 'sys_hub_flow',
+        name: header.name,
         type,
         internal_name: detail.flow.internal_name?.value ?? detail.flow.internal_name ?? null,
         // A subflow's contract is read back off the instance, not inferred from
         // the source that was just installed. The two are reported side by side
         // so a drift is visible instead of assumed away.
         contract: type === 'subflow' ? await flows.contract(sysId).catch(() => null) : null,
-        active: (detail.flow.active?.value ?? detail.flow.active) === 'true',
+        active: header.active === 'true',
+        published: proof.published === true,
+        proof: { published: proof.published === true, mismatch: proof.mismatch ?? null, snapshot: proof.snapshot ?? null, note: proof.note ?? null },
+        scope: scopeName,
+        scopeId: header.sys_scope,
+        expectedScopeId,
+        header,
         link: base ? `${base}/nav_to.do?uri=sys_hub_flow.do?sys_id=${sysId}` : null,
         sourceTables: detail.sourceTables,
         triggers: detail.triggers.length,
         actions: detail.actions.length,
         logic: detail.logic.length,
+        /* The calls this flow makes, read from sys_hub_sub_flow_instance_v2 — a
+         * flow whose only step is a call is otherwise "0 actions". */
+        subflow_calls: (detail.subflowCalls ?? []).map((c) => ({
+          sys_id: cell(c.sys_id), subflow: cell(c.subflow), subflow_name: c.subflow?.display_value ?? null,
+          wait_for_completion: String(cell(c.wait_for_completion) ?? '') === 'true',
+        })),
         notes: detail.notes,
       };
     }
@@ -1454,6 +2301,15 @@ export async function deploy(name, emit = () => {}) {
   return {
     ok: true,
     ...parsed,
+    /*
+     * SESSION 2 — the SDK's own account of the deploy, kept on SUCCESS too.
+     *
+     * It was kept only on the failure path, which is exactly backwards for the
+     * question that matters: a successful install that activated nothing is
+     * the dangerous outcome, and the only thing that distinguishes it is a
+     * DEBUG line in this output. Bounded to the last 16 KB of each stream.
+     */
+    sdkOutput,
     verified,
     shipped,
     shippedNote: `now-sdk install deploys the whole application: this install shipped ${shipped.length} artifact(s) from ${files.length} source file(s).`,
@@ -1465,13 +2321,13 @@ export async function deploy(name, emit = () => {}) {
  * ------------------------------------------------------------------ */
 
 /** Full pipeline: spec → validated source → install → read-back. */
-export async function createLiveFlow(spec, emit = () => {}, { updates = null, artifactType = null } = {}) {
+export async function createLiveFlow(spec, emit = () => {}, { updates = null, artifactType = null, blueprint = null } = {}) {
   const cap = await capability();
   if (!cap.ok) {
     return { ok: false, stage: 'capability', message: 'Live Fluent authoring is not available in this environment.', capability: cap };
   }
 
-  const gen = await generateAndValidate(spec, emit, { updates, artifactType });
+  const gen = await generateAndValidate(spec, emit, { updates, artifactType, blueprint });
   if (!gen.ok) return { ok: false, stage: 'validate', ...gen };
 
   // Verification spec. A record-triggered flow is proven by firing it; a
@@ -1542,6 +2398,186 @@ export async function createLiveFlow(spec, emit = () => {}, { updates = null, ar
     contract: gen.contract,
     verification,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * SESSION 2 / W1a — THE SANCTIONED ACTIVATION STEP
+ * ------------------------------------------------------------------ */
+
+/**
+ * Publish one managed flow or subflow, and prove it.
+ *
+ * ═══ THE GAP THIS CLOSES ═══
+ *
+ * Measured on dev424910: 33 flows installed, none published. The SDK activates
+ * flows as a POST-INSTALL TASK that runs only after its deployment wait
+ * succeeds — and that wait is a fixed 300-second client-side abort
+ * (sdk-api/dist/connector.js:156) which fired on six of our installs. When it
+ * fires, `runPostInstallTasks` is never reached, so nothing was ever published.
+ * Worse, when it IS reached and throws, the SDK catches it and logs at DEBUG
+ * while the install still exits 0. There was no way to publish a flow from
+ * this build, and no way to find out that nothing had been.
+ *
+ * So the model's only reachable route to "make this flow live" was
+ * `update_record` on `sys_hub_flow` — which the policy refuses, correctly, and
+ * which would not have worked anyway: `active` without a snapshot is a header
+ * claiming to be on with nothing to run. Measured 2026-09-09: the agent tried
+ * it three times in one turn. THAT is what this step is for.
+ *
+ * ═══ WHAT IT DOES, IN ORDER ═══
+ *
+ *   1. resolve the artifact BY NAME inside the bound scope. A name that
+ *      matches nothing, or more than one thing, stops here.
+ *   2. confirm it actually shipped through an install, by the one query that
+ *      proves it: a `sys_update_version` row for this artifact, `state=current`
+ *      and `source_table=sys_upgrade_history`. That combination means an
+ *      application install put the record there rather than a UI edit.
+ *      REPORTED, NOT REQUIRED — the artifact existing in the scope is the
+ *      stronger fact, and refusing on a missing corroboration would refuse a
+ *      correct state. `sys_upgrade_history` itself is NOT consulted: measured,
+ *      all 60 rows for this app read `complete`, including ones still writing
+ *      minutes later, so it cannot decide terminality for anything.
+ *   3. ask the platform to publish exactly this artifact.
+ *   4. READ THE THREE-WAY PROOF BACK. That is the verdict. What the activation
+ *      call reported is recorded beside it and is never mistaken for it.
+ *
+ * ═══ BOUNDED ═══
+ *
+ * One attempt. No retry, no second install, no fallback to a header write. A
+ * failure returns the mismatch by name so a person can act on it.
+ */
+export async function activateManagedFlow(name, emit = () => {}) {
+  const wanted = String(name ?? '').trim();
+  if (!wanted) throw new SnowError('Name the flow or subflow to publish.', 400);
+
+  const identity = await readAppIdentity();
+  const scope = identity?.scope;
+  if (!scope) throw new SnowError('The workspace declares no scope, so there is nothing to publish into.', 500);
+  const { scopeId } = await resolveScopeId(scope);
+  if (!scopeId) {
+    throw new SnowError(`The scope "${scope}" could not be resolved on the bound instance, so activation has no transaction scope.`, 409);
+  }
+
+  /* ---- 1. resolve, inside the bound scope only ---- */
+  emit({ type: 'activation_resolving', name: wanted });
+  const rows = await table.query('sys_hub_flow', {
+    query: `name=${wanted}^sys_scope=${scopeId}`,
+    fields: 'sys_id,name,type,active,status,latest_snapshot',
+    limit: 5,
+    display: 'false',
+  });
+  if (!rows.length) {
+    return {
+      ok: false,
+      stage: 'resolve',
+      name: wanted,
+      message: `No flow or subflow named "${wanted}" exists in ${scope} on this instance. Nothing was activated. `
+        + 'Install it first — publishing cannot create an artifact.',
+    };
+  }
+  if (rows.length > 1) {
+    return {
+      ok: false,
+      stage: 'resolve',
+      name: wanted,
+      candidates: rows.map((r) => ({ sys_id: r.sys_id, type: r.type })),
+      message: `${rows.length} artifacts in ${scope} are named "${wanted}". Publishing the wrong one is not recoverable by `
+        + 'reading it back, so this refuses rather than choosing.',
+    };
+  }
+  const row = rows[0];
+  const sysId = row.sys_id;
+
+  /* ---- 2. did an install put it there? Reported, never required. ---- */
+  let shipped = { confirmed: false, note: null, rows: 0 };
+  try {
+    const versions = await table.query('sys_update_version', {
+      query: `name=sys_hub_flow_${sysId}^state=current^source_table=sys_upgrade_history`,
+      fields: 'sys_id,sys_created_on,source,action',
+      limit: 3,
+      display: 'false',
+    });
+    shipped = versions.length
+      ? { confirmed: true, rows: versions.length, at: versions[0].sys_created_on, note: 'an application install wrote this artifact' }
+      : {
+        confirmed: false,
+        rows: 0,
+        note: 'no current sys_update_version row sourced from an app install names this artifact. It exists in the scope, '
+          + 'which is the stronger fact, so activation proceeds — but this artifact may have been written by something '
+          + 'other than an install.',
+      };
+  } catch (err) {
+    shipped = { confirmed: false, rows: 0, note: `the install corroboration could not be read (${err.message}); activation proceeds on the artifact's existence` };
+  }
+  emit({ type: 'activation_shipped_check', name: wanted, confirmed: shipped.confirmed });
+
+  /* ---- 3. ask the platform to publish exactly this one ---- */
+  emit({ type: 'activating', name: wanted, sys_id: sysId, scope });
+  let reported = null;
+  try {
+    reported = await activateFlows({ flowSysIds: [sysId], scopeId });
+  } catch (err) {
+    return {
+      ok: false,
+      stage: 'activate',
+      name: wanted,
+      sys_id: sysId,
+      scope,
+      shipped,
+      message: err.message,
+      detail: err.detail ?? null,
+    };
+  }
+
+  /* ---- 4. the read-back is the verdict ---- */
+  emit({ type: 'verifying', name: wanted });
+  const proof = await flows.publishedProof(sysId).catch((err) => ({
+    published: null, mismatch: 'unreadable', note: `the published proof could not be read: ${err.message}`, header: null, snapshot: null,
+  }));
+
+  const cell = (v) => (v && typeof v === 'object' && 'value' in v ? v.value : v);
+  const header = proof.header ?? {};
+  const result = {
+    ok: proof.published === true,
+    name: cell(header.name) ?? wanted,
+    sys_id: sysId,
+    table: 'sys_hub_flow',
+    type: row.type,
+    scope,
+    scopeId,
+    active: String(cell(header.active) ?? '') === 'true',
+    published: proof.published,
+    proof: { published: proof.published, mismatch: proof.mismatch ?? null, snapshot: proof.snapshot ?? null, note: proof.note ?? null },
+    header: {
+      sys_id: sysId,
+      name: cell(header.name) ?? null,
+      active: String(cell(header.active) ?? ''),
+      status: cell(header.status) ?? null,
+      latest_snapshot: cell(header.latest_snapshot) ?? '',
+      sys_scope: cell(header.sys_scope) ?? null,
+    },
+    shipped,
+    /*
+     * What the PLATFORM said, kept beside the proof and never substituted for
+     * it. `reported.succeeded === 1` with `published: false` is a real and
+     * important state: the processor accepted the request and the header did
+     * not end up published.
+     */
+    reported: reported.reported,
+    perFlow: reported.perFlow,
+    activationHttpStatus: reported.httpStatus,
+  };
+
+  if (!result.ok) {
+    result.message = proof.published === null
+      ? `"${result.name}" was submitted for activation and its published state could not be read: ${proof.note}. `
+        + 'No claim is made either way.'
+      : `"${result.name}" is NOT published after activation (${proof.mismatch}): ${proof.note}. `
+        + `The platform reported ${reported.reported ? `${reported.reported.succeeded}/${reported.reported.total} succeeded, ${reported.reported.failed} failed` : 'nothing'}`
+        + `${reported.perFlow?.[0]?.message ? ` — "${reported.perFlow[0].message}"` : ''}.`;
+  }
+  emit({ type: 'activation_done', name: result.name, published: result.published, mismatch: result.proof.mismatch });
+  return result;
 }
 
 /** Managed artifacts: the source files, plus their live state on the instance. */

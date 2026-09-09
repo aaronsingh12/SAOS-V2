@@ -297,6 +297,23 @@ Constraints that bite (all confirmed in the bundled guides):
 
 ## 8. Phase 1 proof — what is live right now ✅
 
+> ⚠️ **PROVENANCE, ADDED 2026-08-31.** Everything in this section was verified
+> through the SDK tier while it was bound to **dev442675**, which is not the
+> currently bound instance. The artifacts described here are live *there*, and
+> are **not present on the bound instance** — see §41 and §42. They have not
+> been re-verified, and cannot be until the application is re-established on the
+> bound instance under a scope name that instance can issue. Treat every "live
+> right now" claim below as describing the retired PDI. The Table-API
+> measurements in §38–§40 were taken against the currently bound REST host and
+> stand.
+>
+> **Outcome (§43):** the application has since been re-established on the bound
+> instance as `x_2002152_nwforge` — a NEW scope, because the vendor prefix is
+> issued by the instance and the old name is unregistrable there. The flow, SLA
+> and catalog artifacts below have NOT been re-verified on it; that is tracked
+> as its own task.
+
+
 Built and installed from `server/fluent-workspace`, then read back off the instance:
 
 | Artifact | sys_id | type | active |
@@ -1024,6 +1041,12 @@ Each one cost a debugging cycle here.
 | 9 | **This PDI lacks `problem_id`, `rfc`, `caused_by`** | "the standard field" isn't there | `incident.parent` / `problem.first_reported_by_task` are the available task-to-task links |
 | 10 | **`trigger_strategy` defaults to `once`, and `once` means once EVER** | a record that re-enters the trigger condition is never processed again | Set it explicitly on every updated/createdOrUpdated trigger; `unique_changes` is the per-transition form |
 | 11 | **`sys_hub_trigger_instance_v2` has no `condition`/`table_name` columns** | a field query returns a row of nulls | The config is a gzip+base64 blob in `trigger_inputs`; decode it |
+| 12 | **A reserved word as an unquoted object key stops the whole job from running** | `sysauto_script` inserts fine, stores byte-identical, `active=true` — and never executes. No syslog row, no error, no partial output | The script engine is ES3-era: `{ case: x }` is a syntax error, `{ 'case': x }` is fine (confirmed by A/B). Quote reserved words; read "the job never reported" as *suspect the script*, not the scheduler |
+| 13 | **`GlideRecordSecure.getRowCount()` never matches what you can actually read** | called before iterating it returns the *unfiltered* count; called after, it returned `0` where 6 rows were genuinely readable | Count impersonated reads by iterating. Trusting `getRowCount` produced a clean false "ACLs make no difference" pass |
+| 14 | **Plain `GlideRecord` hands back rows that `canRead()` denies** | under impersonation `.get()` → `true` and 9 rows iterate, while `canRead()` on the same object → `false` | Plain `GlideRecord` ignores the impersonated user's ACLs entirely. `canRead`/`canWrite`/`canCreate`/`canDelete` are truthful; the returned data is not |
+| 15 | **`isImpersonating()` and `canImpersonate()` are constants in a background job** | `isImpersonating()` is `true` before, during and after; `canImpersonate()` returns `true` for an inactive user and for a GUID matching no `sys_user` row | The job session is already `system` impersonating `admin`. `gs.getUserID()` is the only identity authority; eligibility must be NHA's own `sys_user` query |
+| 16 | **An impersonated denial never says anything** | no exception, no falsy return — a denied read/update is shaped exactly like "no such row" | Only read-back-as-admin proves what happened. See `docs/impersonation-phase0-ledger.md` |
+| 17 | **`impersonate()` with an unknown sys_id silently lands on `guest`** | no error, no no-op — the session becomes a different real user, and `canImpersonate()` already said `true` for that id | Assert `gs.getUserID() === ` the requested sys_id immediately after the switch and abort if it differs. Measured at the B1 proof gate |
 
 ---
 
@@ -4681,3 +4704,1462 @@ value that would have shown this in a minute rather than a morning.
 | 92 | **`finish_reason: "load"` arrives on a 200 with a non-empty `messages` array** | §29's conclusion — "a cold start" — applied to a request that had been warmed up three times | `load` means the request produced no generation; it does not prove the model was loading. Treat it as "the upstream had nothing to say about this request" and check the request first. A user-less conversation reproduces it on a warm model |
 | 93 | **A diagnostic that only reaches stderr does not exist** | the one block that answers "degenerate request or unlucky upstream?" is gone by the time anyone asks | Persist guard dumps where compaction cannot reach them — `tool_events`, not `messages`. Bound the raw body; a failure path is the worst place for an unbounded write |
 | 94 | **A payload serialised outside the retry closure makes every retry a replay** | three "attempts" that are one attempt sent three times, and a flaky-upstream reading of a deterministic bug | Decide inside the retried function what is being sent. Identical bytes may well be correct — but it should be a choice the function makes, not a property of where a `const` happened to sit |
+
+---
+
+## 38. Database Administration — Phase 0 foundations
+
+The DBA module's dependency order is fixed: Schema Intelligence (read) → Impact
+& Safety → Authoring → Data ops. Phase 0 builds none of those. It builds the one
+service every later layer has to quote: **what can this instance actually
+recover?** Getting that wrong is not a bug, it is a promise to a user that a
+deleted record can be brought back when it cannot.
+
+Everything below is measured on **dev428633** (2026-08-31). Note the instance
+id — earlier sections in this document were written against dev442675, which is
+no longer the bound PDI.
+
+### The rollback matrix is conditional, and every condition had to be measured
+
+Runbook §1.5 states the recovery rules but each one is gated on an instance
+fact. Four probes, four surprises.
+
+#### 1. `glide.db.rdbms` answers `gs.getProperty` and has no `sys_properties` row
+
+```
+gs.getProperty('glide.db.rdbms')      ->  "mysql"    (server-side script)
+sys_properties  name=glide.db.rdbms   ->  NO ROW     (Table API)
+sys_properties  nameLIKErdbms         ->  auxdb.db.rdbms = "mysql"   <- the AUXILIARY db
+```
+
+The engine is load-bearing — MySQL/MariaDB gets rollback *and* delete recovery,
+Oracle rollback only, SQL Server neither — so this is the difference between
+offering a recovery window and refusing to. A REST search for the property finds
+only `auxdb.db.rdbms`, which is the auxiliary database's engine. Here they
+happen to agree, so reading it would have been **right by luck**, and wrong on
+any instance where they differ.
+
+`stats.do` was tried as an alternative and does not carry the engine: 200,
+21,216 bytes, zero matches for mysql/mariadb/oracle/sqlserver/rdbms/jdbc.
+
+So engine detection costs one execution-harness round trip (~2s wall, measured
+`elapsedMs: 35` server-side). It is cached for an hour, and when it fails it
+returns `null` — never a default. `recoveryVerdict` degrades to `unknown` and
+tells the caller to treat every delete as irreversible.
+
+#### 2. Delete recovery is PARTIAL here, and a boolean would have to lie about it
+
+`sys_plugins` is 403 over REST. `v_plugin` is readable and carries the same
+state:
+
+| plugin | id | state |
+|---|---|---|
+| Delete Recovery | `com.glide.delete_recovery` | **active** |
+| Delete Recovery: Partial Undelete Support | `com.glide.delete_recovery.partial_undelete` | **active** |
+| Restore Deleted Records | `com.snc.undelete` | **INACTIVE** |
+
+§1.5 requires both for record-delete recovery. Deletes on this instance *are*
+being captured — `sys_delete_recovery` holds rows in state `finished` ("Ready
+for Recovery"), the newest created 2026-08-30, one of them from a
+`/api/now/table/sys_user/…` DELETE — but the plugin providing the restore path
+is not installed.
+
+"Recoverable?" is therefore **three-state**, not two: `full` / `partial` /
+`none`, and `partial` is the state this instance is in. A boolean would have to
+round it either to "yes, 7 days" (false — nothing can restore it) or to "no"
+(false — the data is captured and one plugin activation away). The verdict
+string says exactly that, and the offline suite asserts the partial state never
+reports a `windowDays`.
+
+The 7-day figure itself stays labelled as documentation: there is **no**
+delete-recovery retention property on this instance to measure it against.
+
+#### 3. Rollback retention is per-category, not the single 10 days §1.5 implies
+
+```
+glide.rollback.expiration_days_scripts_bg     10     background scripts
+glide.rollback.expiration_days_app_install    15
+glide.rollback.expiration_days_plugin         15
+glide.rollback.expiration_days_redact          3
+glide.rollback.expiration_days_inst_preview    1
+```
+
+Quoting "10 days" at someone whose change was a plugin activation understates
+their window by a third; quoting it after a redact overstates it by more than 3x.
+
+#### 4. `security_admin` is invisible over REST — ~~and does not exist~~
+
+> **CORRECTED 2026-08-31.** This section originally read "`security_admin` does
+> not exist on this instance", concluding that from a REST query returning zero
+> rows. **That conclusion was wrong.** The role exists; plain REST cannot see
+> it. Gate 0 D-2/H6 had already established this, and `elevation-gate.js` says
+> so explicitly: *"a REST-0-rows result must never be interpreted as 'not
+> assigned' — that interpretation would refuse every legitimate elevation."*
+> The DBA context service made exactly that interpretation. It has been fixed.
+
+`sys_user_role` where `name=security_admin` returns zero rows **over REST**,
+while being readable server-side. `admin` is one of only two directly-held roles
+(the other is `snc_required_script_writer_permission`; 124 roles total, 122
+inherited) — and that role list carries the same blind spot.
+
+So the context service does not decide elevation eligibility at all. It reports
+`securityAdmin: { determinable: false, restVisible: false, held: null }` with the
+reason, and defers: ACL authoring is attempted through the guarded elevation
+path and the **platform's own authorization result** is surfaced. Pre-gating on
+a role REST cannot see would refuse every legitimate elevation.
+
+### Four different shapes of "no" for one question: where are the indexes?
+
+`dba.listIndexes` looked like the easiest Layer 1 tool. It is the hardest, and
+each candidate source fails differently:
+
+| source | result |
+|---|---|
+| `sys_index` | **403** `Failed API level ACL Validation` — closed to REST even for admin |
+| `sys_index_ii` | **400** `Invalid table` — does not exist on this instance |
+| `v_db_index` | **200, zero rows** — unfiltered *and* for `table=incident`. Readable and inert |
+| `sys_package` (to reach it via the parent) | **403** — the read-the-parent trick does not rescue it |
+
+`sys_index` **is** readable from a server-side script. Measured shape, 18
+columns:
+
+```
+logical_table_name   the readable table name   <- query on this
+table                a sys_id reference to sys_db_object
+col_name_string      the indexed column
+index_col_name       sys_id of the column record
+unique_index         "0" / "1"
+access_method        "btree"
+```
+
+So the index path is the execution harness, not REST, and `sys_index_ii` should
+not be looked for at all. This is recorded in `dba-metadata.js` as a `REACH`
+table so a caller gets "this needs the server-side path" instead of a 403 it
+will misread as bad credentials — trap #51 in our own code, again.
+
+### What Phase 0 ships
+
+- `server/src/servicenow/dba-metadata.js` — the metadata client. Pages to a
+  stated ceiling and marks the result `truncated` (the Table API returns exactly
+  `sysparm_limit` rows with no indication there were more); enforces trap #4 by
+  comparing returned keys against requested ones; carries the `REACH` table.
+- `server/src/servicenow/dba-context.js` — engine, plugins, retention, identity,
+  scope, and the three-state recovery verdict.
+- Two read-only agent tools, `dba_context` and `dba_raw_metadata`.
+- 13 offline tests. `npm test` — **991 pass, 0 fail**.
+
+The audit store is **reused, not rebuilt**: `mutation_ledger` already records
+who/what/old/new/when/instance/actor, and a second parallel log would be the
+architecture the runbook's rule 2 forbids.
+
+### One defect this phase found in its own code
+
+The truncation warning fired on `max: 1` identity lookups — asking for one row
+and getting one row genuinely does not prove there was only one, so
+`truncated: true` is correct, but logging a scan-ceiling WARNING for a
+deliberate single-row read trains the reader to ignore the warning that matters.
+The flag is still always reported; the log line is now reserved for reads that
+hit the ceiling unintentionally.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 95 | **`glide.db.rdbms` has no `sys_properties` row** | a REST search for the database engine finds `auxdb.db.rdbms` and nothing else | The property answers `gs.getProperty` server-side only. `auxdb.db.rdbms` is the AUXILIARY database — on this instance it agrees, so reading it is right by luck. Detect the engine through a server script, and return `null` rather than a default when that fails |
+| 96 | **One question, four different shapes of "no"** | `sys_index` 403, `sys_index_ii` 400, `v_db_index` 200-with-zero-rows, `sys_package` 403 | A 403 on a metadata table is an API-level ACL, not a credential problem, and no credential fixes it; a readable view that is always empty is worse, because it looks like an answer. Record reachability per table and route to the server-side path instead of retrying REST |
+| 97 | **Delete Recovery active + Restore Deleted Records inactive** | deletes are captured in `sys_delete_recovery` marked "Ready for Recovery", and nothing on the instance can restore them | Recoverability is three-state. A boolean must round this either to "7-day window" (nothing can restore it) or to "not recoverable" (the data is captured and one plugin away). Say which of the two halves is missing |
+| 98 | **Rollback retention is per-category** | "contexts purge after 10 days", quoted at every change | 10 is `scripts_bg` only: app_install 15, plugin 15, redact 3, inst_preview 1. Read `glide.rollback.expiration_days_*` and quote the row that matches the operation |
+
+---
+
+## 39. Database Administration — Phase 1, Schema Intelligence
+
+Thirteen read-only tools over the metadata tables. It builds on `schema.js`
+rather than beside it — that module already walks `super_class` and merges the
+dictionary across the chain, and a second schema reader would be two readers
+that can disagree. What Phase 1 adds is the DBA half: origin tables, overrides,
+inbound references, classification, relationships, indexes, and the derived map.
+
+### Acceptance, live on dev428633
+
+The runbook's own examples, run against the instance:
+
+| question | answer |
+|---|---|
+| What does `caller_id` reference? | `sys_user`, display field `name`, no qualifier in effect |
+| Show all fields referencing `sys_user` | **3,999** inbound reference fields, not truncated |
+| Where does `incident.number` actually come from? | origin `task` — inherited, `string`, max length 40 |
+| Resolve `INC0000060` | `incident` / `1c741bd70b2322007518478d83673af3` |
+| Classify `incident` | `core-ootb`, uncustomised, "not-directly" safe to modify |
+| Classify a `u_` table | `custom-in-scope`, safe to modify: yes |
+| Schema map for `incident`, depth 1 | 43 nodes, 201 edges (6 extends, 195 reference) |
+| `incident.state` choices | 6, defined on `incident` |
+| Dot-walk `caller_id.department.name` | valid, 3 hops, resolves to `cmn_department.name` |
+
+### Three measurements that changed the implementation
+
+**`sys_dictionary.reference` holds the table NAME, not a sys_id.** The raw cell
+is `{value: "sys_user", display_value: "User"}`. So "every field referencing
+sys_user" is one query on `reference=sys_user` rather than a lookup and then a
+query.
+
+**`super_class` holds a sys_id.** Walking UP can dot-walk `super_class.name`;
+walking DOWN needs the parent's sys_id. `task` has 47 direct children.
+
+**`sys_dictionary_override` values are inert without their flags.** Each
+attribute has both a value and a `<attr>_override` boolean, and real rows carry
+`mandatory: "false"` / `read_only: "false"` with every flag false — a record
+that overrides nothing. Reading the values alone reports configuration that is
+not in effect, so `shapeOverride` returns only flagged attributes and counts the
+rest as `inertOverrideRows`.
+
+### `dba.listIndexes` is the one Layer 1 tool that cannot be completed
+
+It looked like the easiest. Every candidate source was probed, server-side where
+REST refused:
+
+| source | result |
+|---|---|
+| `sys_index` over REST | 403 `Failed API level ACL Validation` |
+| `sys_index` server-side | readable — and **33 rows instance-wide**, none for `incident`, `task` or `sys_user` |
+| `sys_index_ii` | 400 Invalid table — absent |
+| `v_db_index` | 0 rows: REST and server-side, filtered and unfiltered |
+| `v_index_creator` | 0 rows server-side |
+| `GlideTableDescriptor('incident').getIndexes()` | `undefined` — no such method |
+
+`sys_index` extends `sys_metadata`: it is a table of index **definition
+records** (the 33 are plugin-shipped CMDB ones), not a catalogue of the physical
+indexes the platform maintains. Nothing reachable on this instance enumerates
+those.
+
+Every table has at least a primary key, so `count: 0` would be a confidently
+wrong answer indistinguishable from a real empty. The tool therefore never
+claims completeness: it returns `complete: false` always, and on an empty result
+returns a `zeroMeans` field saying in words that this is "no index DEFINITION
+RECORD", not "no indexes", and pointing at System Definition > Database Indexes.
+Verified both ways — `incident` returns 0 with the disclaimer, and
+`cmdb_ci_endpoint_app` returns its 3 real definition records with `zeroMeans:
+null`.
+
+### Two defects the guards caught in their own author
+
+Both were written into this module and both failed loudly rather than silently,
+which is the entire argument for the Phase 0 guards:
+
+1. `sys_number.maximum` does not exist; the column is `maximum_digits`.
+   `assertFieldsHonoured` threw a 502 naming the column. Without it, `maximum`
+   would have been `undefined` on every auto-number report — a field-shaped
+   nothing.
+
+2. `sys_relationship` uses `apply_to` / `query_from`, **not** `applies_to` /
+   `queries_from`, which is what the plural label suggests and what was written
+   first. This one is worse than a wrong field list: an encoded query on an
+   unknown field is silently DROPPED (trap #2), so
+   `applies_toIN…^ORqueries_fromIN…` degrades to *no condition at all* and would
+   have returned every relationship on the instance as though each applied to
+   the table asked about. Caught by re-reading the measured column list, and now
+   held by the field guard.
+
+### A third defect, found by running it: the map fanned out instance-wide scans
+
+`generateSchemaMap` first called `getTable` + `getReferences` per node. Both are
+correct and both are catastrophic here: `getReferences` runs an instance-wide
+inbound scan (`sys_user` alone is 3,999 rows over four pages), and at depth 1
+`incident` has 24 outbound targets. That is ~25 full-instance scans for a graph
+that needs none of them, and it ran past two minutes without finishing.
+
+A map edge only ever needs OUTBOUND references, which come from the node's own
+chain. Classification is now read once, for the root. With `tableRow` and
+`chainDictionary` memoised, depth 1 on `incident` returns 43 nodes and 201 edges
+well inside the timeout.
+
+### Cost
+
+Tool schemas grew from **11,759 to 13,732 estimated tokens** (51 → 64 tools),
+about 152 tokens per new tool. That is a 17% rise in fixed overhead, which
+matters on the constrained model this project is pinned to — descriptions were
+written tight for that reason, keeping only the load-bearing warnings
+(`listIndexes` partiality, `resolveIdentifier` refusing a bare sys_id,
+`getReferences` truncation).
+
+### What ships
+
+`server/src/servicenow/dba-schema.js`, thirteen read-only tools
+(`dba_get_table`, `dba_list_fields`, `dba_get_field`, `dba_get_hierarchy`,
+`dba_get_references`, `dba_resolve_reference`, `dba_dot_walk`, `dba_classify`,
+`dba_resolve_identifier`, `dba_list_choices`, `dba_get_relationships`,
+`dba_list_indexes`, `dba_schema_map`), and 8 offline tests over the two pure
+verdict functions. `npm test` — **999 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 99 | **`sys_index` is a metadata table, not an index catalogue** | `listIndexes('incident')` returns zero and looks like an answer | It extends `sys_metadata` and holds only explicitly-defined index records — 33 instance-wide, none for the common tables. No reachable source enumerates physical indexes (`v_db_index`/`v_index_creator` are empty even server-side, `GlideTableDescriptor.getIndexes` does not exist). Every table has a primary key, so a zero here can never be reported as "unindexed" |
+| 100 | **`sys_relationship` is `apply_to`/`query_from`, singular** | a relationship query that returns every relationship on the instance | The plural reading is the natural one and it is wrong. An encoded query on an unknown field is DROPPED, not rejected (trap #2), so the wrong name widens the query to everything instead of narrowing it to nothing — which reads like a table with a great many relationships |
+| 101 | **A `sys_dictionary_override` value is inert without its `_override` flag** | a child table appears to make a field mandatory, and the form disagrees | Every attribute is a pair: `mandatory` and `mandatory_override`. Rows exist carrying values with every flag false. Report only flagged attributes; count the rest as inert |
+| 102 | **A graph walk that calls a scan per node** | a schema map at depth 1 that never returns | `getReferences` is instance-wide (3,999 rows for `sys_user`). An edge needs only the node's own outbound refs. Check what a traversal actually reads before letting it fan out — 24 targets turned one cheap question into 25 full scans |
+
+---
+
+## 40. Database Administration — Phase 2, Impact & Safety
+
+There is no out-of-the-box "what breaks if I change this?" API. Phase 2 builds
+one, and the shape of the build is dictated by that absence: the answer is only
+as good as the list of artifact tables scanned, so the registry is declarative,
+every finding names the column it matched on, and **every report states what it
+could not see**. A dependency report that lists its hits and stays quiet about
+its blind spots is the most dangerous artifact in this whole module, because it
+reads as exhaustive.
+
+This closes the read-only v1. Layers 1 and 2 ship with zero destructive
+capability, exactly as §2.2 requires.
+
+### Impact, measured on dev428633
+
+`incident`, table-level — **481 dependents**:
+
+| severity | what | count |
+|---|---|---|
+| structural | inbound reference fields | 79 |
+| high | ACLs 112, business rules 39, client scripts 24, UI policies 15, data policies 1 | 191 |
+| medium | form sections 44, UI actions 25, lists 20, forms 8, transform map 1 | 98 |
+| low | reports 72, notifications 24, filters 14, templates 3 | 113 |
+
+`incident.caller_id`, field-level — 29: 11 field ACLs, 10 form placements, 4
+client scripts, 2 UI policy actions, 1 business rule, 1 label.
+
+**Trap #17 is load-bearing here, not a footnote.** `nameSTARTSWITHincident`
+matches `incident_task`, `incident_task.state`, `incident_task.close_notes` — a
+naive prefix scan reported **155** ACLs for incident where the true figure is
+**112**. Every table-scoped match in this module is exact (`name=incident`) or
+exact-plus-dot (`nameSTARTSWITHincident.`), never a bare prefix.
+
+### The blind spots are published with every report
+
+Flow Designer is the big one and it is structural, not an oversight: a flow's
+trigger table is a gzip+base64 blob inside
+`sys_hub_trigger_instance_v2.trigger_inputs` (trap #11), not a queryable column,
+so flows cannot be matched by table with any query. Also declared: dynamically
+constructed table/field names, scoped artifacts this credential cannot read, and
+everything outside the instance. Field mode adds one more — text matches on a
+column name are heuristic, since the name can appear in a comment, an unrelated
+string, or as a dot-walk on another table.
+
+### The matrix is the default; the instance is the answer
+
+`classifyOperation('record_delete')` first returned `reversible: true` — which
+is what §1.5 says, and wrong here. The live verdict on this instance is
+`partial` (captured by Delete Recovery, not restorable without
+`com.snc.undelete`). The prose was correct while the flag was not, and any
+consumer reading the flag alone would have got the opposite of the truth: the
+two-state rounding the three-state verdict was built to prevent, reintroduced
+one layer up.
+
+Engine-dependent operations now overwrite the flag with what the instance
+supports and report the divergence explicitly:
+
+```
+reversible:          "partial"
+reversiblePerMatrix: true
+matrixDivergence:    "The rollback matrix says true, but this instance
+                      supports \"partial\". The instance wins."
+```
+
+Irreversible DDL is unaffected by any of this — no engine makes a drop
+recoverable, and the offline suite asserts that all eight of those operations
+say "CANNOT be undone … on any database engine" in words, carry a reason, and
+demand all three §2.4 confirmations.
+
+### A category error the acceptance run caught: schema rules applied to data
+
+`preflight({ operation: 'record_delete', table: 'incident' })` returned three
+blockers, one of which was *"incident is a platform table. Never edit an
+out-of-scope object directly…"*.
+
+That statement is about changing the table's SCHEMA. Applied to deleting a
+record it is a category error, and a load-bearing one: every useful table on a
+PDI is OOTB, so a preflight that raised it for data would block every record
+operation NHA will ever be asked to perform — and **a gate that always says no
+is a gate that gets bypassed**. The same applied to structural dependents:
+79 inbound reference fields matter enormously when the column is going away, but
+for one record delete the question is which rows point at that row, which is a
+per-record check belonging to Layer 4.
+
+Every operation now declares `acts_on: 'schema' | 'data' | 'platform'`, and the
+schema-only blockers are gated on it. Verified after the fix:
+
+| preflight | verdict | blockers | confirmations |
+|---|---|---|---|
+| `drop_column` on `incident.caller_id` (schema, OOTB) | no-go | 2 | 3 (impact-ack, snapshot, typed phrase) |
+| `drop_column` on a `u_` table (schema, custom) | no-go | 1 — irreversibility only | 3 |
+| `record_delete` on `incident` (data) | no-go | 1 — the partial-recovery divergence | 2 (preview, confirm) |
+
+The custom-table row is the one that proves the gate discriminates rather than
+just refusing everything.
+
+### checkIntegrity is bounded, and says so
+
+Mandatory-empty, unique-duplicate and orphaned-reference checks, each capped at
+a sample (500 rows by default, 100 distinct values for reference checks).
+`incident` returns `clean-within-sample` over 10 checks. The verdict is worded
+that way deliberately: a diagnostic that silently sampled and reported "clean"
+is worse than no diagnostic, and one that scans a production table to exhaustion
+gets switched off.
+
+Worth stating because it surprises people: mandatory is enforced on the FORM,
+not in the database, so historic rows routinely violate it. An empty mandatory
+column is a finding about data, not proof of a broken dictionary.
+
+### `dba_audit` records an assertion and does not dress it as a verification
+
+It writes through the existing `mutation_ledger` — no second audit store — and
+stamps every entry `status: 'unverified'` with `note: "Recorded as reported by
+the caller; no read-back was performed by this tool."` The ledger's other
+statuses are earned by an actual field-by-field read-back, and letting a
+self-reported entry sit beside them unmarked would devalue every honest row in
+the table.
+
+### Cost, and the running total
+
+Tool schemas: **13,732 → 14,860 estimated tokens** (64 → 69 tools). Across all
+three phases the DBA module adds 20 tools and about 3,100 estimated tokens of
+fixed overhead.
+
+`npm test` — **1015 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 103 | **A static rollback matrix outliving the instance it describes** | `reversible: true` on a record delete that nothing on the instance can restore | The documented matrix is a DEFAULT, not an answer. Where an operation's reversibility depends on engine or plugins, overwrite the flag with the live verdict and publish the divergence — prose saying one thing while a boolean says another is worse than either alone |
+| 104 | **Schema rules applied to data operations** | "never edit this platform table directly" blocking an ordinary record delete | Every useful table on a PDI is OOTB, so this blocks everything and the gate gets routed around. Tag each operation with what it acts on and gate schema rules on that |
+| 105 | **A dependency report that does not publish its blind spots** | a clean impact report for a table that three flows depend on | Flow triggers are a gzip blob (trap #11) and are unqueryable by table; dynamic names are unfindable by any search. List what was scanned AND what was not, in the report itself, every time |
+| 106 | **A bounded check reporting an unbounded verdict** | "clean" from a diagnostic that looked at 500 of 400,000 rows | Say `clean-within-sample` and state the bound. A diagnostic that scans everything gets turned off; one that silently samples gets believed |
+
+---
+
+## 41. Database Administration — Phase 3, Schema Authoring (scoped-scratch)
+
+Phase 3 was deliberately scoped to a custom table in our own application: no
+OOTB table was touched, and the augment path is generated and build-checked
+only, never deployed. What the phase actually produced is a working authoring
+pipeline, three SDK facts the docs did not supply, and **one finding that
+invalidates part of every live result in this document**.
+
+### The finding: the SDK and the Table API were bound to DIFFERENT INSTANCES
+
+```
+REST / Table API   server/data/settings.json      dev428633.service-now.com
+SDK  / now-sdk     credential alias "snada-pdi"   dev442675.service-now.com
+```
+
+The PDI was replaced at some point and only `settings.json` was moved. So the
+end-to-end run did this:
+
+```
+[  0.0s] dba_preflight        name is free on dev428633 — true, and irrelevant
+[  1.1s] dba_source_written
+[  1.1s] dba_building
+[ 36.3s] dba_installing       now-sdk install → SUCCESS, real activation
+[177.2s] dba_verifying
+         → "The install reported success but no sys_db_object row named
+            x_2196302_nwforge_asset exists. The table was NOT created."
+```
+
+Every layer behaved correctly. The build was valid — `dist/` contains the
+dictionary XML, six `sys_dictionary` rows, the `sys_choice` set and the
+`sys_documentation` labels. The install genuinely succeeded. The table genuinely
+exists. It is simply **on dev442675**, and the read-back runs against
+dev428633, where there is no table and — the confirming detail — **no
+`sys_update_xml` rows either**. Corroborated independently: the `lastInstall`
+record in `server/data/fluent-state.json` from 2026-08-20 carries
+`rollbackUrl: https://dev442675.service-now.com/...`. The SDK tier has always
+pointed there.
+
+This is the most expensive shape of confidently-wrong this repo has hit, because
+it is not a bug in either tier and **neither tier can detect it alone**. The
+REST half sees a table that does not exist. The SDK half sees a successful
+install. Only comparing the two hostnames reveals it, and nothing was comparing
+them.
+
+It also means: **§8's "Phase 1 proof — what is live right now", and every other
+live SDK claim in this document written before 2026-08-31, describes dev442675,
+not the currently bound instance.** The Table-API measurements in §38-§40 are
+dev428633 and are unaffected.
+
+#### The guard
+
+`assertTiersAgree()` refuses the install, with both hostnames and the alias
+named:
+
+> REFUSING TO INSTALL: the two halves of NowHelpAssist are bound to DIFFERENT
+> INSTANCES. The Table API reads and verifies against "dev428633.service-now.com"
+> (server/data/settings.json), but the ServiceNow SDK would install to
+> "dev442675.service-now.com" (credential alias "snada-pdi"). An install would
+> succeed, report activation, and put the artifacts on the other instance —
+> where the read-back cannot see them.
+
+It runs **after** the offline build (so it does not reject specs that were never
+going to install) and **before** the install (because the install is the thing
+that becomes untrue). It throws rather than warns.
+
+⚠️ **The same exposure exists in `fluent.js deploy()`**, which every flow, SLA
+and catalog-policy install goes through. That path is untouched by this phase
+and still installs without checking.
+
+### Three SDK facts the docs did not supply
+
+Read off `node_modules/@servicenow/sdk-core/dist/db/Table.d.ts` in this
+workspace, on the pinned 4.10.1 — not from the docs site, not from memory.
+
+**1. The Table must be a NAMED EXPORT whose name equals the table's.** The first
+generated source emitted a bare `Table({...})` and the build refused it:
+
+```
+TS213: Table definition should be exported as a named export with the name
+       'x_2196302_nwforge_asset'
+```
+
+This is precisely what the offline build is for (§5: build is free and reaches
+nothing), and why nothing installs before one passes. The failed build also
+removed its own generated source, verified — a failed authoring attempt
+provably leaves nothing for the next install to pick up.
+
+**2. `index` IS available on 4.10.1** — as a Table *option*,
+`index: [{ name?, unique, element }]`, not a separate `Index()` artifact. The
+runbook said to verify Index support and fall back to guided platform steps if
+absent; no fallback is needed for index CREATION.
+
+**3. `augments` is available on 4.10.1** too, so the table-augments pattern for
+OOTB tables exists on this version. It is generated here and **not proven** —
+labelled as such in the code rather than presented as working.
+
+### The pipeline
+
+`spec → validate → preflight → generate → build (offline) → tier check → install
+→ read back → report`. Nothing in it is model-generated: a table spec is
+structured input and the Fluent source is DERIVED from it in code, which is why
+17 offline tests can assert the emitted source exactly rather than sample it.
+
+Spec validation front-loads the rules the SDK and platform enforce later and
+more obscurely: the 30-character name cap (reported with how much room the scope
+prefix actually leaves — 12 characters here), the scope prefix, unsupported
+column types, a reference column with no target, a choice column with no
+choices, a display column that is not in the schema, duplicate columns.
+`allowWebServiceAccess` defaults **on**, because §1.7's 403-with-correct-ACLs is
+otherwise indistinguishable from a permissions problem, and because a table NHA
+cannot read back is a table NHA cannot verify it created.
+
+`$id` keys are namespaced by the table name (trap #1). Confirmed in the build
+output: all 199 new lines in `generated/keys.ts` sit under
+`x_2196302_nwforge_asset*`, with no bare keys and no collisions.
+
+### One defect in the validator, caught by its own negative tests
+
+The name regex was `^[a-z][a-z0-9_]*[a-z0-9]$`, which requires at least TWO
+characters — so a legal single-letter column was rejected as "not a valid column
+name", and that message then **masked every other error in the same spec**.
+Three negative test cases were all reporting the wrong cause. Fixed to
+`^[a-z]([a-z0-9_]*[a-z0-9])?$`; each case now names its real problem.
+
+### Status
+
+The pipeline is proven up to and including a valid offline build and a
+successful install; the read-back is proven to work by correctly refusing to
+confirm a table that is not there. **End-to-end verification against the bound
+instance is NOT done** and cannot be until the SDK is repointed at dev428633.
+The generated source and `keys.ts` are kept: they match what is actually on
+dev442675, and deleting them would create a drift instead of removing one.
+
+`npm test` — **1032 pass, 0 fail**. 22 DBA tools, exactly one mutating.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 107 | **Two tiers bound to different instances** | `now-sdk install` reports success with real activation, and the artifact is absent from every read-back | NHA binds to "the instance" twice — `settings.json` for REST, a stored SDK credential alias for the CLI — and nothing keeps them in step. Replace a PDI and update one, and every install lands on the old one, correctly, forever. Neither tier can see this alone: compare the two hostnames before installing, and refuse |
+| 108 | **A Fluent Table must be a named export matching its own name** | `TS213` naming a table you did define | A bare `Table({...})` compiles as far as the type checker and is rejected by the build. `export const <table_name> = Table({...})`. Cheap to hit, free to catch — the offline build is the reason it never reached an instance |
+| 109 | **A validator regex that quietly requires two characters** | three unrelated negative tests all reporting "not a valid column name" | `^[a-z][a-z0-9_]*[a-z0-9]$` has no single-character match. The wrong error did not just fire — it MASKED the real ones, so the spec's actual problems were invisible. Make the tail optional, and check that each negative case reports the cause you meant to test |
+
+---
+
+## 42. The binding fix — one UI-owned source, and what it uncovered
+
+§41 found that NowHelpAssist bound to "the instance" twice and the two had
+drifted. The fix is not to repoint the alias; that repairs one day and rebuilds
+the same trap for the next PDI swap. The principle now enforced:
+
+> Nothing instance-specific is hardcoded, in code, in static config, or in a
+> standing credential alias. The bound instance is whatever the UI specifies.
+
+### The SDK tier no longer has a binding of its own
+
+MEASURED: the SDK's CI environment variables override a stored alias completely.
+Proven with a discriminator — a table present on the alias host and absent on
+the UI host — same command, twice:
+
+```
+alias path (no env):  "Attempting to log into instance https://dev442675…"   1 record
+CI env path:          "Running in CI mode, using instance https://dev428633…" 0 records
+```
+
+`runSdk` now derives `SN_SDK_*` from the UI config on every invocation. That
+echo line is also the backstop: **the CLI states which instance it actually
+used**, so `assertTiersAgree` compares what the SDK really targeted against what
+the UI specified, rather than trusting that the env reached the child process.
+With one source feeding both tiers the guard should never fire — its job is now
+to catch a derivation bug, and it fails closed on unbound, unknown or mismatched.
+
+### The three stale hardcodes, purged with a read-back each
+
+| what | before | after |
+|---|---|---|
+| SDK credential alias `snada-pdi` | default, → dev442675 | **deleted** — `auth --list` reports "No credentials found", and the SDK still works from derived config alone |
+| `fluent-state.json` rollback URL | a live dev442675 `sys_rollback_context` link | **purged**; state is namespaced by host, legacy entry migrated by recovering its owner from its own URL |
+| instance hostnames in code/static config | — | **none**; every remaining occurrence is a provenance comment |
+
+Per-instance state can no longer act cross-instance: schema and DBA metadata
+caches register for flush on switch, `fluent-state` reads for the wrong host
+return nothing, and ledger reads filter on `instance` — a column every row
+already carried and nothing had ever filtered on, so a sys_id minted on one
+instance could be read back while bound to another.
+
+`assertTiersAgree` is hoisted into `fluent.js` and now guards `deploy()` too —
+the older and busier path, and the one that was unguarded.
+
+### A wrong claim of mine, corrected
+
+Phase 0 reported "`security_admin` does not exist on this instance", concluded
+from a REST query returning zero rows. **That was wrong.** The role exists; REST
+cannot see it. Gate 0 D-2/H6 had already established this and
+`elevation-gate.js` says so in terms: *"a REST-0-rows result must never be
+interpreted as 'not assigned' — that interpretation would refuse every
+legitimate elevation."* The DBA context service made exactly that
+interpretation. It now reports `determinable: false, held: null` and defers to
+the platform's own authorization result. §38's item 4 is corrected in place.
+
+`capability()` also had to change: readiness was gated on `auth.alias`, which is
+now always null by design and would have reported the SDK as permanently broken.
+
+### Section D could not close, and the reason is structural
+
+The re-run got further than before — build clean, `assertTiersAgree` **passed**
+at 21s with the SDK confirming dev428633 — and then the install refused:
+
+```
+[now-sdk] ERROR: Unable to install application as application was null
+```
+
+`now.config.json` pins the workspace to scope `x_2196302_nwforge` with
+`scopeId c44f3c6c37c24793be9f8b759c7818e4`. **Neither exists on the bound
+instance.** A sys_id is only meaningful on the instance that minted it — this is
+a *fourth* instance-specific pin, in static config, of exactly the class this
+work exists to remove. Blanking it does not help: the build refuses with
+`requires property "scopeId"`.
+
+And the scope name itself is **uncreatable here**. The vendor prefix is issued
+by the instance, not chosen:
+
+```
+glide.appcreator.company.code  on dev428633  =  2002152
+scope name pinned in the workspace           =  x_2196302_nwforge
+```
+
+An application created on the bound instance would be `x_2002152_…`. Corroborated
+independently — the only `sys_app` on dev428633 is an unrelated `aaron`, and a
+`sys_metadata_customization` row references `/global/x-2002152-aaron/…`.
+
+So closing D requires **re-establishing the application on the bound instance
+under a new scope name**, which is the follow-up this run was explicitly told
+not to fold in. `assertAppBinding()` now refuses before the install with that
+reason and the local vendor prefix named, instead of letting the CLI report a
+null-pointer-shaped message:
+
+> REFUSING TO INSTALL: the application "x_2196302_nwforge" does not exist on the
+> bound instance dev428633.service-now.com. … This instance issues vendor prefix
+> "2002152", but the scope name carries "2196302" — vendor prefixes are issued by
+> the instance, so this scope name cannot be created here. … Re-establishing this
+> application on the bound instance is a deliberate action — a new scope name and
+> a new app record — not something an install should do as a side effect.
+
+**Status: D is BLOCKED, not failed.** The authoring pipeline is proven through
+spec validation, codegen, offline build, the tier guard and the app guard. The
+one unproven step remains the install-and-read-back, and it is unprovable until
+the application exists on the bound instance. E1 and E2 are gated behind D and
+were not started.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 110 | **A `scopeId` in static config is an instance-specific pin** | `Unable to install application as application was null`, on a workspace that builds cleanly | `now.config.json` carries a sys_id, and a sys_id means nothing on another instance. Blanking it fails the build (`requires property "scopeId"`), so it cannot simply be made optional — it has to be resolved against the bound instance, and the app has to exist there |
+| 111 | **A vendor prefix is issued by the instance, not chosen** | a scope name that worked for months cannot be created on the new PDI | `glide.appcreator.company.code` differs per instance (2196302 vs 2002152 here). A scope name embeds it, so an application is not portable between instances by name — moving one means a NEW scope, not a re-install |
+| 112 | **A readiness flag outliving the thing it measured** | `capability().ok` false forever after the credential alias is removed by design | It was gated on `auth.alias`. When a binding mechanism is replaced, every derived signal has to move with it — grep for the field, do not assume the callers are obvious |
+
+---
+
+## 43. Re-establishing the application, and Phase 3 closing green
+
+§42 left section D blocked: the workspace was pinned to an application that did
+not exist on the bound instance, under a scope name that instance could not
+issue. This closes it.
+
+### The scope name could not be preserved, and that is a property of the platform
+
+The app-repository escape hatch does not apply — `sys_remote_app` holds no
+`nwforge` entry, so the retired scope cannot be reinstalled from a published
+package. And the name itself is unregistrable here:
+
+```
+glide.appcreator.company.code   on the bound instance   2002152
+vendor prefix in the old scope name                      2196302
+```
+
+**A vendor prefix is issued by the instance, not chosen.** So an application
+"moved" between instances does not keep its scope name — it gets a new one. That
+makes the scope name a one-time migration decision rather than per-instance
+behaviour, and the distinction that governs the whole fix:
+
+| | | |
+|---|---|---|
+| scope **NAME** | canonical project identity | the same on every instance the app installs to — belongs in source |
+| scope **SYS_ID** | instance-local | must never be in source |
+
+### De-pinned as a class
+
+`now.config.json` now carries `{ scope, name }`. The SDK build schema *requires*
+`scopeId` — blanking it fails with `requires property "scopeId"` — so
+`withMaterializedConfig` resolves it, writes it for the seconds the CLI needs
+it, and restores the committed shape in a `finally`. Verified: after a 249-second
+install the file was back to two keys.
+
+`resolveScopeId` looks the id up **by name** on the bound instance and caches it
+under that instance's key, in the same namespace as the rest of the B5 state:
+
+```
+first call, scope absent   { source: 'minted-for-first-install', existsOnInstance: false }
+after the install          { source: 'resolved-live-by-scope-name', existsOnInstance: true }
+```
+
+Minting an id for a record that is about to be created is not trap #89 — nothing
+is being passed off as a researched reference to an existing record; it is what
+`now-sdk init` does locally, and `assertAppBinding` still refuses an ordinary
+install against a scope that does not exist.
+
+Two further pins the sweep exposed, neither in the brief:
+
+- **`workspaces.js` addressed a workspace by scope sys_id**, read from the
+  config pin — so "which workspace owns this sys_id?" was answerable only
+  because the answer was hardcoded. It cannot be answered without naming an
+  instance. Resolution is by name now; `applications.js` keyed the same dead map.
+- **`execution-harness.js` namespaced its `sys_user_preference` sink under the
+  app scope**, coupling a transient row that is created, read and deleted inside
+  one call to the application's identity — so a rename broke the harness. It is
+  now `nowhelpassist.exec_harness`: decoupled, not re-literalled.
+
+Also de-pinned: `app-create.test.js` hardcoded a real vendor prefix while
+labelling it "measured from `glide.appcreator.company.code`", which made an
+offline test read as a live assertion about a value that differs per instance.
+
+### The application, established
+
+```
+sys_app     8e720e9b904541b482628a69bebc91a3
+scope       x_2002152_nwforge
+version     0.0.1
+rollback    https://dev428633.service-now.com/sys_rollback_context.do?sys_id=e067bbd5…
+```
+
+Flow activation 24/25. The one failure — `Resolve Approval Matrix`, *"At least
+one Action Instance is required to publish a subflow"* — is a pre-existing
+defect in that artifact's source and would fail on any instance. It is not
+caused by this work.
+
+### Section D — GREEN
+
+Phase 3 scoped-scratch authoring, end to end on the bound instance:
+
+```
+[  0.0s] dba_preflight
+[  1.4s] dba_source_written
+[  1.4s] dba_building
+[ 11.8s] dba_tier_check
+[ 19.7s] dba_tiers_agree      dev428633.service-now.com
+[ 19.7s] dba_installing
+[343.9s] dba_verifying        ok: true | stage: verified
+```
+
+Read back off the instance, field by field:
+
+| check | result |
+|---|---|
+| table | `x_2002152_nwforge_asset` — `73983b1d7387c390a40ef7303ab8b7f2` |
+| scope held | true — `8e720e9b…`, not demoted to global |
+| fields | 5/5 (string, reference, string+choices, integer, boolean) |
+| choices | 3 asked, 3 stored |
+| ACLs | 2 asked, 2 stored (`[read]`, `[write]`) |
+| web service | **reachable** — a live Table API read succeeded, so `allowWebServiceAccess` took effect |
+| audit | ledger row `instance: https://dev428633.service-now.com` |
+
+### The change record is `sys_update_version`, not `sys_update_xml`
+
+Worth stating because the obvious check returns a confident zero:
+
+```
+sys_update_xml     nameLIKEx_2002152        0 rows
+sys_update_version nameLIKEx_2002152       31 rows  (20 for the table alone)
+```
+
+An **application install writes version records**; `sys_update_xml` is the
+update-set capture mechanism, and artifacts that arrive as application files do
+not pass through it. Checking `sys_update_xml` to confirm an SDK install would
+report "the change never happened" about a change that plainly did.
+
+### A defect this section produced, and the test that caught it
+
+The commit adopting the new identity contained the very `scopeId` it removes.
+`git add -A` ran while a deploy had the file materialised, so the stage captured
+the transient copy. The `finally` was working correctly — the working tree was
+pin-free seconds later — but the commit had already frozen the wrong moment.
+
+The `app-identity` test caught it, and only because it reads the **committed
+blob** via `git show HEAD:…` rather than the working tree. A test reading the
+working tree would have passed or failed depending on whether a deploy happened
+to be running, and would have missed this entirely.
+
+The lesson is not "be careful with `git add`". It is that a tracked file which a
+build legitimately mutates must never be swept up by a bulk stage.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 113 | **A vendor prefix is issued by the instance** | a scope name that worked for months is rejected on the new PDI | `glide.appcreator.company.code` differs per instance. A scope name embeds it, so an application is not portable by name — moving one means a NEW scope. Read the prefix live; never carry one in a constant or a test fixture |
+| 114 | **`sys_update_xml` is empty after a successful SDK app install** | 0 update rows for a table you just watched get created | An app install writes `sys_update_version`, not customer updates — `sys_update_xml` is the update-set path. Checking the wrong table reports "no change" about a change that happened. 0 vs 31 rows, measured |
+| 115 | **A bulk `git add` during a build commits the build's scratch state** | the commit that removes a pin contains the pin | A file the build legitimately rewrites (here `now.config.json`, materialised then restored in a `finally`) is correct on disk for all but a few seconds. Stage it explicitly, and assert the invariant against the COMMITTED blob — a test reading the working tree passes or fails on timing |
+
+---
+
+## 44. E1 — the first OOTB touch, and a red install that had succeeded
+
+Gate A closed three prerequisites; E1 added a column to `incident` through the
+SDK table-augments pattern. The base object was never edited.
+
+### Gate A
+
+**A1 — the materialization race, closed structurally.** The scopeId was written
+into a *tracked* `now.config.json` and restored in a `finally`; a commit landed
+inside that window once. Narrowing a window cannot fix a timing bug, so the
+window is gone: `now.config.template.json` is the tracked identity that no build
+writes, and `now.config.json` is generated and gitignored. `readAppIdentity`
+additionally *refuses* a tracked `scopeId`, which made `assertAppBinding`'s
+stale-pin branch unreachable — it now checks the per-instance cached id against
+live resolution instead.
+
+Proven the way the brief asked: a `git add -A && git commit` forced **inside**
+the materialization window. The generated file held the pin, `git add` staged
+nothing, and the committed tree came out clean.
+
+**A2 — `sys_update_version` is the SDK-install signal.** Measured 0
+`sys_update_xml` rows against 31 `sys_update_version` for the same scope after a
+successful install. Every `sys_update_xml` usage in the tree was audited:
+transport, transport-export, capture, acl-authoring and the harness cleanup all
+use it for update-set / Table-API-captured changes, which is correct. **Nothing
+was checking it on the SDK path** — so there was no false check to retire, and
+the real gap was the absent positive signal. `readInstallVersionRecords()` adds
+it; `verifyTable` and `verifyAugment` both report it.
+
+**A3 — done, not deferred.** A build-failing static scan over executable lines
+only (comments carry provenance deliberately): no instance hostname, no quoted
+32-hex sys_id, no scope literal but the canonical one read from the tracked
+template. A fourth test asserts the scanner reads the tree and can see a planted
+violation — a scan that matches nothing proves nothing. It exists because this
+bug class had already been found in six modules.
+
+### The matrix had no additive operations
+
+`preflight({ operation: 'add_column' })` refused `incident` as *unclassified*.
+That is the fail-closed default working correctly, and it exposed a real gap:
+every operation in the matrix was destructive or platform-level.
+
+Neither existing answer fits an additive change. `reversible: false` is wrong —
+adding a column destroys nothing, and demanding the three DDL confirmations for
+it makes the gate noise. `reversible: true` alone is also wrong, because undoing
+it is `drop_column`, which creates no rollback context on any engine.
+
+So additive operations carry both:
+
+```
+reversible: true          nothing is destroyed
+undo: 'drop_column'
+undoReversible: false
+permanence: "...effectively impossible to take back"
+```
+
+`augment_column` is a **distinct operation** from `add_column`, and deliberately
+so: the classifier's *"never edit this platform table directly, use the augment
+pattern"* verdict must not block the very remedy it recommends. Verified
+discriminating:
+
+| preflight | verdict |
+|---|---|
+| `augment_column` on `incident` | **go**, with permanence stated |
+| `add_column` on `incident` (direct edit) | **no-go** — "never edit an out-of-scope object directly" |
+| `drop_column` / `rename_column` / `truncate_table` | **no-go**, 3 confirmations |
+
+The structural-dependents blocker also had to be gated to destructive ops. 79
+inbound reference fields are a serious reason not to drop a column on
+`incident`; they are no reason at all not to add one. Blocking additive changes
+on them refused the sanctioned augment path on every OOTB table — the same
+"gate that always says no" failure as the earlier schema/data mix-up.
+
+### The augment, and what makes it safe
+
+Three properties, enforced in the spec rather than by convention:
+
+- **additive only, structurally.** `augmentTable` emits a schema and nothing
+  else; there is no path through it that drops, renames, retypes or narrows.
+- **the column carries the authoring scope's prefix** — the platform namespaces
+  cross-scope columns so two applications cannot collide on `u_note` on a table
+  neither of them owns. A bare `u_triage_note` is refused at the spec.
+- **`mandatory` and `unique` are forced off**, whatever the caller asks. A
+  mandatory column added to a table with millions of existing rows makes every
+  one of them fail validation on the next save.
+
+**The offline build earned its place again.** The first attempt exported the
+table as `x_2002152_nwforge_augment_incident` and was rejected:
+
+```
+TS213: Table definition should be exported as a named export with the name 'incident'
+```
+
+For an augment the export must be named after the **base table** — the block
+describes `incident`, not the app doing the augmenting. Caught offline, before
+anything reached the instance, and the failed build removed its own source.
+
+### A RED install that had SUCCEEDED
+
+The install then exited 1. The pipeline reported failure. It had worked.
+
+```
+[now-sdk] Running in CI mode, using instance https://dev428633.service-now.com
+[now-sdk] Attempting to log into instance https://dev428633.service-now.com as admin.
+[now-sdk] ERROR: The deployment request timed out waiting for a response.
+```
+
+Read back immediately afterwards, every part of the change was live. Adding a
+column to a table the size of `incident` is a real `ALTER`; the server simply
+took longer than the client would wait.
+
+This repo's founding rule is that **a green install is only a claim until it is
+read back**. The converse bites exactly as hard and had never been written down:
+**a red install is only a claim too.** Trusting the exit code would have reported
+a failure for a change that happened — and invited a retry that re-applies it.
+
+Both `augmentTable` and `createTable` now run the read-back **either way** and
+let it decide. The install's own verdict is reported alongside, never instead,
+with a `reconciliation` note telling the caller not to retry this shape of
+failure without reading back first.
+
+A second defect the same failure exposed: `extractDiagnostics` filtered for
+`ERROR|error TS|Build failed|diagnostic` and reported only *"Command failed:
+…node.exe …index.js install"* — the command, not the cause. The line that
+explained everything was sitting in stdout and matched no filter. Naming the
+command instead of the reason is trap #51 committed in our own code.
+
+### E1 — GREEN
+
+| check | result |
+|---|---|
+| column on `incident` | `x_2002152_nwforge_triage_note` — string(400), `5e3fb71d73c7c390a40ef7303ab8b749` |
+| owned by | `8e720e9b…` — the NowForge scope, not global |
+| mandatory | false — existing rows untouched |
+| base object | `incident.sys_scope` still **global** — not edited |
+| cross-scope privileges | read + write on `incident` in `global`, from our scope |
+| `sys_update_version` | 4 rows — Dictionary + Field Label, previous + current |
+| `listFields('incident')` | 92 fields, up from the 91 measured in §39 |
+| audit | ledger row, `instance: https://dev428633.service-now.com` |
+
+`npm test` — **1073 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 116 | **A red install that succeeded** | `now-sdk install` exits 1 with "The deployment request timed out waiting for a response", and the change is live | The client gave up on a request the server completed. A green install is a claim; a RED install is a claim too. Read back either way and let the read-back decide — and never retry this shape blind, because a retry re-applies a change that already landed |
+| 117 | **An augment's named export is the BASE table's name** | `TS213 … with the name 'incident'` on a file that never mentions defining `incident` | The export name must match the table the block describes, and for an augment that is the table being augmented, not the application augmenting it |
+| 118 | **A diagnostic filter that hides the only useful line** | a failed install reported as "Command failed: node.exe index.js install" | The cause was in stdout and matched none of `ERROR\|error TS\|Build failed\|diagnostic`. A filter is a guess about which lines matter; when it guesses wrong it is worse than no filter, because it looks like the whole answer |
+| 119 | **An operation matrix with no additive entries** | adding a column is refused as "unclassified, treated as irreversible" | Additive is a third state: nothing is destroyed, and undoing it is a drop that cannot be rolled back. Model both halves, or the gate either blocks safe work or waves through the destructive undo |
+
+---
+
+## 45. E2 — data operations and the irreversible gate (DBA complete)
+
+The last DBA stage, and the only one that can destroy something. It is built
+around the single rule the earlier phases paid for twice:
+
+> **A result is never the answer. The read-back is the answer.**
+
+§36 established the first half — the Table API answers 2xx for a write whose
+fields it silently discarded. §44 established the converse — `now-sdk install`
+exited 1 on a deployment that had already succeeded. So every mutation here
+reads the instance back afterwards **on both paths**, and the read-back decides
+what is reported. Nothing is ever retried automatically: retrying a delete that
+actually succeeded is how one mistake becomes two.
+
+### Tier 1 — value changes, and the lookup that must refuse
+
+"Change the caller to John Smith" is two problems and the second is the
+dangerous one. `sys_user` has a display field (`name`) and a key field
+(`user_name`) that are different columns, so a contains-match finds several
+people and none of them may be the one meant.
+
+Measured on the bound instance:
+
+| input | outcome |
+|---|---|
+| `"a"` | **refused** — 10 candidates, best match `starts-with`, not exact. Candidates returned for disambiguation |
+| `"Zzzz Nobody"` | refused — nothing matches |
+| `not_a_column` | refused **before the write** — the Table API accepts unknown fields and discards them (trap #3) |
+| `"Abraham Lincoln"` | resolved `exact-display` → `a8f98bb0…`, written, read back `applied` |
+
+A wrong lookup in a report is a wrong sentence; in a write it is the wrong
+record, silently, and nothing downstream can tell. So ambiguity refuses and
+returns the candidates rather than taking the top hit — even with
+`confirm: true`, which was verified through the tool layer.
+
+Verification reuses `write-verify.js` rather than growing a second differ: that
+module already encodes journal fields never echoing, choice labels resolving,
+computed fields being ignored and unknown fields being absent.
+
+### Tier 2 — record delete, and a window that is not promised
+
+The preview reports what this instance can *actually* recover, read live:
+
+```
+state:         partial
+recordDelete:  captured-but-not-restorable
+windowDays:    null          <- deliberately absent
+dbEngine:      mysql
+plugins:       delete_recovery true, com.snc.undelete FALSE
+```
+
+`windowDays: null` is the point. The documented figure is 7 days; on this
+instance the restore plugin is off, so there is no window to promise and none is
+invented. Create → preview → delete → read-back verified on the scratch table,
+with the record confirmed absent afterwards.
+
+### Tier 3 — refused, and the escalation the agent cannot grant itself
+
+Every irreversible operation is refused by default. Verified:
+
+| attempt | result |
+|---|---|
+| `drop_column` with nothing supplied | refused; all four requirements unmet |
+| calling `executeIrreversible` directly | refused — the executor re-runs the gate; it cannot be bypassed |
+| a phrase naming `u_archived` instead of `<table>.u_archived` | refused |
+| `add_column` sent to the Tier 3 path | rejected as not belonging there |
+| escalation open, nothing else | **still refused** — the flag is not authorisation |
+
+The four requirements are: a **human escalation** in Settings, a **pre-export
+snapshot**, a **typed phrase naming the exact target**, and an **acknowledged
+impact report**.
+
+The escalation lives in `settings.dba.allowIrreversible`, written only by the
+Settings route. **No entry in the agent tool catalogue can reach `saveSettings`**
+— and that is asserted by a test rather than left as an intention, because the
+guarantee is the *absence* of a capability and an absence is exactly what nobody
+notices being added back. A second assertion refuses any tool whose name or
+input schema is settings- or escalation-shaped.
+
+The phrase names the target, so it cannot be pasted from a previous operation:
+`DROP COLUMN x_2002152_nwforge_asset.u_archived PERMANENTLY`.
+
+The snapshot is honest about what it is: it captures the table record, dictionary
+rows, choices and up to `max` data rows, says plainly when the data export was
+truncated, and states that it is **evidence of what existed and a source to
+re-create from by hand — not a restore mechanism**, because the platform provides
+none for a drop.
+
+With all four met, the drop executed and read back absent:
+
+> `x_2002152_nwforge_asset.u_archived` is gone. This cannot be undone — no
+> rollback context was created and none exists to create. The snapshot
+> `b32b5c05d2833d6b` is evidence of what was there, not a restore path.
+
+Only `drop_column` and `drop_table` are implemented. Renames, retypes,
+narrowings and truncates are correctly classified and correctly gated, and are
+deliberately **left to the platform UI** rather than performed behind a REST call
+whose effect NHA cannot verify. Saying so is better than a half-implementation
+that reports success it cannot substantiate.
+
+### The drift a real drop creates
+
+Dropping `u_archived` left the Fluent source still declaring it — so the next
+install would have silently re-added the column and the drop would have looked
+undone by accident. The generated source was reconciled in the same change, and
+instance and source now agree on four columns. **A destructive operation against
+an SDK-managed object is not finished until the source that describes it agrees.**
+
+### Cleanup
+
+Every probe record was removed and read back gone; the incident whose caller
+Tier 1 changed was restored to its original value; the escalation flag is
+persisted `false`. The only intentional residue is the dropped column, which was
+the acceptance.
+
+`npm test` — **1082 pass, 0 fail**. 31 DBA tools, 6 mutating.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 120 | **A destructive op against SDK-managed schema leaves the source lying** | a column is dropped, verified gone, and reappears at the next install | The Fluent source still declares it, so the next `install` re-creates it and the drop looks undone by accident. A drop is not finished until the source that describes the object agrees with the instance |
+| 121 | **An escalation flag the agent can reach is not an escalation** | a "human-only" override that some tool can write | The guarantee is the ABSENCE of a capability, and absences get restored by accident. Assert in a test that no tool can reach the setting — and that none takes a settings-shaped input — or the claim silently stops being true |
+| 122 | **A guard that fires on the correct text** | `/\breversible\b/` rejecting "NEVER describes the result as reversible" | Match the affirmative CLAIM (`is reversible`, `can be undone`), not the word. A guard that fails on the right answer teaches people to weaken the guard |
+
+---
+
+## 46. Closing the in-scope authoring gap
+
+NowForge could add a column to a table it was *creating*, and to a table it does
+*not own*, and had nothing for the case in between — an existing custom table it
+owns. A user asking to add `user_age` to `x_2002152_nwforge_test_demo` got "that
+process isn't supported". It was not unsupported. It was unbuilt.
+
+### The routing was the gap, not the capability
+
+The path is chosen from two facts, both read live: does the table exist on the
+bound instance, and does this application's Fluent source define it?
+
+| target | route | why |
+|---|---|---|
+| `x_2002152_nwforge_brand_new` | `create_table` | on neither the instance nor in source |
+| `x_2002152_nwforge_test_demo` | `in_scope_source` | **the new path** — our source defines it |
+| `incident`, `sys_user` | `augment` | another scope owns it |
+| in our scope, absent from our source | `unmanaged_in_scope` | refuse, offer to adopt |
+
+That last case matters. A table in our scope that our source does not declare
+was created on the instance directly. Inserting a column into `sys_dictionary`
+would work until the next install reconciled the app to its source and took the
+column with it. Adopting the table into source first is the only path that does
+not create a divergence, and that is a deliberate act rather than a side effect.
+
+### Source editing, and where it refuses
+
+A custom in-scope table is SDK-managed: the Fluent source is the definition and
+the `sys_dictionary` rows are its output. So the column is added by editing that
+source and reinstalling — **never** by a REST insert, which would put the column
+on the instance while the source stayed silent and the next install removed it.
+That is the additive mirror of §45's finding, and the rule holds both ways:
+
+> a schema change to SDK-managed source is not finished until the source and the
+> instance agree.
+
+`dba-source.js` does the editing and is pure, so it is asserted offline against
+the real generated shape. It matches braces rather than pattern-matching,
+because a choice column nests its own `choices: { … }` and a lazy match would
+truncate the file on the next edit. It refuses — naming what it looked for —
+whenever the shape is not the one it expects: no `schema: { … }` block, no
+`@servicenow/sdk/core` import to extend, a column that already exists, or more
+than one source defining the same table. **A source file it does not fully
+understand is one it must not rewrite**, because a corrupted source fails later,
+at build time, with a diagnostic pointing at generated code nobody wrote.
+
+Removal round-trips **byte for byte** — asserted, because reconciliation runs
+immediately after an irreversible drop and a near-enough edit would corrupt the
+source at the worst possible moment.
+
+### Acceptance, live on the bound instance
+
+```
+[ 1.5s] dba_preflight
+[18.0s] dba_source_edited
+[18.0s] dba_building
+[34.2s] dba_tier_check
+[46.9s] dba_tiers_agree   dev428633.service-now.com
+[46.9s] dba_installing
+        → ok: true | stage: verified | route: in_scope_source
+```
+
+```json
+{ "column": "user_age",
+  "onInstance": { "type": "integer", "label": "User Age", "scope": "8e720e9b…" },
+  "inSource": true,
+  "sourceAndInstanceAgree": true }
+```
+
+The read-back checks **two** things. A column live on the instance but absent
+from source is removed by the next install; one in source but absent from the
+instance never shipped. Each direction has a different consequence, so a
+divergence is reported as its own finding with which way it points, rather than
+folded into a single `ok`.
+
+### Two things completed rather than assumed
+
+**Source reconciliation after a drop was not "already built".** In §45 I did it
+by hand, which is exactly how it gets forgotten. `executeIrreversible` now
+removes the column from the source that declared it, reads the file back to
+confirm, and reports `sourceDivergence` loudly if it could not — so a dropped
+column cannot be silently re-created by the next install. It deliberately does
+**not** rebuild and reinstall: that would be a second deploy behind a
+destructive operation the caller confirmed once.
+
+**"Nothing to remove" was reported as "escalation unmet".** Dropping a column
+that does not exist walked the caller into the full Tier 3 ceremony and told
+them to open the most dangerous switch in the application — in order to perform
+a no-op. Existence is cheap to check and it is the more useful answer, so it now
+comes first:
+
+> `x_2002152_nwforge_test_demo` has no column "service" on this instance, so
+> there is nothing to remove. No escalation, export or confirmation is needed
+> for an operation with no target.
+
+A real in-scope column still faces the full gate, unchanged: escalation,
+snapshot, typed phrase naming `table.column`, and an acknowledged impact report.
+
+### The authoring surface is now complete
+
+**create** (new tables) · **modify in-scope** (tables this app owns) · **augment
+OOTB** (tables it does not) — each by the mechanism that keeps source and
+instance in agreement.
+
+13 new tests; `npm test` — **1111 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 123 | **A capability gap reported as an unsupported operation** | "that process isn't supported through the current mutation APIs" for something the platform supports fine | The refusal to REST-insert was the right instinct; the missing half was the correct path. When a tool refuses, check whether it is refusing a bad METHOD or a bad GOAL — and route, rather than dead-end |
+| 124 | **A schema block matched by regex** | an edit that truncates the file at the first nested `}` | A choice column nests `choices: { … }`. Match braces, skip string literals, and refuse outright on a shape you do not recognise — a corrupted source surfaces as a build error pointing at code nobody wrote |
+| 125 | **A destructive gate that demands ceremony for a no-op** | dropping a column that does not exist tells you to enable irreversible operations first | Check that the target EXISTS before computing requirements. Sending someone to open the most dangerous switch in the app to perform nothing is how that switch stops being taken seriously |
+
+---
+
+## 47. Fixing in-scope column drops — routing, the gate, and the missing floor
+
+§46 closed the ADD side of in-scope column authoring. The REMOVE side still had
+the same dead-end and two problems of its own.
+
+### The routing did not carry to drops
+
+`dba_column_route` correctly called `x_2002152_nwforge_test_demo`
+`in_scope_source` for an add — and a remove on the same column dead-ended into
+hand-written steps: open the `.now.ts`, delete the line, run `now-sdk install`.
+The exact dead-end §46 removed, surviving on the other half of the operation.
+
+That is not a fallback. NowForge owns the table and has the capability; telling
+a user to do it by hand is a capability failure wearing the costume of guidance.
+Worse, it routes them *past* the protection rather than through it — the export,
+the typed confirmation and the audit trail exist precisely because nothing can
+undo a drop.
+
+`dropField` now routes first and gates always. Verified live:
+
+| asked | result |
+|---|---|
+| `user_age` on the in-scope table | `in_scope_source`, **gated**, refused: escalation, snapshot, typedConfirmation, impactAcknowledged |
+| `service` (does not exist) | `nothing-to-remove` — no ceremony for a no-op |
+| `incident.x_2002152_nwforge_triage_note` | `augment` route, still fully gated |
+
+The refusal carries a `doNotWorkAround` field in as many words: *"Do not offer to
+edit the Fluent source by hand as an alternative."* The agent prompt gained the
+matching rule, and a test asserts it is there — a rule nobody can find is a rule
+nobody follows.
+
+### The 15-minute silent hang
+
+`INSTALL_TIMEOUT_MS` is **15 minutes**. Measured whole-app installs on this
+instance are 249s, 343s and 47s+. So a stalled install and a slow one were
+indistinguishable for a quarter of an hour, with nothing to tell success from
+stall.
+
+The default is a CEILING, not a floor for answering. `installWorkspace` now
+takes a `timeoutMs`, and every DBA authoring path passes **8 minutes** —
+comfortably above every measured install, far below the ceiling.
+
+It is not a failure threshold. §44 measured the server completing a request the
+client had abandoned, so cutting the client short decides **when to go and
+look**, not when to give up. On timeout the path reads the instance back and the
+read-back decides, reported distinctly:
+
+> The install did not answer within 8 minutes, so the instance was read back
+> instead of waiting. The read-back is the authority — it was NOT retried,
+> because a retry would re-apply whatever the server had already done.
+
+### Acceptance, live
+
+Under the operator escalation, with export + typed phrase + impact ack:
+
+```json
+{ "ok": true, "stage": "verified", "route": "in_scope_source",
+  "target": "x_2002152_nwforge_test_demo.user_age",
+  "readBack": "…user_age is absent from the instance",
+  "irreversible": true,
+  "sourceReconciliation": { "applicable": true, "reconciled": true,
+    "note": "The column was removed from the Fluent source so the next install cannot re-create it." },
+  "sourceDivergence": null }
+```
+
+Source declared the column before: **true**. After: **false**. The escalation was
+closed again immediately, and the run is in the instance-scoped ledger.
+
+Then the part that proves the reconciliation actually holds — an offline build
+of the reconciled source:
+
+```
+offline build ok: true
+build output still containing user_age: none — the next install cannot resurrect it
+```
+
+Final state, instance against source:
+
+```
+instance: ["u_assigned_to","u_name","u_priority","u_status"]
+source  : ["u_assigned_to","u_name","u_priority","u_status"]
+agree   : true
+```
+
+### The asymmetry, said at the right moment
+
+Adding a column is additive and safe; removing it is an irreversible drop. Those
+are not two halves of one operation and pretending otherwise sets a user up to
+be surprised. `addField` now returns it at ADD time, when it is cheap to hear:
+
+> Adding `user_age` was additive and safe. REMOVING it later is drop_column — an
+> irreversible operation that creates no rollback context on any engine, and is
+> gated behind an operator escalation, an export, a typed confirmation and an
+> acknowledged impact report. Add freely; remove deliberately.
+
+A test asserts the two tool descriptions stay asymmetric — that `dba_add_field`
+never picks up the word "irreversible" and `dba_drop_field` never loses it.
+
+`npm test` — **1115 pass, 0 fail**.
+
+### Trap ledger additions
+
+| # | trap | what it looks like | how to not be fooled |
+|---|---|---|---|
+| 126 | **Routing added on one half of an operation** | adds route correctly, removes dead-end to manual steps for the same table | Routing is a property of the TARGET, not of the verb. When a router is introduced, walk every operation that touches the same object — the untouched half keeps the old behaviour and looks like a different bug |
+| 127 | **Manual instructions offered in place of a gate** | "open the .now.ts, delete the line, run now-sdk install" as a helpful answer to a refusal | A refusal is not a dead-end to route around. Hand-editing bypasses the export, the confirmation and the audit trail that exist because the operation cannot be undone. Say what the gate needs and stop |
+| 128 | **A timeout ceiling used as a floor for answering** | an install that stalls is indistinguishable from one that is slow, for 15 minutes | The default timeout is how long before giving up; it is not how long to wait before LOOKING. Bound it just above measured normal, then read back — and never retry, because the server may have finished what the client abandoned |
+
+---
+
+## 48. Session 2 — publishing a flow, and four traps between installed and running
+
+**Instance:** dev424910.service-now.com · **Date:** 2026-09-09 · **Commit at start:** `e7fc743`
+**Tier:** VERIFIED FROM PDI unless labelled otherwise.
+
+### The gap: there was no way to publish a flow, and no way to notice
+
+SDK 4.10.1 activates flows as a **post-install task**. Read from
+`@servicenow/sdk-api/dist/orchestrator.js:612→662` and `dist/flow-activation.js`:
+
+- it runs only **after** the deployment wait succeeds, inside the same `try`.
+  The wait is `AbortSignal.timeout(timeoutMs ?? 300000)` in `connector.js:156`,
+  and there is **no CLI flag, env var or config key** that changes it. When it
+  fires — six of our installs, plus one more today — activation is never reached;
+- when it *does* run, `runPostInstallTasks` catches every task error and logs it
+  at **DEBUG** (`orchestrator.js:555-562`) while the install still exits 0. A
+  clean `now-sdk install` is compatible with zero flows published;
+- if the endpoint is absent it logs at DEBUG and returns silently;
+- its payload is **every non-deleted key in the project**
+  (`getRecordIdsByTable`), not the artifact just built — so activating through
+  an install is all-or-nothing on the whole application.
+
+Consequence, measured: 33 flows in scope, none published, and the agent's only
+reachable route to "make this live" was `update_record` on `sys_hub_flow`, which
+the policy refuses. It tried three times in one turn.
+
+### Trap #129 — an install REVERTS published flows to draft ⚠️
+
+The most expensive finding of the session. Both golden artifacts were published
+and verified at 05:48 and 05:50. A later `now-sdk install` (for an unrelated
+source removal, run with `--skip-flow-activation`) put them back to
+`active=false, status=draft` — while leaving `latest_snapshot` and
+`master_snapshot` populated, i.e. `inactive_with_snapshot`.
+
+The revert is **not** visible when the install returns. Read back immediately
+after the client aborted, the flow still read `published: true`; it read `draft`
+minutes later, once the server finished. Anything that installs after publishing
+must re-publish and re-verify, and must not read back too early.
+
+### Trap #130 — a removal's effect is invisible when the client returns
+
+The same install: the source for `Daily P1 Digest` was archived, the client
+failed at 352 s with the 300 s deployment abort, and an immediate read showed
+the record still present with an unchanged `sys_updated_on`. It was **gone**
+about ten minutes later. `sys_upgrade_history` recorded three chunks (06:05:13,
+06:05:46, 06:10:42), all with `deleted: 0` — that column does not report it.
+
+So **C6 is CONFIRMED**: removing a source and installing does delete the
+instance record. The confirmation is the artifact's absence, on a delay, and
+never the install's own exit status.
+
+### Trap #131 — `latest_snapshot` does not always name a `sys_hub_flow_snapshot`
+
+After the subflow was executed through the harness, its `latest_snapshot` moved
+from `5595fd50…` (a real `sys_hub_flow_snapshot`) to `e6c87518…`, which resolves
+in **`sys_hub_snapshot`** — the compiled artifact — and is not readable in
+`sys_hub_flow_snapshot` or `sys_hub_flow_base`. `master_snapshot` still named the
+real published snapshot.
+
+A published check that joins on `latest_snapshot` alone therefore reports UNKNOWN
+after an execution. `master_snapshot` is the more stable of the two. Re-running
+activation repaired `latest_snapshot`. (Compare §U2's note that
+`sys_flow_context.snapshot` also points at `sys_hub_snapshot`.)
+
+### Trap #132 — record-triggered flows do not fire on this instance
+
+The golden flow is published, `active=true`, `master_snapshot` set, its published
+snapshot carries a `record_create` trigger on `incident`, and it has a
+`remote_trigger_id`. A disposable incident produced **no execution** in 150 s and
+no work notes.
+
+The reason is not the flow. Across the last 500 `sys_flow_context` rows the
+`source_table` distribution is `sysauto_script` 216, `sys_flow_timer_trigger` 38,
+`task_sla` 1 — **zero record-triggered executions, ever**. The `Flow Engine Event
+Handler` and `Flow Engine Interactive Event Handler` jobs in `sys_trigger` sit at
+`state=0`, unclaimed, with `next_action` of 2026-04-30 and 2026-09-01.
+
+This refines §0's "scheduler healthy": that probe used a one-shot
+`sysauto_script`, which is exactly the path that works. Timer, script and SLA
+sources run; the record-trigger event queue is not drained. **A record-triggered
+flow cannot be proven to execute on this PDI**, and no amount of authoring fixes
+it.
+
+### What publishing actually takes, and what proves it
+
+`POST /api/now/wfa_fluent/activate_flows?sysparm_transaction_scope=<scope sys_id>`
+with `{ flows: [{ sys_id, active: '', state: '' }], actions: [] }` — the two empty
+strings are literal. **HTTP 422 is a normal response** meaning every flow failed,
+and the body carries the reasons, so the status is not the verdict. The operation
+requires `snc_internal` and ACL authorisation; `admin` over basic auth is
+sufficient. Measured cost: **94–102 s per artifact**.
+
+Published is a **four**-way agreement, not three: `active=true`, `status=published`,
+`latest_snapshot` naming a published `sys_hub_flow_snapshot`, and `master_snapshot`
+naming the same one. `active` alone means nothing; a published snapshot row alone
+means somebody pressed Test (§U2).
+
+### Proven end to end
+
+`Add Priority Check Work Note`, published, invoked through the execution harness
+(`sn_fd.FlowAPI.getRunner().subflow().inBackground()`), settled COMPLETE and wrote
+the exact promised literal `Priority checked by onboarding subflow` to a
+disposable incident's work notes. Fixture deleted, harness job and sink deleted,
+no leftovers. First artifact ever proven to execute in this scope.
+
+### Trap ledger additions
+
+- **#129** an install reverts published flows to draft, and the revert is not
+  visible until the server finishes — minutes after the client returns
+- **#130** a source removal's deletion lands late and is not reported by
+  `sys_upgrade_history.deleted`; the artifact's absence is the only proof
+- **#131** `latest_snapshot` can name a `sys_hub_snapshot` rather than a
+  `sys_hub_flow_snapshot` after an execution; `master_snapshot` is more stable
+- **#132** record-triggered flows never fire on dev424910 — the Flow Engine
+  Event Handler jobs are queued and unclaimed since April; only
+  `sysauto_script`, timer and SLA sources execute

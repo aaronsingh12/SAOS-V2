@@ -4,6 +4,7 @@ import { confirmDestructive, CONSEQUENCE } from '../components/confirm.js';
 import { toast } from '../components/toast.js';
 import { EmptyState } from '../components/states.jsx';
 import { refreshHealth } from '../hooks/useHealth.js';
+import { refreshBinding } from '../hooks/useBinding.js';
 
 export default function Dashboard() {
   const [conn, setConn] = useState({ instanceUrl: '', authType: 'basic', username: '', password: '', clientId: '', clientSecret: '' });
@@ -34,6 +35,7 @@ export default function Dashboard() {
       setTest(null);
       toast.success('Connection saved. Test it to confirm the credentials work.');
       refreshHealth();   // the topbar pill and every RequiresInstance gate read this
+      refreshBinding();  // scope + sync are per-binding; a new instance must not wear the old verdict
     } catch (e) { setError(e.message); toast.error(e.message); }
     finally { setSaving(false); }
   };
@@ -64,6 +66,7 @@ export default function Dashboard() {
       setStats(null);
       toast.info('Disconnected. The stored credentials are cleared.');
       refreshHealth();
+      refreshBinding();
     } catch (e) { setError(e.message); toast.error(e.message); }
     finally { setDisconnecting(false); }
   };
@@ -78,7 +81,7 @@ export default function Dashboard() {
           <div className="card-title">PDI connection</div>
           <div className="field">
             <label className="label">Instance URL</label>
-            <input className="input mono" placeholder="https://dev12345.service-now.com" value={conn.instanceUrl}
+            <input className="input mono" placeholder="https://<your-instance>.service-now.com" value={conn.instanceUrl}
               onChange={(e) => setConn({ ...conn, instanceUrl: e.target.value.trim() })} />
           </div>
           <div className="field">

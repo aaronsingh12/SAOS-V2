@@ -36,7 +36,7 @@ test('jsLiteral produces a literal a quote cannot escape from', () => {
 });
 
 test('a qualified name must carry its scope — the runner defaults an unqualified one to global', () => {
-  assert.equal(assertQualifiedName('x_2196302_nwforge.notify_manager'), 'x_2196302_nwforge.notify_manager');
+  assert.equal(assertQualifiedName('x_2002152_nwforge.notify_manager'), 'x_2002152_nwforge.notify_manager');
   for (const bad of ['notify_manager', '', null, 'scope.name.extra', "scope.name'); evil('", 'scope.na-me', 'scope. name']) {
     assert.throws(() => assertQualifiedName(bad), /not a valid <scope>\.<internal_name>/, `should refuse ${JSON.stringify(bad)}`);
   }
@@ -48,10 +48,10 @@ test('buildSubflowScript refuses a name it would have to concatenate unsafely', 
 
 test('a hostile input value lands inside a JSON literal, not in the call', () => {
   const script = buildSubflowScript({
-    qualified: 'x_2196302_nwforge.notify_manager',
+    qualified: 'x_2002152_nwforge.notify_manager',
     inputs: { message: `'}); gs.info('escaped'); ({a:'` },
   });
-  assert.ok(script.includes(".subflow('x_2196302_nwforge.notify_manager')"));
+  assert.ok(script.includes(".subflow('x_2002152_nwforge.notify_manager')"));
   // The value survives only as JSON — the single quotes never become code.
   const inputs = script.match(/\.withInputs\((\{.*\})\)/)[1];
   assert.deepEqual(JSON.parse(inputs), { message: `'}); gs.info('escaped'); ({a:'` });
@@ -106,7 +106,7 @@ test('with no declared contract every key is reported rather than dropped', () =
 
 test('a reference input is fetched as a GlideRecord — a sys_id string is refused by the runner', () => {
   const script = buildSubflowScript({
-    qualified: 'x_2196302_nwforge.escalate_to_duty_manager',
+    qualified: 'x_2002152_nwforge.escalate_to_duty_manager',
     inputs: { task: 'f83bb6f583360750b939cc65eeaad3a8', message: 'P1 on vendor hold' },
     declaredInputs: [
       { name: 'task', type: 'reference', reference: 'task' },

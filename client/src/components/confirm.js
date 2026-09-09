@@ -80,7 +80,20 @@ export const CONSEQUENCE = {
     'Its Fluent source is removed and the application reinstalled, which deletes the record on the instance.',
   incident: 'This cannot be undone.',
   sla: 'Clocks already running on existing records are not removed by this.',
-  session: 'The transcript goes with it. Its audit trail does too — the Audit page will no longer show what this session did.',
+  /*
+   * This used to read "Its audit trail does too", which was accurate and was
+   * describing a BUG: tool_events and sysid_provenance cascaded from sessions,
+   * so deleting a chat erased the record of what it did to a live instance.
+   * Migration 14 split them. The copy has to move with the behaviour, or the
+   * dialog is confidently wrong at the moment someone is deciding.
+   */
+  session:
+    'The transcript goes with it. The audit trail does NOT — what this session actually changed on the '
+    + 'instance stays on the Audit page.',
+  allSessions:
+    'Every conversation and its search index are removed. The audit trail is NOT touched: the mutation '
+    + 'ledger, tool events and sys_id provenance survive, so what was changed on your ServiceNow instances '
+    + 'remains on the Audit page. Instance settings and the knowledge ledger are untouched too.',
   connection:
     'The stored username and password are cleared. Nothing on the ServiceNow instance is changed.',
 };

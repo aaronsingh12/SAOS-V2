@@ -95,15 +95,21 @@ export async function listApplications({ search = '', kind = '', managedOnly = f
   const droppedFields = rows.length ? WANTED.filter((f) => !returned.has(f)) : [];
 
   const workspaces = await listWorkspaces();
+  /*
+   * Keyed by scope NAME only.
+   *
+   * This also keyed workspaces by their scope sys_id, read from a pin in
+   * now.config.json. That pin is gone — a sys_id is instance-local — so the
+   * name is the only address a workspace has that is true on every instance.
+   */
   const byScope = new Map();
   for (const w of workspaces) {
     if (w.scope) byScope.set(w.scope, w);
-    if (w.scopeId) byScope.set(w.scopeId, w);
   }
 
   let apps = rows.map((r) => {
     const scope = raw(r.scope) || '';
-    const ws = byScope.get(scope) || byScope.get(raw(r.sys_id)) || null;
+    const ws = byScope.get(scope) || null;
     return {
       sys_id: raw(r.sys_id),
       name: raw(r.name) || scope,

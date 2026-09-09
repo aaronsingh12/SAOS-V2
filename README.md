@@ -225,12 +225,12 @@ Three tiers. **LIVE (verified)** means it was exercised end-to-end against a rea
 | Schedule-bound SLA breach clocks | recomputing the schedule engine's arithmetic would mean reimplementing it, and asserting a 24×7 expectation against one fails a *correct* SLA by hours. Bounds are asserted instead — the clock runs forward, it is never shorter than the duration, and the schedule the platform used is the one the definition names — and the result says which mode it ran in. |
 | ACL reports on a read-restricted connection | `sys_security_acl` is itself ACL-protected, and this machine has only an admin login. The three degraded states are driven in the offline suite by injection, not against a real de-elevated user. |
 
-**Tier 3 — BLUEPRINT / Business Rule fallback**
+**Tier 3 — BLUEPRINT ONLY**
 
 | Capability | Status |
 |---|---|
 | Editing pre-existing global or third-party flows | **out of scope** — NowHelpAssist only manages artifacts inside its own scoped app |
-| Anything when the SDK cannot run | blueprint + inactive `sys_script`, with the capability banner printing the exact fix commands |
+| Anything when the SDK cannot run | **unavailable, and said so**: the capability banner prints the exact fix commands and the agent reports REQUIRES_MANUAL_ACTION. Nothing is substituted for a flow — the Business Rule fallback was removed on 2026-09-08 (Session 1, WI-4); a Business Rule is created only when asked for by name, and `sys_hub_*` is never written over REST |
 | Application triggers (inbound email, SLA, catalog) | supported by the SDK and documented in the cheatsheet, but **not exercised here** — treat as unproven until verified. Note this is the SLA *flow trigger*; SLA **definitions** are Tier 1 above and go through the Table API, not the SDK |
 | ACL authoring | **out of scope on purpose**, not a gap to close later with a REST write. The SDK route — `sys_security_acl` as managed source, reviewed and installed like any other artifact — is the only defensible way to author one |
 | Editing a catalog UI policy NowHelpAssist did not author | read-only here. Without a Fluent source there is nothing to edit or remove through the toolchain, and the REST path cannot write the fields that matter. Marked "platform" in the UI rather than offered and then failing |
@@ -371,7 +371,7 @@ Modeled on Claude Code / opencode:
 
 - **Session loop** — provider-agnostic agent iterations (max 15/turn) with a neutral message format translated per provider. History is **persisted to SQLite** and written through on every append, so a conversation survives navigating away and survives a server restart.
 - **Tool registry** — 37 tools (`server/src/agent/tools.js`): schema inspection, reference/table lookup, generic record CRUD, incident + catalog composites, flow reading, blueprint design, live flow authoring (`create_flow_live`, `verify_flow_live`, `delete_live_flow`, `smoke_test_flow`, `list_live_flows`, `flow_authoring_capability`), SLAs (`sla_meta`, `list_slas`, `get_sla`, `create_sla`, `verify_sla_live`), catalog items and UI policies (`get_catalog_item`, `add_catalog_variable`, `update_catalog_variable`, `list_ui_policies`, `create_ui_policy`), access control (`acl_report`, `acl_diff`, `explain_acls` — all read-only), and memory (`recall_memory`, `list_instance_facts`, `remember_fact`). Each tool declares `mutating`.
-- **Flow authoring tiers** — the prompt makes the order explicit: `design_flow_blueprint` designs, `create_flow_live` builds, and the Business Rule fallback is reserved for environments where capability reports `ok: false`. Verifying a flow (`verify_flow_live`) writes real records, so it is a *separate* mutating tool with its own approval and is never automatic after a deploy.
+- **Flow authoring tiers** — the prompt makes the order explicit: `design_flow_blueprint` designs, `create_flow_live` builds, and when capability reports `ok: false` or UNKNOWN the agent says flow authoring is unavailable and quotes the fix commands — nothing is substituted. Verifying a flow (`verify_flow_live`) writes real records, so it is a *separate* mutating tool with its own approval and is never automatic after a deploy.
 - **Permission gate** — mutating calls pause the loop, stream an `approval_required` event, and wait (5-min timeout) for your Approve/Reject. Rejections are fed back to the model as tool errors. Auto-approve is opt-in.
 - **BYO provider** — one adapter for Anthropic's Messages API, one OpenAI-compatible adapter covering OpenAI and Ollama (same wire format). Add a provider by writing one file.
 - **Streaming** — SSE over the POST body: `meta`, `assistant_text`, `tool_use`, `approval_required`, `tool_result`, `compacted`, `remembered`, `done`.
@@ -388,9 +388,9 @@ Modeled on Claude Code / opencode:
                  items/:id/policies · items/:id/policy-variables
                  policies/validate · policies (POST/PATCH/DELETE, SSE — SDK build + install)
                  order-guides (+items, delete) · record-producers (+delete)
-/api/flows       list (flows + subflows, type filter) · :id detail · executions · :id/active
-                 design · blueprint-to-rule
-                 live (POST, SSE — accepts `updates` to edit in place, `artifact_type` flow|subflow)
+/api/flows       list (flows + subflows, type filter) · :id detail · executions
+                 design
+                 live (POST, SSE — behind the approval gate; accepts `updates` to edit in place, `artifact_type` flow|subflow)
                  live (GET managed: + contract, calls, calledBy) · live/capability · live/catalog
                  live/verify (POST, SSE — fires a flow, CALLS a subflow) · live/smoke
                  live/:name (DELETE — 409 when a subflow still has callers)
