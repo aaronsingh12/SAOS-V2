@@ -95,6 +95,17 @@ export function plannerSystem({ capabilities, semantics }) {
     '     It must also NAME at least one expected_effect. A plan that promises none is rejected',
     '     too: with nothing promised, a run can only ever be reported as UNVERIFIED, however',
     '     well it actually went.',
+    /*
+     * SESSION 2b / B7 — a worked pair. Two of the six samples promised an
+     * effect and asserted nothing (`effects_unasserted`), with the rule stated
+     * in prose immediately above. Showing the shape is the smallest change
+     * that could help; it is not a guarantee, and the validator still refuses.
+     */
+    '     Pair them one for one:',
+    '         "expected_effects": ["the subflow is published and active"],',
+    '         "verification": { "strategy": "read_back", "asserts": ["published is true"] }',
+    '     A step whose capability line below says MUTATING, with an empty asserts list,',
+    '     is rejected.',
     '  3. Never plan a write to a DERIVED field. Set its inputs instead.',
     '  4. Never invent a sys_id. If a record must be resolved, plan a read step first and',
     '     depend on it.',
@@ -103,6 +114,18 @@ export function plannerSystem({ capabilities, semantics }) {
     '     ("rest", "sdk", "harness" are mechanisms, never tools) and NOT the',
     '     capability name. A step whose capability has no tool listed is a',
     '     planning-only step: set "tool": null.',
+    /*
+     * SESSION 2b / B7 — the grammar, spelled out.
+     *
+     * Six real-model samples of one request produced sixteen fatal problems.
+     * THIRTEEN were this rule, and none of them was the model misunderstanding
+     * the request — they were the model getting the FORM wrong in three
+     * specific ways: reading a name from `takes:` (an input) as if it were an
+     * output; writing `.inputs.` or `.output.` where the grammar says
+     * `.result.`; and omitting depends_on. Each is now stated as its own line
+     * with a right-and-wrong pair, because "you may only reference a declared
+     * output" was true and evidently not enough.
+     */
     '  7. To use a value an EARLIER step produced, write a reference OBJECT:',
     '         { "$ref": "<step id>.result.<output>" }',
     '     e.g. "sys_id": { "$ref": "step_1.result.sys_id" }',
@@ -110,7 +133,19 @@ export function plannerSystem({ capabilities, semantics }) {
     '     such as "${step_1.sys_id}" or "<from step_1>" is not a reference and is',
     '     rejected — it would be sent to the tool as that literal text.',
     '     The step you reference MUST also appear in your depends_on.',
-    '     You may only reference an output the producing tool DECLARES below.',
+    '  7a. The middle segment is the literal word `result`. `.inputs.`,',
+    '      `.input.`, `.output.` and `.outputs.` are all rejected.',
+    '          right:  { "$ref": "step_1.result.sys_id" }',
+    '          wrong:  { "$ref": "step_1.inputs.blueprint" }',
+    '  7b. The LAST segment must be a name printed after `produces:` for that',
+    '      step\'s tool. A name in `takes:` is an ARGUMENT the tool accepts, never',
+    '      something it gives back — referencing one is rejected.',
+    '          right:  create_flow_live produces sys_id, table, name, scope',
+    '                  -> { "$ref": "step_1.result.name" }',
+    '          wrong:  -> { "$ref": "step_1.result.blueprint" }   (blueprint is an INPUT)',
+    '      A tool with no `produces:` gives back nothing you may reference.',
+    '  7c. Every step you reference must be listed in that step\'s depends_on.',
+    '          "depends_on": ["step_1"], "inputs": { "name": { "$ref": "step_1.result.name" } }',
     '',
     /*
      * PHASE 8 — the tool names, printed.
@@ -143,7 +178,17 @@ export function plannerSystem({ capabilities, semantics }) {
         .map((t) => toolMap.get(t)?.outputs)
         .filter(Boolean)
         .flatMap((o) => Object.keys(o));
-      const produces = outs.length ? `  produces: ${[...new Set(outs)].join(', ')}` : '';
+      /*
+       * SESSION 2b — printed in the form the model has to WRITE.
+       *
+       * It used to print `produces: sys_id, table`, and the single most
+       * repeated mistake across the samples was referencing a name that was
+       * not there (three of sixteen). Rendering the reference form beside the
+       * names makes the correct string copyable rather than derivable.
+       */
+      const produces = outs.length
+        ? `  produces: ${[...new Set(outs)].join(', ')}  (reference as <step id>.result.${[...new Set(outs)][0]})`
+        : '';
       /*
        * PHASE 12 — the arguments each tool REQUIRES, read from its own schema.
        *
@@ -196,9 +241,19 @@ export function plannerSystem({ capabilities, semantics }) {
           ? `  takes: ${per[0][1]}`
           : `  takes: ${per.map(([t, a]) => `${t}(${a})`).join(' | ')}`;
       })();
+      /*
+       * SESSION 2b — the tool's own `mutating` flag, printed.
+       *
+       * Rule 2 requires every mutating step to promise an effect and assert it,
+       * and the validator refuses a step whose declared `mutating` disagrees
+       * with the registry. The model had never been shown which tools mutate,
+       * so it was guessing at the one fact both rules turn on — measured, one
+       * `mutating_mismatch` across six samples. Read from the registry.
+       */
+      const mutates = tools.some((t) => toolMap.get(t)?.mutating);
       return `  ${c.capability}`.padEnd(30)
         + `tool: ${names}`.padEnd(52)
-        + `[${c.mechanism}, verify ${c.verification}]${c.requiresElevation ? ' [needs elevation]' : ''}`
+        + `[${c.mechanism}, verify ${c.verification}, ${mutates ? 'MUTATING' : 'read-only'}]${c.requiresElevation ? ' [needs elevation]' : ''}`
         + takes + produces;
     }),
     '',

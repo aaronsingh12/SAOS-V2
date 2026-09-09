@@ -69,8 +69,40 @@ const REF_GRAMMAR = /^([A-Za-z][A-Za-z0-9_]*)\.result\.([A-Za-z][A-Za-z0-9_]*)$/
  * not silently treat as a literal — it would reach the tool as that text.
  * Refusing it names the mistake instead of executing it. This is a rejection
  * rule, never a repair: nothing here rewrites the value into a reference.
+ *
+ * ── SESSION 2b — SHARPENED, AND WHY THAT IS NOT A WEAKENING ────────────────
+ *
+ * This was `/\$\{|\{\{|^<\s*from\b|\breferenc|\.result\.|\.output\.|^step_\d+\./i`
+ * and it ran against EVERY string in `inputs` and `target`, at any depth. Two
+ * of those alternatives matched as substrings of ordinary prose:
+ *
+ *   \breferenc   fires on "reference", "references", "referenced"
+ *   \.result\.   fires anywhere inside a sentence
+ *
+ * `create_flow_live` takes a free-text `description` of an automation. A
+ * request that says "look up the group the incident references" or "add a
+ * reference field" therefore produced `malformed_reference` and the whole plan
+ * was refused — for prose that was never trying to be a reference at all. That
+ * class was measured in the six real-model planner samples.
+ *
+ * The rule is now SHAPE-based rather than word-based: a string is an attempted
+ * reference when it carries an interpolation marker, is a "<from …>"
+ * placeholder, or IS (whole-string) a dotted path of the reference form. Every
+ * shape the specification names is still caught, including the two pinned by
+ * the suite (`${step_1.output.sys_id}`, `<from step_1>`) and the
+ * `step_2.inputs.blueprint` form the model actually produced. What is no
+ * longer caught is a sentence that happens to contain the word "reference",
+ * which was never a reference and whose refusal was a false one.
  */
-const ATTEMPTED_REF = /\$\{|\{\{|^<\s*from\b|\breferenc|\.result\.|\.output\.|^step_\d+\./i;
+const ATTEMPTED_REF = new RegExp([
+  '\\$\\{',                                                   // ${...}
+  '\\{\\{',                                                   // {{...}}
+  '^<\\s*from\\b',                                            // <from step_1>
+  '^step_\\d+\\.',                                            // bare step_1.anything
+  // A whole string that is only a dotted path in the reference SHAPE. Anchored,
+  // so it cannot fire inside a sentence.
+  '^[A-Za-z][A-Za-z0-9_]*\\.(?:result|results|output|outputs|inputs)\\.[A-Za-z][A-Za-z0-9_]*$',
+].join('|'), 'i');
 
 /** Everything that can go wrong, named. Each one fails the plan closed. */
 export const DATAFLOW_CODES = Object.freeze({
