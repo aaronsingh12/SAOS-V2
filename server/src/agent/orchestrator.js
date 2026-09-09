@@ -398,6 +398,39 @@ export async function executeTool(tool, input, approval, provenance = null, cont
       `Refusing to execute the mutating tool "${tool.name}": approval="auto" but its source is `
       + `"${source ?? 'none'}" rather than auto_approve.`);
   }
+  /*
+   * SESSION 2 — AUTO-APPROVE IS SCOPED TO A NAMED HOST.
+   *
+   * `autoApprove` is one global boolean. Turned on for a scripted run against a
+   * disposable PDI, it stays on — and the instance binding is UI-owned and can
+   * move underneath it. The combination is a switch that authorises unattended
+   * writes against whatever happens to be bound later, which is precisely the
+   * shape of the drift this project has already been bitten by twice (an
+   * install landing on a retired PDI; a schema cache answering for the wrong
+   * host).
+   *
+   * So an unattended write now needs the bound host named in
+   * `agent.liveHosts`. Empty by default, which means auto-approve authorises
+   * nothing until somebody writes a host down. Switching instances disarms it
+   * rather than carrying it over.
+   *
+   * NARROWING ONLY. A human click is untouched — `user_click` never reaches
+   * this branch — and a host in the list still needs `autoApprove` on.
+   */
+  if (approval === 'auto') {
+    const { connection, agent } = getSettings();
+    const host = (() => {
+      try { return new URL(connection.instanceUrl).host; } catch { return null; }
+    })();
+    const allowed = Array.isArray(agent?.liveHosts) ? agent.liveHosts : [];
+    if (!host || !allowed.includes(host)) {
+      refuse('host-not-allow-listed',
+        `Refusing to execute the mutating tool "${tool.name}" under auto-approve against ${host ?? 'an unresolvable host'}: `
+        + `that host is not in agent.liveHosts (${allowed.length ? allowed.join(', ') : 'the list is empty'}). `
+        + 'Unattended writes are permitted only against a host somebody named deliberately. A human approval is '
+        + 'unaffected — approve the card instead, or add the host to liveHosts in Settings.');
+    }
+  }
 
   return tool.execute(input || {}, context || {});
 }

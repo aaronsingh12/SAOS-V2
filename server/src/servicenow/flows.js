@@ -1,5 +1,5 @@
 import zlib from 'node:zlib';
-import { table } from './client.js';
+import { table, instanceRequest, SnowError } from './client.js';
 import { chatOnce } from '../agent/providers/index.js';
 
 /**
@@ -122,8 +122,24 @@ export function publishedVerdict({ header, snapshots = [], named = null, namedUn
 
   if (!latest) {
     if (published.length) {
+      /*
+       * SESSION 2 — THIS NOTE USED TO ASSERT A CAUSE THE EVIDENCE CONTRADICTS.
+       *
+       * It said "the publish did not complete on the header". Measured on
+       * dev424910 2026-09-09 from syslog_transaction: the ONLY action ever
+       * taken against the flow in this shape was
+       * POST /api/now/processflow/flow/<sys_id>/test, and no activate
+       * transaction exists anywhere on the instance. Pressing Test in Flow
+       * Designer publishes a snapshot to run against and never touches the
+       * header, so this shape is the ORDINARY result of testing a draft.
+       *
+       * The state is reported; the cause is not guessed at.
+       */
       return verdict(PUBLISH_MISMATCH.HEADER_DRAFT_WITH_PUBLISHED_SNAPSHOT,
-        `the header is ${active ? 'active' : 'a draft'} with no latest_snapshot, yet ${published.length} published snapshot row(s) exist — the publish did not complete on the header`);
+        `the header is ${active ? 'active' : 'a draft'} with no latest_snapshot, yet ${published.length} published snapshot row(s) exist. `
+        + 'Two things produce this: somebody pressed Test in Flow Designer (which publishes a snapshot to run against '
+        + 'and leaves the header alone), or a publish set the snapshot and never reached the header. This read cannot '
+        + 'tell them apart — syslog_transaction can, by whether a /test or an /activate call was made.');
     }
     if (active) return verdict(PUBLISH_MISMATCH.ACTIVE_WITHOUT_SNAPSHOT, 'the header is active but names no snapshot and none exists; active alone is not published');
     return verdict(PUBLISH_MISMATCH.NO_SNAPSHOT, 'the header is a draft and no snapshot row exists');
@@ -475,9 +491,131 @@ export const flows = {
       limit: 25,
     }),
 
-  setActive: (sysId, active) =>
-    table.update('sys_hub_flow', sysId, { active: active ? 'true' : 'false' }),
+  /*
+   * SESSION 2 — `setActive` IS GONE, AND ITS ABSENCE IS THE POINT.
+   *
+   * It was `table.update('sys_hub_flow', sysId, { active })` — a raw REST write
+   * to a Flow Designer header — and it had no callers left once Session 1
+   * removed the route that used it. Leaving it was leaving the obvious
+   * shortcut for "activate this flow" lying where the next person would find
+   * it, and it does not activate anything: it sets `active` without a
+   * published snapshot, which is the state `publishedVerdict` names
+   * ACTIVE_WITHOUT_SNAPSHOT and refuses to call published. The policy already
+   * refuses that write everywhere else; this closes the last door to it.
+   *
+   * Activation goes through `activateFlows()`, which asks the platform's own
+   * activation processor and proves the result with the three-way read-back.
+   */
 };
+
+/* ------------------------------------------------------------------ *
+ * SESSION 2 / W1a — ACTIVATION, THROUGH THE PLATFORM'S OWN PROCESSOR
+ * ------------------------------------------------------------------ */
+
+/** Where the platform publishes flows. Read off SDK 4.10.1, not invented. */
+export const ACTIVATE_FLOWS_PATH = '/api/now/wfa_fluent/activate_flows';
+
+/**
+ * Ask the instance to publish specific flows.
+ *
+ * ═══ WHY THIS EXISTS, AND WHY IT IS NOT A RAW WRITE ═══
+ *
+ * A flow is published when its header names a snapshot, that snapshot row is
+ * `published`, and the header is `active` — three facts that agree. Only the
+ * platform can produce that state: it compiles the definition into a snapshot
+ * and points the header at it. Setting `active` over the Table API produces a
+ * header that claims to be on and has nothing to run, which is why that write
+ * is refused everywhere in this build and why `flows.setActive` was deleted.
+ *
+ * So this calls the same processor SDK 4.10.1 calls after an install
+ * (sdk-api/dist/flow-activation.js). It is a REST call, and it is not a raw
+ * write: the endpoint is the platform's own publish operation, and what lands
+ * is decided by the platform.
+ *
+ * ═══ EVERY DETAIL BELOW IS READ FROM THE SDK, NOT GUESSED ═══
+ *
+ *   the path                `api/now/wfa_fluent/activate_flows`
+ *   the scope               `sysparm_transaction_scope=<sys_scope sys_id>`
+ *   the body                `{ flows: [{sys_id, active: '', state: ''}], actions: [] }`
+ *                           — the two empty strings are literal; the server
+ *                           interprets them, and no other value has been tested
+ *   422                     a NORMAL response meaning every flow failed. The
+ *                           status is not the verdict; `result.summary` is
+ *   "does not represent any resource"
+ *                           the endpoint is absent on this instance. The SDK
+ *                           logs that at DEBUG and returns silently, which is
+ *                           how an install can publish nothing and say nothing.
+ *                           HERE IT IS A LOUD FAILURE.
+ *
+ * ═══ WHAT IT WILL NOT DO ═══
+ *
+ * It sends ONLY the sys_ids it is given. The SDK's own post-install task sends
+ * every non-deleted key in the project (all 33 flows in this workspace today,
+ * 31 of them experiments, several record-triggered on `incident`), so
+ * activating through an install is an all-or-nothing act on the whole
+ * application. This is scoped by construction.
+ *
+ * It decides nothing about success — it reports what the platform said. The
+ * caller proves publication by reading the three-way proof back.
+ */
+export async function activateFlows({ flowSysIds = [], actionSysIds = [], scopeId } = {}) {
+  const flows_ = [...new Set(flowSysIds.filter(Boolean))];
+  if (!flows_.length) throw new SnowError('activateFlows was given no flow to activate.', 400);
+  if (!scopeId) throw new SnowError('activateFlows needs the scope sys_id the flows live in; the platform scopes the transaction by it.', 400);
+
+  const res = await instanceRequest(ACTIVATE_FLOWS_PATH, {
+    method: 'POST',
+    params: { sysparm_transaction_scope: scopeId },
+    body: {
+      flows: flows_.map((sys_id) => ({ sys_id, active: '', state: '' })),
+      actions: actionSysIds.map((sys_id) => ({ sys_id, active: '', state: '' })),
+    },
+  });
+
+  const message = res.json?.result?.error?.message ?? res.json?.error?.message ?? res.json?.message ?? res.statusText ?? '';
+
+  /*
+   * The endpoint is missing. SDK 4.10.1 swallows this at DEBUG and returns, so
+   * an install "succeeds" having published nothing. Refusing loudly is the
+   * whole reason this function exists rather than a second `now-sdk install`.
+   */
+  if (String(message).includes('does not represent any resource')) {
+    throw new SnowError(
+      `This instance has no flow-activation endpoint (${ACTIVATE_FLOWS_PATH} does not resolve). Flows cannot be published `
+      + 'from here: the ServiceNow IDE / Fluent support that provides that scripted REST resource is not installed. '
+      + 'Nothing was activated. The SDK hides this failure at debug level; it is reported here because an install that '
+      + 'publishes nothing and says nothing is the exact failure this step exists to stop.',
+      501, { path: ACTIVATE_FLOWS_PATH, status: res.status, message },
+    );
+  }
+  /* 422 is a real answer; anything else that is not ok is a transport failure. */
+  if (!res.ok && res.status !== 422) {
+    throw new SnowError(
+      `Flow activation was refused by ${res.host} (HTTP ${res.status}): ${message || res.text.slice(0, 300)}`,
+      res.status, { path: ACTIVATE_FLOWS_PATH, body: res.text.slice(0, 800) },
+    );
+  }
+
+  const result = res.json?.result ?? {};
+  const summary = result.summary ?? null;
+  const results = Array.isArray(result.results) ? result.results : [];
+  return {
+    /* What the PLATFORM said. Not a verdict — the read-back is the verdict. */
+    reported: summary
+      ? { total: Number(summary.total ?? 0), succeeded: Number(summary.succeeded ?? 0), failed: Number(summary.failed ?? 0) }
+      : null,
+    perFlow: results.map((r) => ({
+      sys_id: r.sys_id ?? r.sysId ?? null,
+      status: r.status ?? null,
+      message: r.message ?? r.error ?? null,
+    })),
+    httpStatus: res.status,
+    requested: flows_,
+    scopeId,
+    /* Bounded, so an unrecognised shape is still inspectable rather than lost. */
+    raw: res.text.slice(0, 4000),
+  };
+}
 
 const BLUEPRINT_SYSTEM = `You are a senior ServiceNow Flow Designer architect. Given a plain-language automation request, design a precise flow blueprint.
 

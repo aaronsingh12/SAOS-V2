@@ -7,7 +7,7 @@ import {
 } from '../servicenow/diagnostics.js';
 import { catalog } from '../servicenow/catalog.js';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
-import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify } from '../servicenow/fluent.js';
+import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify, activateManagedFlow } from '../servicenow/fluent.js';
 import { listSlas, getSla, slaMeta, createSla, verifySla } from '../servicenow/sla.js';
 import { listPoliciesForItem, itemVariables, createPolicy, CONDITION_OPERATORS } from '../servicenow/catalogPolicy.js';
 import { aclReport, aclDiff, explainAclReport } from '../servicenow/acl.js';
@@ -1074,6 +1074,68 @@ ${description}` : description);
       table: { type: 'table_name', path: ['verified', 'table'] },
       name: { type: 'string', path: ['verified', 'name'] },
       scope: { type: 'string', path: ['verified', 'scope'] },
+    },
+  },
+  {
+    /*
+     * SESSION 2 / W1a — PUBLISHING A FLOW, AS ITS OWN SANCTIONED STEP.
+     *
+     * Installing an artifact and publishing it are two different acts, and
+     * until now only the first was reachable. The SDK publishes as a
+     * post-install task that runs only after its fixed 300-second deployment
+     * wait succeeds — which failed on six of our installs — and that swallows
+     * its own errors at debug level when it does run. Result, measured: 33
+     * flows on the instance, none published, and an agent whose only reachable
+     * route to "make it live" was a raw header write the policy refuses.
+     *
+     * This is that missing verb. It publishes ONE named artifact through the
+     * platform's own activation processor and proves the outcome by reading
+     * the header, its snapshot row and `active` back together.
+     */
+    name: 'activate_flow',
+    description:
+      'PUBLISH STEP. Make an installed flow or subflow live on the instance. Installing an artifact does NOT publish it: '
+      + 'a newly installed flow is a draft that will never run, and this is the step that publishes it. '
+      + 'Takes the exact artifact name (from create_flow_live, or from list_live_flows). '
+      + 'It asks the platform to publish that one artifact and then proves the result by reading back three things that must '
+      + 'agree — the header names a snapshot, that snapshot is published, and the header is active. It reports published: true '
+      + 'ONLY when all three agree, and otherwise names which one is missing. '
+      + 'A flow that calls a subflow needs BOTH published: publish the subflow first, then the flow. '
+      + 'Requires user approval. Never set a flow active with update_record — that writes a header with nothing to run, and is refused.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Exact name of the installed flow or subflow to publish, e.g. "Onboarding Priority Check Flow"' },
+      },
+      required: ['name'],
+    },
+    execute: ({ name }) => activateManagedFlow(name),
+    /*
+     * The write is a publish: the platform sets `active` and points the header
+     * at a snapshot. `mechanism: 'sdk'` because this is the SDK's own
+     * activation processor — the REST policy that refuses `sys_hub_*` writes is
+     * about the Table API, and this is not one.
+     */
+    describeWrite: ({ name }, result) => {
+      if (!result?.sys_id) {
+        return { table: 'sys_hub_flow', mechanism: 'sdk', operation: 'update', requested: { active: 'true', published: 'true' }, name };
+      }
+      const requested = { active: 'true' };
+      const record = { ...(result.header ?? {}) };
+      // `published` is asked for only when the proof could be READ; an
+      // unreadable snapshot is UNKNOWN, and asking the differ to compare
+      // against an absence would invent a drop nobody measured.
+      if (result.published !== null && result.published !== undefined) {
+        requested.published = 'true';
+        record.published = result.published === true ? 'true' : 'false';
+      }
+      return { table: 'sys_hub_flow', mechanism: 'sdk', operation: 'update', sys_id: result.sys_id, requested, record };
+    },
+    outputs: {
+      sys_id: { type: 'sys_id', from: 'sys_id' },
+      table: { type: 'table_name', from: 'table' },
+      name: { type: 'string', from: 'name' },
     },
   },
   {

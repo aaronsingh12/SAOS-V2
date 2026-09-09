@@ -220,6 +220,18 @@ export const TOOL_CAPABILITIES = Object.freeze({
   design_flow_blueprint: ['flow_authoring'],
   flow_authoring_capability: ['flow_authoring'],
   create_flow_live: ['flow_authoring'],
+  /*
+   * Publishing an installed artifact. `flow_authoring` ONLY.
+   *
+   * It was briefly tagged `['flow_authoring', 'deployment']` on the reasoning
+   * that "make this flow live" is a deployment question. T3b caught it, and
+   * T3b is right: `deployment` is CROSS-CUTTING, so tagging a domain tool with
+   * it drags the whole flow domain into every request that merely implies
+   * deployment — a column change would have started carrying the flow tools,
+   * which is the exact leak that guard was written for. The flow domain
+   * selects its own tools and nothing else does.
+   */
+  activate_flow: ['flow_authoring'],
   list_live_flows: ['flow_authoring'],
   delete_live_flow: ['flow_authoring'],
   verify_flow_live: ['flow_authoring'],

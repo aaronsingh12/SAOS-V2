@@ -131,7 +131,26 @@ export async function verifyMutation({ descriptor, result, before, toolName }) {
    *     can still have landed. That is UNVERIFIED, not "not attempted" and
    *     not "no-op": a claim the ledger records as such.
    */
-  if (result && result.ok === false && descriptor?.mechanism === 'sdk') {
+  /*
+   * SESSION 2 — NARROWED, because it was about to lie about a different tool.
+   *
+   * As written in Session 1 this keyed on `mechanism === 'sdk'` alone, which
+   * was fine while `create_flow_live` was the only SDK-mechanism tool: its
+   * `ok: false` always means a pipeline STAGE stopped (capability, validate,
+   * deploy, naming), and it always says which.
+   *
+   * `activate_flow` breaks that assumption in the most dangerous way. Its
+   * `ok: false` normally means "the activation ran and the artifact is still
+   * not published" — a genuine, verifiable, FAILED write with a real
+   * descriptor and a real read-back. Under the old condition that came back as
+   * "stopped before installing; nothing was attempted", which is a confident
+   * statement that no attempt was made about a call that was made and failed.
+   *
+   * So the branch now requires the tool to SAY which stage stopped. A result
+   * with no stage falls through to the ordinary diff, where the read-back
+   * decides — which is the whole point of having one.
+   */
+  if (result && result.ok === false && descriptor?.mechanism === 'sdk' && typeof result.stage === 'string') {
     const atInstall = result.stage === 'deploy';
     const why = atInstall
       ? `${toolName} reported the install failed (${String(result.message ?? '').slice(0, 160) || 'no message'}); `

@@ -36,8 +36,8 @@ import { getSchema, referenceLookup } from './schema.js';
 import { queryFieldRoots } from './conditions.js';
 import { assertTaskSla, findSla, SLA_TOLERANCE_DEFAULT_SEC } from './sla.js';
 import { factBlock } from '../memory/facts.js';
-import { flows } from './flows.js';
-import { table } from './client.js';
+import { flows, activateFlows } from './flows.js';
+import { table, SnowError } from './client.js';
 // `log.error` was already called on two paths in this file with nothing
 // importing it — a latent ReferenceError that would only fire the moment
 // something went wrong, which is the worst possible time for the reporter to be
@@ -156,13 +156,29 @@ export async function runSdk(args, timeout = QUICK_TIMEOUT_MS, cwd = WORKSPACE) 
    * assertTiersAgree() first, which fails closed on an unbound app.
    */
   const authEnv = sdkAuthEnv();
+  /*
+   * SESSION 2 — THE SDK'S LOG LEVEL IS PINNED, NOT INHERITED.
+   *
+   * `env` forwarded `process.env` verbatim, so whatever LOG_LEVEL the SERVER
+   * was started with silently decided how much the CLI said. That matters
+   * because SDK 4.10.1 reports four distinct flow-activation outcomes — an
+   * absent endpoint, no flows to send, a task that threw, a task that never
+   * ran — at DEBUG and nowhere else, and a post-install task that throws is
+   * caught and logged at DEBUG while the install still exits 0. What the
+   * install told us was therefore a property of an environment variable rather
+   * than of the deploy.
+   *
+   * Derived from the args so the two stay in step: a call that asks for `-d`
+   * gets a debug logger, everything else gets `info`.
+   */
+  const logLevel = args.includes('-d') || args.includes('--debug') ? 'debug' : 'info';
   try {
     const { stdout, stderr } = await pexec(process.execPath, [entry, ...args], {
       cwd,
       timeout,
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
-      env: authEnv ? { ...process.env, ...authEnv } : process.env,
+      env: { ...process.env, ...(authEnv || {}), LOG_LEVEL: logLevel },
     });
     return { ok: true, code: 0, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
   } catch (err) {
@@ -2027,13 +2043,83 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
   };
 }
 
-function parseInstall(result) {
+/**
+ * SESSION 2 — WHAT AN INSTALL ACTUALLY SAID ABOUT ACTIVATION.
+ *
+ * `activation` used to be one regex capture or `null`, and `null` meant four
+ * different things. Read from the SDK 4.10.1 source
+ * (sdk-api/dist/flow-activation.js, orchestrator.js), flow activation is a
+ * POST-INSTALL TASK, and:
+ *
+ *   - it runs only AFTER the deployment wait succeeds, inside the same try, so
+ *     a deployment timeout means activation was never attempted at all;
+ *   - if the endpoint is absent the SDK logs at DEBUG and RETURNS;
+ *   - if there is nothing to send it logs "No flows to activate" at DEBUG;
+ *   - if it THROWS, `runPostInstallTasks` catches it, logs at DEBUG, and the
+ *     install still exits 0.
+ *
+ * So a clean `now-sdk install` is compatible with zero flows published, and
+ * `activation: null` was the same word for "it worked and said nothing",
+ * "the endpoint is missing", and "it failed". Three-valued now, with the
+ * reason named — and `activation` keeps its old meaning so existing readers
+ * are untouched.
+ */
+export const ACTIVATION = Object.freeze({
+  SUCCEEDED: 'succeeded',
+  PARTIAL: 'partial',
+  FAILED: 'failed',
+  ABSENT: Object.freeze({
+    value: 'absent',
+    reasons: Object.freeze(['endpoint_not_found', 'no_flows_to_activate', 'task_threw', 'unknown']),
+  }),
+});
+
+/** How many characters of the SDK's own output are kept as evidence. */
+const SDK_OUTPUT_KEEP = 16 * 1024;
+
+export function parseInstall(result) {
   const text = `${result.stdout}\n${result.stderr}`;
+  const complete = text.match(/Flow activation complete:\s*(\d+)\/(\d+)\s*succeeded(?:,\s*(\d+)\s*failed)?/i);
+
+  let activationOutcome = null;
+  let activationReason = null;
+  let activationCounts = null;
+
+  if (complete) {
+    const succeeded = Number(complete[1]);
+    const total = Number(complete[2]);
+    const failed = complete[3] !== undefined ? Number(complete[3]) : Math.max(0, total - succeeded);
+    activationCounts = { succeeded, total, failed };
+    if (failed > 0) activationOutcome = succeeded > 0 ? ACTIVATION.PARTIAL : ACTIVATION.FAILED;
+    else activationOutcome = ACTIVATION.SUCCEEDED;
+  } else {
+    activationOutcome = ACTIVATION.ABSENT.value;
+    // The four silent paths, each identified by the string the SDK emits at
+    // DEBUG. `unknown` is the honest fifth answer, not a default to lean on.
+    if (/Flow activation endpoint not found/i.test(text)) activationReason = 'endpoint_not_found';
+    else if (/No flows to activate/i.test(text)) activationReason = 'no_flows_to_activate';
+    else if (/Post-install task .* failed|Failed to activate flows/i.test(text)) activationReason = 'task_threw';
+    else activationReason = 'unknown';
+  }
+
   return {
-    activation: text.match(/Flow activation complete:\s*(\d+\/\d+)\s*succeeded/i)?.[1] || null,
+    // Unchanged: "N/M" when the line was printed, null otherwise.
+    activation: complete ? `${complete[1]}/${complete[2]}` : null,
+    activationOutcome,
+    activationReason,
+    activationCounts,
     rollbackUrl: text.match(/(https?:\/\/\S*sys_rollback_context\.do\?sys_id=\w+)/i)?.[1] || null,
     appUrl: text.match(/(https?:\/\/\S*sys_app\.do\?sys_id=\w+)/i)?.[1] || null,
   };
+}
+
+/** The SDK's own account of a deploy, bounded, kept as evidence on every path. */
+function sdkOutputOf(res) {
+  const tail = (s) => {
+    const t = String(s ?? '');
+    return t.length > SDK_OUTPUT_KEEP ? `…(truncated ${t.length - SDK_OUTPUT_KEEP} chars)…${t.slice(-SDK_OUTPUT_KEEP)}` : t;
+  };
+  return { code: res.code ?? null, timedOut: res.timedOut === true, stdout: tail(res.stdout), stderr: tail(res.stderr) };
 }
 
 /**
@@ -2041,7 +2127,7 @@ function parseInstall(result) {
  * `now-sdk install` ships the WHOLE application, so the returned `shipped` list
  * names every artifact the deploy touched — not just the requested one.
  */
-export async function deploy(name, emit = () => {}) {
+export async function deploy(name, emit = () => {}, { skipFlowActivation = false } = {}) {
   // `install` ships whatever is in dist/, which is only as fresh as the last
   // build. Deploying without building silently installs a stale package — a
   // restored source file appeared to deploy 3/3 while never reaching the
@@ -2071,8 +2157,36 @@ export async function deploy(name, emit = () => {}) {
   emit({ type: 'binding_ok', host: binding.host });
 
   emit({ type: 'deploying' });
-  const res = await serialize(() => withMaterializedConfig(() => runSdk(['install'], INSTALL_TIMEOUT_MS)));
+  /*
+   * SESSION 2 — `-d`, because the four ways activation can silently not happen
+   * are DEBUG-level strings and nothing else distinguishes them. Without it a
+   * clean install that published nothing is indistinguishable from one that
+   * published everything. `runSdk` pins LOG_LEVEL to match the flag.
+   */
+  /*
+   * SESSION 2 — `skipFlowActivation` EXISTS BECAUSE THE SDK'S ACTIVATION IS
+   * APP-WIDE AND OURS IS NOT.
+   *
+   * The SDK's post-install task publishes every non-deleted key in the project
+   * (sdk-api/dist/orchestrator.js:533 -> getRecordIdsByTable), not the artifact
+   * that was just built. On this workspace that is all 33 flows, 31 of them
+   * experiments and several record-triggered on `incident` — so an install run
+   * to REMOVE artifacts would publish everything still present, and start them
+   * firing on live records. There is no way to narrow it from the CLI; the only
+   * control is the documented `--skip-flow-activation` flag.
+   *
+   * Default false, so every existing caller behaves exactly as before. The
+   * removal path passes true and publishes deliberately afterwards, scoped, via
+   * `activateManagedFlow`.
+   */
+  const installArgs = skipFlowActivation ? ['install', '-d', '--skip-flow-activation'] : ['install', '-d'];
+  const res = await serialize(() => withMaterializedConfig(() => runSdk(installArgs, INSTALL_TIMEOUT_MS)));
   const parsed = parseInstall(res);
+  const sdkOutput = sdkOutputOf(res);
+  if (skipFlowActivation) {
+    parsed.activationOutcome = ACTIVATION.ABSENT.value;
+    parsed.activationReason = 'skipped_by_request';
+  }
 
   /*
    * B5 — install state is filed UNDER the instance it happened on.
@@ -2087,6 +2201,8 @@ export async function deploy(name, emit = () => {}) {
       at: new Date().toISOString(),
       ok: res.ok,
       activation: parsed.activation,
+      activationOutcome: parsed.activationOutcome,
+      activationReason: parsed.activationReason,
       rollbackUrl: parsed.rollbackUrl,
       requested: name || null,
       instance: binding.host,
@@ -2094,7 +2210,7 @@ export async function deploy(name, emit = () => {}) {
   });
 
   if (!res.ok) {
-    return { ok: false, message: 'now-sdk install failed.', diagnostics: extractDiagnostics(res), ...parsed };
+    return { ok: false, message: 'now-sdk install failed.', diagnostics: extractDiagnostics(res), sdkOutput, ...parsed };
   }
 
   emit({ type: 'verifying' });
@@ -2185,6 +2301,15 @@ export async function deploy(name, emit = () => {}) {
   return {
     ok: true,
     ...parsed,
+    /*
+     * SESSION 2 — the SDK's own account of the deploy, kept on SUCCESS too.
+     *
+     * It was kept only on the failure path, which is exactly backwards for the
+     * question that matters: a successful install that activated nothing is
+     * the dangerous outcome, and the only thing that distinguishes it is a
+     * DEBUG line in this output. Bounded to the last 16 KB of each stream.
+     */
+    sdkOutput,
     verified,
     shipped,
     shippedNote: `now-sdk install deploys the whole application: this install shipped ${shipped.length} artifact(s) from ${files.length} source file(s).`,
@@ -2273,6 +2398,186 @@ export async function createLiveFlow(spec, emit = () => {}, { updates = null, ar
     contract: gen.contract,
     verification,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * SESSION 2 / W1a — THE SANCTIONED ACTIVATION STEP
+ * ------------------------------------------------------------------ */
+
+/**
+ * Publish one managed flow or subflow, and prove it.
+ *
+ * ═══ THE GAP THIS CLOSES ═══
+ *
+ * Measured on dev424910: 33 flows installed, none published. The SDK activates
+ * flows as a POST-INSTALL TASK that runs only after its deployment wait
+ * succeeds — and that wait is a fixed 300-second client-side abort
+ * (sdk-api/dist/connector.js:156) which fired on six of our installs. When it
+ * fires, `runPostInstallTasks` is never reached, so nothing was ever published.
+ * Worse, when it IS reached and throws, the SDK catches it and logs at DEBUG
+ * while the install still exits 0. There was no way to publish a flow from
+ * this build, and no way to find out that nothing had been.
+ *
+ * So the model's only reachable route to "make this flow live" was
+ * `update_record` on `sys_hub_flow` — which the policy refuses, correctly, and
+ * which would not have worked anyway: `active` without a snapshot is a header
+ * claiming to be on with nothing to run. Measured 2026-09-09: the agent tried
+ * it three times in one turn. THAT is what this step is for.
+ *
+ * ═══ WHAT IT DOES, IN ORDER ═══
+ *
+ *   1. resolve the artifact BY NAME inside the bound scope. A name that
+ *      matches nothing, or more than one thing, stops here.
+ *   2. confirm it actually shipped through an install, by the one query that
+ *      proves it: a `sys_update_version` row for this artifact, `state=current`
+ *      and `source_table=sys_upgrade_history`. That combination means an
+ *      application install put the record there rather than a UI edit.
+ *      REPORTED, NOT REQUIRED — the artifact existing in the scope is the
+ *      stronger fact, and refusing on a missing corroboration would refuse a
+ *      correct state. `sys_upgrade_history` itself is NOT consulted: measured,
+ *      all 60 rows for this app read `complete`, including ones still writing
+ *      minutes later, so it cannot decide terminality for anything.
+ *   3. ask the platform to publish exactly this artifact.
+ *   4. READ THE THREE-WAY PROOF BACK. That is the verdict. What the activation
+ *      call reported is recorded beside it and is never mistaken for it.
+ *
+ * ═══ BOUNDED ═══
+ *
+ * One attempt. No retry, no second install, no fallback to a header write. A
+ * failure returns the mismatch by name so a person can act on it.
+ */
+export async function activateManagedFlow(name, emit = () => {}) {
+  const wanted = String(name ?? '').trim();
+  if (!wanted) throw new SnowError('Name the flow or subflow to publish.', 400);
+
+  const identity = await readAppIdentity();
+  const scope = identity?.scope;
+  if (!scope) throw new SnowError('The workspace declares no scope, so there is nothing to publish into.', 500);
+  const { scopeId } = await resolveScopeId(scope);
+  if (!scopeId) {
+    throw new SnowError(`The scope "${scope}" could not be resolved on the bound instance, so activation has no transaction scope.`, 409);
+  }
+
+  /* ---- 1. resolve, inside the bound scope only ---- */
+  emit({ type: 'activation_resolving', name: wanted });
+  const rows = await table.query('sys_hub_flow', {
+    query: `name=${wanted}^sys_scope=${scopeId}`,
+    fields: 'sys_id,name,type,active,status,latest_snapshot',
+    limit: 5,
+    display: 'false',
+  });
+  if (!rows.length) {
+    return {
+      ok: false,
+      stage: 'resolve',
+      name: wanted,
+      message: `No flow or subflow named "${wanted}" exists in ${scope} on this instance. Nothing was activated. `
+        + 'Install it first — publishing cannot create an artifact.',
+    };
+  }
+  if (rows.length > 1) {
+    return {
+      ok: false,
+      stage: 'resolve',
+      name: wanted,
+      candidates: rows.map((r) => ({ sys_id: r.sys_id, type: r.type })),
+      message: `${rows.length} artifacts in ${scope} are named "${wanted}". Publishing the wrong one is not recoverable by `
+        + 'reading it back, so this refuses rather than choosing.',
+    };
+  }
+  const row = rows[0];
+  const sysId = row.sys_id;
+
+  /* ---- 2. did an install put it there? Reported, never required. ---- */
+  let shipped = { confirmed: false, note: null, rows: 0 };
+  try {
+    const versions = await table.query('sys_update_version', {
+      query: `name=sys_hub_flow_${sysId}^state=current^source_table=sys_upgrade_history`,
+      fields: 'sys_id,sys_created_on,source,action',
+      limit: 3,
+      display: 'false',
+    });
+    shipped = versions.length
+      ? { confirmed: true, rows: versions.length, at: versions[0].sys_created_on, note: 'an application install wrote this artifact' }
+      : {
+        confirmed: false,
+        rows: 0,
+        note: 'no current sys_update_version row sourced from an app install names this artifact. It exists in the scope, '
+          + 'which is the stronger fact, so activation proceeds — but this artifact may have been written by something '
+          + 'other than an install.',
+      };
+  } catch (err) {
+    shipped = { confirmed: false, rows: 0, note: `the install corroboration could not be read (${err.message}); activation proceeds on the artifact's existence` };
+  }
+  emit({ type: 'activation_shipped_check', name: wanted, confirmed: shipped.confirmed });
+
+  /* ---- 3. ask the platform to publish exactly this one ---- */
+  emit({ type: 'activating', name: wanted, sys_id: sysId, scope });
+  let reported = null;
+  try {
+    reported = await activateFlows({ flowSysIds: [sysId], scopeId });
+  } catch (err) {
+    return {
+      ok: false,
+      stage: 'activate',
+      name: wanted,
+      sys_id: sysId,
+      scope,
+      shipped,
+      message: err.message,
+      detail: err.detail ?? null,
+    };
+  }
+
+  /* ---- 4. the read-back is the verdict ---- */
+  emit({ type: 'verifying', name: wanted });
+  const proof = await flows.publishedProof(sysId).catch((err) => ({
+    published: null, mismatch: 'unreadable', note: `the published proof could not be read: ${err.message}`, header: null, snapshot: null,
+  }));
+
+  const cell = (v) => (v && typeof v === 'object' && 'value' in v ? v.value : v);
+  const header = proof.header ?? {};
+  const result = {
+    ok: proof.published === true,
+    name: cell(header.name) ?? wanted,
+    sys_id: sysId,
+    table: 'sys_hub_flow',
+    type: row.type,
+    scope,
+    scopeId,
+    active: String(cell(header.active) ?? '') === 'true',
+    published: proof.published,
+    proof: { published: proof.published, mismatch: proof.mismatch ?? null, snapshot: proof.snapshot ?? null, note: proof.note ?? null },
+    header: {
+      sys_id: sysId,
+      name: cell(header.name) ?? null,
+      active: String(cell(header.active) ?? ''),
+      status: cell(header.status) ?? null,
+      latest_snapshot: cell(header.latest_snapshot) ?? '',
+      sys_scope: cell(header.sys_scope) ?? null,
+    },
+    shipped,
+    /*
+     * What the PLATFORM said, kept beside the proof and never substituted for
+     * it. `reported.succeeded === 1` with `published: false` is a real and
+     * important state: the processor accepted the request and the header did
+     * not end up published.
+     */
+    reported: reported.reported,
+    perFlow: reported.perFlow,
+    activationHttpStatus: reported.httpStatus,
+  };
+
+  if (!result.ok) {
+    result.message = proof.published === null
+      ? `"${result.name}" was submitted for activation and its published state could not be read: ${proof.note}. `
+        + 'No claim is made either way.'
+      : `"${result.name}" is NOT published after activation (${proof.mismatch}): ${proof.note}. `
+        + `The platform reported ${reported.reported ? `${reported.reported.succeeded}/${reported.reported.total} succeeded, ${reported.reported.failed} failed` : 'nothing'}`
+        + `${reported.perFlow?.[0]?.message ? ` — "${reported.perFlow[0].message}"` : ''}.`;
+  }
+  emit({ type: 'activation_done', name: result.name, published: result.published, mismatch: result.proof.mismatch });
+  return result;
 }
 
 /** Managed artifacts: the source files, plus their live state on the instance. */

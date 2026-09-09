@@ -36,6 +36,24 @@ const DEFAULTS = {
     // Default on: the model asking and acting in the same breath means the
     // user is answering a question that was already decided for them.
     holdMutationsOnQuestion: true,
+    /*
+     * SESSION 2 — WHICH HOSTS MAY BE WRITTEN TO WITHOUT A HUMAN CLICK.
+     *
+     * `autoApprove` is a single global switch: turn it on and every mutating
+     * tool runs ungated, against whatever instance happens to be bound. That is
+     * fine for a scripted acceptance run against a disposable PDI and is
+     * exactly wrong if the binding later moves to something that matters.
+     *
+     * `liveHosts` narrows it. Auto-approve is honoured ONLY when the bound
+     * host is named here, so switching instances silently disarms it rather
+     * than silently carrying it over. Empty by default: on a fresh install,
+     * auto-approve authorises nothing until a host is named deliberately.
+     *
+     * This is a TIGHTENING of an existing permission and never a widening — a
+     * host in this list still needs `autoApprove` on, and a human click is
+     * unaffected by it entirely.
+     */
+    liveHosts: [],
   },
   /*
    * E2 Tier 3 — the escalation the agent cannot grant itself.
@@ -311,7 +329,11 @@ export function publicSettings() {
       model: s.llm.model,
       embedModel: s.llm.embedModel,
     },
-    agent: { autoApprove: s.agent.autoApprove, holdMutationsOnQuestion: s.agent.holdMutationsOnQuestion !== false },
+    agent: {
+      autoApprove: s.agent.autoApprove,
+      holdMutationsOnQuestion: s.agent.holdMutationsOnQuestion !== false,
+      liveHosts: Array.isArray(s.agent?.liveHosts) ? s.agent.liveHosts : [],
+    },
     dba: { allowIrreversible: s.dba?.allowIrreversible === true },
     rag: {
       enabled: s.rag?.enabled !== false,

@@ -124,9 +124,25 @@ export const CAPABILITIES = Object.freeze({
   flow_authoring: {
     mechanism: 'sdk', mutating: true, tools: ['create_flow_live'], verification: 'semantic', scoped: true,
   },
+  /*
+   * SESSION 2 / W1a — flow_publish IS ITS OWN VERB NOW.
+   *
+   * It used to point at `create_flow_live`, so `flow_authoring` and
+   * `flow_publish` were two names for one tool whose single call both authored
+   * and installed. Measured against the real model: that invites a plan of the
+   * shape "author with create_flow_live, then publish with create_flow_live",
+   * whose second step has to invent an output the first does not declare — and
+   * every such plan was refused at validation.
+   *
+   * The two names now mean two different things, because they always did:
+   * installing an artifact leaves a draft, and publishing it is a separate act
+   * the platform performs. A plan that authors and then publishes is now
+   * correct, and its second step consumes `name`, which `create_flow_live`
+   * really does declare.
+   */
   flow_publish: {
-    mechanism: 'sdk', mutating: true, tools: ['create_flow_live'], verification: 'read_back', scoped: true,
-    note: 'Installing deploys the WHOLE application, not the one artifact.',
+    mechanism: 'sdk', mutating: true, tools: ['activate_flow'], verification: 'read_back', scoped: true,
+    note: 'Publishes ONE installed artifact through the platform\'s activation processor; proven by header + snapshot + active agreeing.',
   },
   flow_execute: {
     mechanism: 'harness', mutating: true, tools: ['smoke_test_flow'], verification: 'read_back',
