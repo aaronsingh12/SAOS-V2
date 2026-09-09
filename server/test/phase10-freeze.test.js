@@ -400,8 +400,15 @@ test('F1 — prompts.js is frozen: the sentinel and the operating rules are inta
    * flow authoring is unavailable, quotes fixes[] as the exact next action, and
    * that nothing is substituted. The 33 numbered operating rules are untouched
    * (the count below still holds). Previous value: 99585f7ee9a9f43011ba867c80765cdb.
+   *
+   * And a second, smaller move in the same session (WI-4 follow-up): the
+   * acceptance run showed the model offering "a Business Rule" as a NATIVE
+   * ALTERNATIVE under the "before any flow work" paragraph — not building
+   * one, but steering toward it. One sentence now says a Business Rule or a
+   * script is never a native alternative to a flow. Previous value:
+   * 0eb69ba7c29ba50deae1f27cf5f7210d.
    */
-  assert.equal(sha, '0eb69ba7c29ba50deae1f27cf5f7210d',
+  assert.equal(sha, 'd62979a640564eb3f27b7a1191b9a013',
     'prompts.js changed. The prompt is frozen: establish what edited it before touching this value.');
   assert.equal(src.split(String.fromCharCode(10)).filter((l) => l.includes('knowledgeNote')).length, 2,
     'the knowledgeNote parameter moved');
