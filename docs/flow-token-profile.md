@@ -132,3 +132,54 @@ that figure per user request.
 - Harness: `profile-golden.mjs` and `profile-golden.json` in the session
   scratchpad (not in the repo); rerunnable from `server/` with
   `node <scratchpad>/profile-golden.mjs <out.json>`.
+
+## 6. Session 1 re-profile (2026-09-09) — same request, real refusals
+
+Same harness shape as §2 (isolated DB, real model, real instance, every card
+refused through the real gate — and since WI-2 the gate actually accepts the
+refusal, so no five-minute timeouts). Two samples, taken after WI-2 … WI-7 and
+the prompt follow-up landed.
+
+| Sample | loop iterations | iterations to the `create_flow_live` card | prompt tokens to the card | prompt tokens total | raw `sys_hub_flow` writes attempted | refused before any card | Business Rule offered | ledger mutations |
+|---|---|---|---|---|---|---|---|---|
+| Session 0 baseline | 14 | 13 | ~183k | 199.8k | 1 (reached the card) | 0 | yes, as a "native alternative" | 0 (card refused) |
+| #1 (before the prompt follow-up) | 10 | never — the turn ended with a question | – | 138.1k | 1 | 1 (`policy_refused`) | yes, in prose | 0 |
+| #2 (after) | 19 | 16 | 281.6k | 356.0k | 3 | 3 (`policy_refused`) | no | 0 |
+
+What held, VERIFIED FROM REAL MODEL on dev424910:
+
+- every `update_record sys_hub_flow {active:true}` was refused by policy
+  **before** a card existed (WI-4); the refusal reached the model as a result,
+  not as a mutation, and the ledger stayed empty;
+- the refused `create_flow_live` card was answered in-callback and the gate
+  accepted it (`accepted: true`; WI-2); the model's identical resubmission was
+  stopped by the rejection registry (`user-rejected`) without a second card;
+- no `create_application`, no `create_record` on `sys_script`, and after the
+  follow-up sentence no Business Rule offered even in prose;
+- the context profile was the same correct 35-of-97 selection (fixed 13.6k:
+  system 5.8k, schemas 7.8k).
+
+What did not: the **≤ 6 iterations to the card** target. Both samples spent
+their iterations on reads, and sample #2 on three refused activation attempts.
+The reason is visible in the transcript: `list_live_flows` returns the golden
+pair already installed as drafts (the Session 0 artifacts on this workspace),
+so the model's plan becomes "activate the existing flow" rather than "build
+one", and the only activation path it can see is the raw write the policy now
+refuses. Its closing message asks the user whether to activate the draft. That
+is the honest state of the instance (installed ≠ published) and it is Session
+2's problem to give the model a sanctioned activation path (W2) and a lean
+workspace (W1); no Session 1 lever changes it. Iteration count is one sample
+each and the model is non-deterministic; the numbers are reported, not
+claimed as a trend.
+
+The plan route, warm, for the same request (WI-5): six of six samples now
+parse (finish=stop; completion 1.3k–2.4k against the 8,192 budget), versus
+zero of three before. Two of six validate — both as `create_flow_live` on the
+SDK mechanism with scope `x_2002152_nwforge` stamped, none on REST, none on
+`sys_flow`. The other four are refused by the deterministic dataflow rules:
+the model plans "author, then publish" as two `create_flow_live` steps and
+references a `blueprint` output the tool does not declare
+(`reference_unknown_output`), or writes a reference in a non-canonical form
+(`malformed_reference`). That is the F4 bundle-step case for Session 3, and
+one taxonomy fact worth noting there: `flow_authoring` and `flow_publish` both
+map to the same tool, which is what invites the two-step reading.
