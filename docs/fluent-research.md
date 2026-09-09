@@ -6044,3 +6044,122 @@ never picks up the word "irreversible" and `dba_drop_field` never loses it.
 | 126 | **Routing added on one half of an operation** | adds route correctly, removes dead-end to manual steps for the same table | Routing is a property of the TARGET, not of the verb. When a router is introduced, walk every operation that touches the same object — the untouched half keeps the old behaviour and looks like a different bug |
 | 127 | **Manual instructions offered in place of a gate** | "open the .now.ts, delete the line, run now-sdk install" as a helpful answer to a refusal | A refusal is not a dead-end to route around. Hand-editing bypasses the export, the confirmation and the audit trail that exist because the operation cannot be undone. Say what the gate needs and stop |
 | 128 | **A timeout ceiling used as a floor for answering** | an install that stalls is indistinguishable from one that is slow, for 15 minutes | The default timeout is how long before giving up; it is not how long to wait before LOOKING. Bound it just above measured normal, then read back — and never retry, because the server may have finished what the client abandoned |
+
+---
+
+## 48. Session 2 — publishing a flow, and four traps between installed and running
+
+**Instance:** dev424910.service-now.com · **Date:** 2026-09-09 · **Commit at start:** `e7fc743`
+**Tier:** VERIFIED FROM PDI unless labelled otherwise.
+
+### The gap: there was no way to publish a flow, and no way to notice
+
+SDK 4.10.1 activates flows as a **post-install task**. Read from
+`@servicenow/sdk-api/dist/orchestrator.js:612→662` and `dist/flow-activation.js`:
+
+- it runs only **after** the deployment wait succeeds, inside the same `try`.
+  The wait is `AbortSignal.timeout(timeoutMs ?? 300000)` in `connector.js:156`,
+  and there is **no CLI flag, env var or config key** that changes it. When it
+  fires — six of our installs, plus one more today — activation is never reached;
+- when it *does* run, `runPostInstallTasks` catches every task error and logs it
+  at **DEBUG** (`orchestrator.js:555-562`) while the install still exits 0. A
+  clean `now-sdk install` is compatible with zero flows published;
+- if the endpoint is absent it logs at DEBUG and returns silently;
+- its payload is **every non-deleted key in the project**
+  (`getRecordIdsByTable`), not the artifact just built — so activating through
+  an install is all-or-nothing on the whole application.
+
+Consequence, measured: 33 flows in scope, none published, and the agent's only
+reachable route to "make this live" was `update_record` on `sys_hub_flow`, which
+the policy refuses. It tried three times in one turn.
+
+### Trap #129 — an install REVERTS published flows to draft ⚠️
+
+The most expensive finding of the session. Both golden artifacts were published
+and verified at 05:48 and 05:50. A later `now-sdk install` (for an unrelated
+source removal, run with `--skip-flow-activation`) put them back to
+`active=false, status=draft` — while leaving `latest_snapshot` and
+`master_snapshot` populated, i.e. `inactive_with_snapshot`.
+
+The revert is **not** visible when the install returns. Read back immediately
+after the client aborted, the flow still read `published: true`; it read `draft`
+minutes later, once the server finished. Anything that installs after publishing
+must re-publish and re-verify, and must not read back too early.
+
+### Trap #130 — a removal's effect is invisible when the client returns
+
+The same install: the source for `Daily P1 Digest` was archived, the client
+failed at 352 s with the 300 s deployment abort, and an immediate read showed
+the record still present with an unchanged `sys_updated_on`. It was **gone**
+about ten minutes later. `sys_upgrade_history` recorded three chunks (06:05:13,
+06:05:46, 06:10:42), all with `deleted: 0` — that column does not report it.
+
+So **C6 is CONFIRMED**: removing a source and installing does delete the
+instance record. The confirmation is the artifact's absence, on a delay, and
+never the install's own exit status.
+
+### Trap #131 — `latest_snapshot` does not always name a `sys_hub_flow_snapshot`
+
+After the subflow was executed through the harness, its `latest_snapshot` moved
+from `5595fd50…` (a real `sys_hub_flow_snapshot`) to `e6c87518…`, which resolves
+in **`sys_hub_snapshot`** — the compiled artifact — and is not readable in
+`sys_hub_flow_snapshot` or `sys_hub_flow_base`. `master_snapshot` still named the
+real published snapshot.
+
+A published check that joins on `latest_snapshot` alone therefore reports UNKNOWN
+after an execution. `master_snapshot` is the more stable of the two. Re-running
+activation repaired `latest_snapshot`. (Compare §U2's note that
+`sys_flow_context.snapshot` also points at `sys_hub_snapshot`.)
+
+### Trap #132 — record-triggered flows do not fire on this instance
+
+The golden flow is published, `active=true`, `master_snapshot` set, its published
+snapshot carries a `record_create` trigger on `incident`, and it has a
+`remote_trigger_id`. A disposable incident produced **no execution** in 150 s and
+no work notes.
+
+The reason is not the flow. Across the last 500 `sys_flow_context` rows the
+`source_table` distribution is `sysauto_script` 216, `sys_flow_timer_trigger` 38,
+`task_sla` 1 — **zero record-triggered executions, ever**. The `Flow Engine Event
+Handler` and `Flow Engine Interactive Event Handler` jobs in `sys_trigger` sit at
+`state=0`, unclaimed, with `next_action` of 2026-04-30 and 2026-09-01.
+
+This refines §0's "scheduler healthy": that probe used a one-shot
+`sysauto_script`, which is exactly the path that works. Timer, script and SLA
+sources run; the record-trigger event queue is not drained. **A record-triggered
+flow cannot be proven to execute on this PDI**, and no amount of authoring fixes
+it.
+
+### What publishing actually takes, and what proves it
+
+`POST /api/now/wfa_fluent/activate_flows?sysparm_transaction_scope=<scope sys_id>`
+with `{ flows: [{ sys_id, active: '', state: '' }], actions: [] }` — the two empty
+strings are literal. **HTTP 422 is a normal response** meaning every flow failed,
+and the body carries the reasons, so the status is not the verdict. The operation
+requires `snc_internal` and ACL authorisation; `admin` over basic auth is
+sufficient. Measured cost: **94–102 s per artifact**.
+
+Published is a **four**-way agreement, not three: `active=true`, `status=published`,
+`latest_snapshot` naming a published `sys_hub_flow_snapshot`, and `master_snapshot`
+naming the same one. `active` alone means nothing; a published snapshot row alone
+means somebody pressed Test (§U2).
+
+### Proven end to end
+
+`Add Priority Check Work Note`, published, invoked through the execution harness
+(`sn_fd.FlowAPI.getRunner().subflow().inBackground()`), settled COMPLETE and wrote
+the exact promised literal `Priority checked by onboarding subflow` to a
+disposable incident's work notes. Fixture deleted, harness job and sink deleted,
+no leftovers. First artifact ever proven to execute in this scope.
+
+### Trap ledger additions
+
+- **#129** an install reverts published flows to draft, and the revert is not
+  visible until the server finishes — minutes after the client returns
+- **#130** a source removal's deletion lands late and is not reported by
+  `sys_upgrade_history.deleted`; the artifact's absence is the only proof
+- **#131** `latest_snapshot` can name a `sys_hub_snapshot` rather than a
+  `sys_hub_flow_snapshot` after an execution; `master_snapshot` is more stable
+- **#132** record-triggered flows never fire on dev424910 — the Flow Engine
+  Event Handler jobs are queued and unclaimed since April; only
+  `sysauto_script`, timer and SLA sources execute
