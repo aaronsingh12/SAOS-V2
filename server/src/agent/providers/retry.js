@@ -81,6 +81,39 @@ export function isRetryableStatus(status) {
   return status === 408 || status === 429 || (status >= 500 && status < 600);
 }
 
+/**
+ * Phase 0 — a request WE aborted is never retried.
+ *
+ * The distinction matters because an aborted fetch and a dead daemon reach the
+ * adapter's catch through the same door, and the dead-daemon branch marks its
+ * error retryable. Without this, pressing Stop would be answered with three
+ * more requests to the provider — the exact opposite of what was asked for, and
+ * on the 5xx curve it would keep going for the better part of a minute.
+ *
+ * Judged from the CALLER'S signal first, because that is the fact we actually
+ * have; `AbortError` is checked as well, and both the outer error and its
+ * `cause` are read for the same reason `isTimeout` does — undici surfaces it
+ * either way.
+ */
+export function isAbort(err, signal = null) {
+  if (signal?.aborted) return true;
+  return err?.name === 'AbortError' || err?.cause?.name === 'AbortError';
+}
+
+/**
+ * The error an adapter throws when its request was cancelled.
+ *
+ * Deliberately NOT retryable and deliberately not decorated with a status: it
+ * is not an upstream failure and must not be counted as one. The orchestrator
+ * does not read this message — it consults its own signal — so this exists for
+ * the log and for any caller that has no signal to consult.
+ */
+export function abortedError(label) {
+  const err = new Error(`${label} was cancelled before it completed.`);
+  err.cancelled = true;
+  return err;
+}
+
 /** Mark an error as worth another attempt. */
 export function retryable(err, status) {
   err.retryable = true;

@@ -38,7 +38,7 @@ const {
 const { estimateTokens, compactIfNeeded, buildDigestNote, DEFAULT_HISTORY_BUDGET } =
   await import('../src/memory/compaction.js');
 
-const { recordFact, listFacts, factBlock, seedLedger, rememberFromChat, recordVerificationFailure, recordCalculatedFields } =
+const { recordFact, listFacts, factBlock, seedLedger, rememberFromChat, recordVerificationFailure, recordCalculatedFields, FACT_BLOCK_LIMIT } =
   await import('../src/memory/facts.js');
 
 const { chunkText, indexMessage, cosine } = await import('../src/memory/recall.js');
@@ -128,15 +128,27 @@ test('A-1: tool events are a separate audit trail, including rejected approvals'
   assert.deepEqual(events[0].payload, { table: 'incident' });
 });
 
-test('A-1: deleting a session takes its messages and events with it', () => {
+/*
+ * CHANGED, deliberately: this asserted `loadToolEvents(id).length === 0`.
+ *
+ * That encoded a bug. `tool_events` is the audit trail of what the agent DID to
+ * a live instance — its own schema comment says so — and it cascaded from
+ * `sessions`, so deleting a chat destroyed the evidence. Nothing exercised it
+ * while sessions were deleted one at a time; adding a "delete all chats" button
+ * would have made it a one-click audit wipe.
+ *
+ * Migration 14 removed the foreign key. A tool event whose session is gone is
+ * exactly right: the record outlives the conversation that produced it.
+ */
+test('A-1: deleting a session takes its transcript — but NOT its audit trail', () => {
   const id = 'sess-doomed';
   createSession({ id });
   appendMessage(id, { role: 'user', text: 'hello' });
   recordToolEvent(id, { kind: 'tool_call', name: 'x', resultStatus: 'ok', mutating: false });
   assert.equal(deleteSession(id).deleted, true);
   assert.equal(getSession(id), null);
-  assert.equal(loadHistory(id).length, 0);
-  assert.equal(loadToolEvents(id).length, 0);
+  assert.equal(loadHistory(id).length, 0, 'the transcript goes');
+  assert.equal(loadToolEvents(id).length, 1, 'the audit trail stays');
 });
 
 test('A-1: a corrupt message row does not sink the whole session', () => {
@@ -550,4 +562,76 @@ test('A-3: list-shaped tool results are collapsed before the model ever sees the
   assert.ok(numbers <= 40, `too many raw record numbers survived into the prompt: ${numbers}`);
   // The identifier that matters is NOT collapsed away — it is not a list.
   assert.ok(seen.includes('39acb67eac164650a6b15f5e724cae76'), 'a created artifact sys_id must survive into the prompt');
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-BUDGET-1 T3 — THE LEDGER IS NOT SILENTLY TRUNCATED
+ *
+ * `factBlock` sliced to 40 against a 56-fact ledger. `listFacts` orders by
+ * (kind, key) and kinds sort decision, mapping, preference, trap — so the cut
+ * landed 20 traps into an alphabetical list and 16 traps were absent from every
+ * system prompt this project has sent. Not the unimportant 16: the back half of
+ * the alphabet, including `priority-is-calculated`, `rest-silently-drops-field-
+ * writes`, `sys-scope-insert-is-a-husk` and `ui-policy-action-not-writable-
+ * over-rest` — the facts operating rules 14, 19, 20 and 21 are built on.
+ *
+ * The existing "seeded ledger carries the trap" test above did not catch it,
+ * because its fixture instance holds ~14 facts and never reaches the limit. It
+ * stayed true while production silently failed — the same fixture-versus-live
+ * blind spot WI-BUDGET-1 T4 closes in the budget test.
+ * ------------------------------------------------------------------ */
+
+test('T3: every eligible fact reaches the block — the cut is not silent', () => {
+  seedLedger({ instance: 'https://truncation.service-now.com' });
+  for (let i = 0; i < 60; i++) {
+    recordFact({
+      instance: 'https://truncation.service-now.com', kind: 'mapping',
+      key: `zzz-late-alphabetically-${String(i).padStart(2, '0')}`,
+      value: `A measured fact that sorts to the very end of the ledger (${i}).`,
+      provenance: 'T3 fixture',
+    });
+  }
+  const eligible = listFacts({ instance: 'https://truncation.service-now.com' });
+  assert.ok(eligible.length > 40, `fixture must exceed the old limit, got ${eligible.length}`);
+
+  const block = factBlock({ instance: 'https://truncation.service-now.com' });
+  for (const f of eligible) {
+    assert.ok(block.includes(f.key), `fact silently dropped from the block: ${f.key}`);
+  }
+});
+
+test('T3: the trap that plan-check.js exists for survives a full-size ledger', () => {
+  seedLedger({ instance: 'https://truncation2.service-now.com' });
+  for (let i = 0; i < 60; i++) {
+    recordFact({
+      instance: 'https://truncation2.service-now.com', kind: 'decision',
+      key: `aaa-early-${String(i).padStart(2, '0')}`,
+      value: `An established decision that sorts before every trap (${i}).`,
+      provenance: 'T3 fixture',
+    });
+  }
+  const block = factBlock({ instance: 'https://truncation2.service-now.com' });
+  assert.ok(block.includes('priority-is-calculated'),
+    'the fact two live approvals were spent on must not be crowded out by earlier-sorting kinds');
+});
+
+test('T3: when the limit DOES bite, the block says so in band', () => {
+  seedLedger({ instance: 'https://truncation3.service-now.com' });
+  const eligible = listFacts({ instance: 'https://truncation3.service-now.com' }).length;
+  assert.ok(eligible > 5, 'fixture must exceed the limit under test');
+
+  const block = factBlock({ instance: 'https://truncation3.service-now.com', limit: 5 });
+  assert.match(block, /TRUNCATED: \d+ further fact\(s\)/);
+  assert.match(block, /absence here is not evidence/);
+});
+
+test('T3: a complete ledger carries no truncation notice', () => {
+  seedLedger({ instance: 'https://truncation4.service-now.com' });
+  const block = factBlock({ instance: 'https://truncation4.service-now.com' });
+  assert.ok(!block.includes('TRUNCATED:'),
+    'a notice on a complete list would teach the model to discount a ledger that is whole');
+});
+
+test('T3: the limit is a bound against a runaway ledger, not a working ceiling', () => {
+  assert.ok(FACT_BLOCK_LIMIT >= 100, 'too low to clear a real ledger without cutting');
 });

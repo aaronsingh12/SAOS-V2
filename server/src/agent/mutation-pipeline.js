@@ -95,18 +95,133 @@ function unverified(reason) {
  * rather than being diffed against a shape they never promised.
  */
 export async function verifyMutation({ descriptor, result, before, toolName }) {
-  if (!descriptor) {
+  /*
+   * SESSION 1 / WI-4 — A REFUSAL IS NOT A WRITE TO VERIFY.
+   *
+   * The record tools now answer `{ ok: false, refused: true, reason }` for a
+   * policy-refused or unknown table, and they carry a descriptor like any
+   * other write. Diffing that answer against the descriptor's requested fields
+   * would report every field "not returned at all", label the call a no-op,
+   * and register the drops — a confident account of a write that was never
+   * attempted. The tool's own verdict is the evidence, and it is conclusive.
+   */
+  if (result && result.ok === false && result.refused === true) {
+    const why = `${toolName} refused before writing (${result.reason ?? 'refused'}); nothing was attempted`;
     return {
-      verified: null, status: 'self-verified', summary: `${toolName} reports its own read-back`,
+      verified: false, status: 'unverified', summary: why,
+      applied: [], dropped: [], transformed: [],
+      unverifiable: [{ field: '(all)', reason: why }], noOpSignal: null,
+      verifiedBy: toolName,
+      notAttempted: true,
+      refused: result.reason ?? 'refused',
+    };
+  }
+
+  /*
+   * SESSION 1 / WI-6 — AN SDK TOOL THAT REPORTS FAILURE, WITH A DESCRIPTOR.
+   *
+   * `create_flow_live` now carries a descriptor, so its `ok: false` results no
+   * longer reach the descriptor-less branch below. Diffing them would call a
+   * refused build a "no-op write" and register drops for it. Two cases:
+   *
+   *   before the install (capability, validate, naming, binding refusal)
+   *     nothing was attempted — the ledger declines to record it;
+   *   at the install (stage 'deploy')
+   *     the SDK said the install failed, and trap #116 says a red install
+   *     can still have landed. That is UNVERIFIED, not "not attempted" and
+   *     not "no-op": a claim the ledger records as such.
+   */
+  /*
+   * SESSION 2 — NARROWED, because it was about to lie about a different tool.
+   *
+   * As written in Session 1 this keyed on `mechanism === 'sdk'` alone, which
+   * was fine while `create_flow_live` was the only SDK-mechanism tool: its
+   * `ok: false` always means a pipeline STAGE stopped (capability, validate,
+   * deploy, naming), and it always says which.
+   *
+   * `activate_flow` breaks that assumption in the most dangerous way. Its
+   * `ok: false` normally means "the activation ran and the artifact is still
+   * not published" — a genuine, verifiable, FAILED write with a real
+   * descriptor and a real read-back. Under the old condition that came back as
+   * "stopped before installing; nothing was attempted", which is a confident
+   * statement that no attempt was made about a call that was made and failed.
+   *
+   * So the branch now requires the tool to SAY which stage stopped. A result
+   * with no stage falls through to the ordinary diff, where the read-back
+   * decides — which is the whole point of having one.
+   */
+  if (result && result.ok === false && descriptor?.mechanism === 'sdk' && typeof result.stage === 'string') {
+    const atInstall = result.stage === 'deploy';
+    const why = atInstall
+      ? `${toolName} reported the install failed (${String(result.message ?? '').slice(0, 160) || 'no message'}); `
+        + 'whether artifacts landed is not established — a timed-out install can still have landed'
+      : `${toolName} stopped before installing (${result.stage ?? 'refused'}${result.bindingRefused ? ', binding refused' : ''}); nothing was attempted`;
+    return {
+      verified: false, status: 'unverified', summary: why,
+      applied: [], dropped: [], transformed: [],
+      unverifiable: [{ field: '(all)', reason: why }], noOpSignal: null,
+      verifiedBy: toolName,
+      notAttempted: !atInstall,
+    };
+  }
+  if (!descriptor) {
+    /*
+     * WI-5 — A TOOL THAT REPORTED FAILURE HAS NOT SELF-VERIFIED ANYTHING.
+     *
+     * This branch used to return `self-verified` for every descriptor-less
+     * tool, without ever looking at what the tool SAID. So a `create_flow_live`
+     * call that refused at the binding preflight — `ok: false`,
+     * `bindingRefused: true`, nothing attempted, nothing installed — came back
+     * labelled self-verified, was written to the mutation ledger, and rendered
+     * in the turn summary as "1 mutation ✅ create_flow_live".
+     *
+     * The tool's own result is the only evidence available here, and it is
+     * conclusive in the negative direction: a tool reporting `ok: false` did
+     * not write. `notAttempted` carries that to the ledger, which then declines
+     * to record a mutation that never happened.
+     */
+    if (result && result.ok === false) {
+      const why = result.bindingRefused
+        ? `${toolName} was refused at the binding preflight; nothing was attempted`
+        : `${toolName} reported failure; nothing was written`;
+      return {
+        verified: false, status: 'unverified', summary: why,
+        applied: [], dropped: [], transformed: [],
+        unverifiable: [{ field: '(all)', reason: why }], noOpSignal: null,
+        verifiedBy: toolName,
+        notAttempted: true,
+      };
+    }
+    return {
+      /*
+       * `verified: null` and NOT true. The harness checked nothing here — this
+       * is the tool's own account of its own work, and the status word says so.
+       */
+      verified: null, status: 'self-verified', summary: `${toolName} reports its own read-back — not checked by the harness`,
       applied: [], dropped: [], transformed: [], unverifiable: [], noOpSignal: null,
       verifiedBy: toolName,
     };
   }
   if (descriptor.operation === 'delete') return verifyDelete(descriptor);
 
-  // The record as the platform returned it. `create`/`update` hand back the
-  // written record; anything else means we have nothing to diff against.
-  const returned = result && typeof result === 'object' ? result : null;
+  /*
+   * The record as the platform returned it. `create`/`update` hand back the
+   * written record; anything else means we have nothing to diff against.
+   *
+   * A COMPOSITE TOOL RETURNS A WRAPPER, NOT A RECORD, and that made its
+   * read-back structurally impossible. FOUND BY THE PHASE 20 PDI:
+   * `create_catalog_item` creates an item AND its variables, so its result is
+   * `{ item, variables }`. Diffing the requested `name` against that wrapper
+   * found no `name` anywhere and reported `no-op: the platform discarded this
+   * write` — about a catalog item that had been created perfectly.
+   *
+   * So a `describeWrite` may now name the record inside its own result. Every
+   * tool that returns the record directly is unaffected: the fallback is the
+   * behaviour that was always there.
+   */
+  const returned = (descriptor.record && typeof descriptor.record === 'object')
+    ? descriptor.record
+    : (result && typeof result === 'object' ? result : null);
   if (!returned) return unverified('the tool returned no record to compare against');
 
   const { types, hierarchy } = await fieldTypesFor(descriptor.table);

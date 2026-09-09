@@ -1,0 +1,262 @@
+/* ── NOWFORGE EXPERIENCE — the agent workspace ────────────────────────────────
+   Status, activity, plan, skills and task history.
+
+   §67 — every colour here is a design token from styles.css. Nothing is
+   hardcoded, so the four status tones stay consistent with the rest of the app:
+   verdigris for done, amber for anything waiting on a person, red for failed,
+   muted for idle. Amber is reserved for the approval gate throughout NowForge,
+   and a waiting agent is the same idea — someone has to decide something.
+
+   §55/§67 — every tone is carried by a WORD as well as a colour. The status
+   pill says "Waiting for approval", the timeline rows say "blocked", and the
+   plan steps carry a glyph; a reader who cannot distinguish the hues loses
+   nothing. `prefers-reduced-motion` is honoured globally in styles.css, which
+   turns the pulse below off along with every other animation. */
+
+/* ── The one-word status (§12, §48) ── */
+.ag-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.02em;
+  padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+  white-space: nowrap;
+}
+.ag-status.ag-busy { color: var(--verdigris); border-color: var(--verdigris-dim); }
+.ag-status.ag-warn { color: var(--amber); border-color: #5a4526; }
+.ag-status.ag-bad  { color: var(--red); border-color: #5b2f2c; }
+.ag-status.ag-ok   { color: var(--verdigris); border-color: var(--verdigris-dim); }
+.ag-status.ag-idle { color: var(--muted); }
+/* Only a WORKING agent pulses. A waiting one is still, deliberately (§48). */
+.ag-status.ag-spin > span:first-child { animation: ag-pulse 1.6s ease-in-out infinite; }
+@keyframes ag-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.28; } }
+
+/* ── Rail tabs (§4) ── */
+.rail-tabs { display: flex; border-bottom: 1px solid var(--line-soft); flex: 0 0 auto; }
+.rail-tab {
+  flex: 1; padding: 8px 4px; background: transparent; border: 0; cursor: pointer;
+  color: var(--muted); font-family: var(--font-body); font-size: 12px;
+  border-bottom: 2px solid transparent;
+}
+.rail-tab:hover { color: var(--text); }
+.rail-tab.active { color: var(--text); border-bottom-color: var(--verdigris); }
+.rail-pane { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow-y: auto; }
+.rail-pane[hidden] { display: none; }
+
+/* ── Activity (§6, §20) ── */
+.ax {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); margin-bottom: 10px; overflow: hidden;
+}
+.ax-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--line-soft); background: var(--panel-2);
+}
+.ax-title { font-family: var(--font-display); font-size: 12.5px; font-weight: 600; }
+.ax-counts { font-size: 11.5px; color: var(--muted); font-family: var(--font-mono); }
+.ax-ok { color: var(--verdigris); }
+.ax-run { color: var(--blue); }
+.ax-bad { color: var(--red); }
+.ax-warn { color: var(--amber); }
+.ax-head .btn { margin-left: auto; }
+.ax-skills { display: flex; gap: 5px; flex-wrap: wrap; }
+.ax-skill {
+  font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--verdigris-dim); color: var(--verdigris);
+}
+.ax-progress {
+  padding: 6px 12px; font-size: 11.5px; color: var(--muted);
+  font-family: var(--font-mono); border-bottom: 1px solid var(--line-soft);
+}
+/* The screen-reader announcement of the current action only (§55). */
+.ax-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.ax-more {
+  display: block; width: 100%; padding: 6px 12px; text-align: left;
+  background: transparent; border: 0; border-bottom: 1px solid var(--line-soft);
+  color: var(--blue); font-size: 11.5px; cursor: pointer; font-family: var(--font-body);
+}
+.ax-list { list-style: none; margin: 0; padding: 4px 0; max-height: 260px; overflow-y: auto; }
+.ax-row { border-left: 2px solid transparent; }
+.ax-row.ax-running   { border-left-color: var(--blue); }
+.ax-row.ax-completed { border-left-color: var(--verdigris-dim); }
+.ax-row.ax-failed    { border-left-color: var(--red); }
+.ax-row.ax-blocked   { border-left-color: var(--amber); }
+.ax-row.ax-cancelled { border-left-color: var(--line); }
+.ax-row-btn {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 3px 12px; background: transparent; border: 0; cursor: pointer;
+  text-align: left; color: var(--text); font-family: var(--font-body); font-size: 12.5px;
+}
+.ax-row-btn:disabled { cursor: default; }
+.ax-row-btn:hover:not(:disabled) { background: var(--panel-2); }
+.ax-mark { width: 12px; flex: 0 0 12px; color: var(--muted); font-family: var(--font-mono); }
+.ax-row.ax-completed .ax-mark { color: var(--verdigris); }
+.ax-row.ax-failed .ax-mark { color: var(--red); }
+.ax-row.ax-blocked .ax-mark { color: var(--amber); }
+.ax-row.ax-running .ax-mark { color: var(--blue); }
+.ax-type {
+  flex: 0 0 62px; font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.ax-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-inexact {
+  font-size: 10px; color: var(--amber); border: 1px solid #5a4526;
+  border-radius: 999px; padding: 0 6px; flex: 0 0 auto;
+}
+.ax-status { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); flex: 0 0 auto; }
+.ax-detail { padding: 4px 12px 10px 34px; border-bottom: 1px solid var(--line-soft); }
+.ax-summary { font-size: 12px; color: var(--muted); margin-bottom: 6px; white-space: pre-wrap; }
+.ax-meta {
+  margin: 0; padding: 8px; background: var(--ink); border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 11px;
+  color: var(--muted); overflow-x: auto; max-height: 220px;
+}
+
+/* ── Plan (§16–§19) ── */
+.pl {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); margin-bottom: 10px; overflow: hidden;
+}
+.pl-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 12px; background: var(--panel-2); border: 0;
+  border-bottom: 1px solid var(--line-soft); cursor: pointer;
+  color: var(--text); font-family: var(--font-body); text-align: left;
+}
+.pl-title { font-family: var(--font-display); font-size: 12.5px; font-weight: 600; }
+.pl-sum { font-size: 11.5px; color: var(--muted); font-family: var(--font-mono); flex: 1; }
+.pl-bad { color: var(--red); }
+.pl-chev { color: var(--muted); font-size: 11px; }
+.pl-steps { list-style: none; margin: 0; padding: 4px 0; }
+.pl-step { border-left: 2px solid transparent; }
+.pl-step.pl-running   { border-left-color: var(--blue); }
+.pl-step.pl-completed { border-left-color: var(--verdigris-dim); }
+.pl-step.pl-failed    { border-left-color: var(--red); }
+.pl-step.pl-blocked   { border-left-color: var(--amber); }
+.pl-step-btn {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 4px 12px; background: transparent; border: 0; cursor: pointer;
+  text-align: left; color: var(--text); font-family: var(--font-body); font-size: 12.5px;
+}
+.pl-step-btn:hover { background: var(--panel-2); }
+.pl-mark { width: 12px; flex: 0 0 12px; font-family: var(--font-mono); color: var(--muted); }
+.pl-step.pl-completed .pl-mark { color: var(--verdigris); }
+.pl-step.pl-failed .pl-mark { color: var(--red); }
+.pl-step.pl-running .pl-mark { color: var(--blue); }
+.pl-n { color: var(--muted); font-family: var(--font-mono); font-size: 11px; flex: 0 0 auto; }
+.pl-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A step that writes says so in a word, not only in a colour (§67). */
+.pl-mut {
+  font-size: 10px; color: var(--amber); border: 1px solid #5a4526;
+  border-radius: 999px; padding: 0 6px; flex: 0 0 auto;
+}
+.pl-detail { padding: 6px 12px 12px 34px; border-bottom: 1px solid var(--line-soft); }
+.pl-dl { display: grid; grid-template-columns: 108px 1fr; gap: 2px 10px; margin: 0 0 8px; font-size: 12px; }
+.pl-dl dt { color: var(--muted); }
+.pl-dl dd { margin: 0; }
+.pl-block { margin-bottom: 8px; }
+.pl-block-head {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin-bottom: 3px;
+}
+.pl-pre {
+  margin: 0; padding: 8px; background: var(--ink); border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 11px;
+  color: var(--muted); overflow-x: auto; max-height: 200px;
+}
+.pl-why { font-size: 12px; color: var(--muted); }
+.pl-flow { padding: 8px 12px 12px; border-top: 1px solid var(--line-soft); }
+.pl-ref { display: flex; align-items: center; gap: 8px; font-size: 11.5px; flex-wrap: wrap; }
+.pl-ref-from { color: var(--muted); }
+.pl-arrow { color: var(--verdigris); }
+.pl-ref-to { color: var(--text); }
+.pl-note { padding: 6px 12px; font-size: 11.5px; color: var(--amber); }
+
+/* ── Skills (§28–§43) ── */
+.sk { display: flex; flex-direction: column; min-height: 0; }
+.sk-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 10px 6px;
+}
+.sk-title { font-family: var(--font-display); font-size: 12.5px; font-weight: 600; }
+.sk-count { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.sk-empty { padding: 16px 10px; color: var(--muted); font-size: 12.5px; }
+.sk-list { list-style: none; margin: 0; padding: 0 8px; }
+.sk-item {
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+  padding: 6px 8px; margin-bottom: 6px; background: var(--panel-2);
+}
+.sk-item.sk-bad { border-color: #5b2f2c; }
+.sk-row { display: flex; align-items: center; gap: 6px; }
+.sk-toggle { display: flex; align-items: center; gap: 7px; flex: 1; cursor: pointer; min-width: 0; }
+.sk-toggle input { accent-color: var(--verdigris); }
+.sk-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-info {
+  background: transparent; border: 1px solid var(--line); border-radius: 4px;
+  color: var(--muted); cursor: pointer; width: 20px; height: 20px; line-height: 1;
+  flex: 0 0 auto; font-size: 13px;
+}
+.sk-meta { display: flex; gap: 8px; margin-top: 2px; font-size: 10.5px; color: var(--muted); }
+.sk-version { font-family: var(--font-mono); }
+.sk-blocked { color: var(--red); }
+.sk-detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.sk-desc { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.sk-errors { margin: 0 0 8px; padding-left: 16px; font-size: 11.5px; color: var(--red); }
+.sk-perm { margin-bottom: 7px; }
+.sk-perm-head {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+}
+.sk-tools { font-family: var(--font-mono); font-size: 10.5px; color: var(--text); word-break: break-word; }
+/* What a skill can CHANGE reads amber — the gate's colour, throughout. */
+.sk-tools.sk-mutating { color: var(--amber); }
+.sk-none { font-size: 11px; color: var(--muted); font-style: italic; }
+.sk-never { font-size: 10.5px; color: var(--muted); }
+.sk-note { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); }
+.sk-add { padding: 8px; }
+.sk-draft { width: 100%; min-height: 150px; font-family: var(--font-mono); font-size: 11px; }
+.sk-hint { font-size: 11px; color: var(--muted); margin: 6px 0 8px; }
+.sk-addbtn {
+  margin: 4px 8px 12px; padding: 6px; background: transparent;
+  border: 1px dashed var(--line); border-radius: var(--radius-sm);
+  color: var(--muted); cursor: pointer; font-size: 12px; font-family: var(--font-body);
+}
+.sk-addbtn:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+.sk-addbtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Task history (§51–§53) ── */
+.th { display: flex; flex-direction: column; min-height: 0; }
+.th-head {
+  display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 6px;
+}
+.th-title { font-family: var(--font-display); font-size: 12.5px; font-weight: 600; }
+.th-count { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.th-empty { padding: 16px 10px; color: var(--muted); font-size: 12.5px; }
+.th-list { list-style: none; margin: 0; padding: 0 8px 10px; }
+.th-item {
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+  padding: 6px 8px; margin-bottom: 6px; background: var(--panel-2);
+}
+.th-item.th-current { box-shadow: inset 2px 0 0 var(--verdigris); }
+.th-row {
+  display: flex; align-items: baseline; gap: 7px; width: 100%;
+  background: transparent; border: 0; cursor: pointer; padding: 0;
+  color: var(--text); font-family: var(--font-body); font-size: 12.5px; text-align: left;
+}
+.th-row:disabled { cursor: default; opacity: 0.65; }
+.th-dot { font-size: 8px; flex: 0 0 auto; }
+.th-dot.th-ok { color: var(--verdigris); }
+.th-dot.th-bad { color: var(--red); }
+.th-dot.th-warn { color: var(--amber); }
+.th-dot.th-busy { color: var(--blue); }
+.th-dot.th-idle { color: var(--muted); }
+.th-goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-state { font-family: var(--font-mono); font-size: 10px; color: var(--muted); flex: 0 0 auto; }
+.th-meta { display: flex; gap: 8px; margin-top: 2px; font-size: 10.5px; color: var(--muted); flex-wrap: wrap; }
+.th-fail { margin-top: 4px; font-size: 11px; color: var(--red); }
+.th-cont { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* §54 — the workspace holds together on a laptop. Below that the rail's panes
+   scroll independently rather than the page growing a second scrollbar. */
+@media (max-width: 1100px) {
+  .ax-list { max-height: 200px; }
+  .ax-type { flex-basis: 52px; }
+}

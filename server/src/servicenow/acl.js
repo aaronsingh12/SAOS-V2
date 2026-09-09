@@ -4,13 +4,41 @@ import { validateEncodedQuery, stripEndMarker } from './conditions.js';
 import { chatOnce } from '../agent/providers/index.js';
 
 /**
- * ACL analyzer — read and explain, never author (B-3).
+ * ACL analyzer — read and explain. Authoring lives in acl-authoring.js (B-3, revised).
  *
  * Writing ACLs from here is deliberately out of scope. An ACL is the one
  * artifact class where a confidently wrong write is a security incident rather
  * than a bug, and the SDK route (`sys_security_acl` as managed source, reviewed
  * and installed like any other artifact) is the only defensible way to author
  * one. This file reads what is there and says what it means.
+ *
+ * ── B-3 REVERSAL, RECORDED (feat/role-elevation, demo mode) ───────────────
+ *
+ * The paragraph above said "never author", full stop. That is no longer true,
+ * and leaving it to be discovered as a contradiction would be worse than the
+ * reversal itself. `acl-authoring.js` DOES author `sys_security_acl` rows, live,
+ * from composed request context.
+ *
+ * What is unchanged: the SDK route remains the PRODUCTION path. It is
+ * source-controlled, reviewable as a diff, and captured cleanly into an update
+ * set like any other managed artifact. Authoring at request time displaces none
+ * of that.
+ *
+ * What forced the change: the demo has to show role elevation doing real work,
+ * and that requires authoring at request time on a running instance. Phase 0
+ * probe 0.5 further showed that a plain `GlideRecord` insert here persists with
+ * NO elevation, so authoring through the SDK — or through the plain API — would
+ * have made the elevation lifecycle decorative. Authoring through
+ * `GlideRecordSecure` is what makes elevation load-bearing and therefore
+ * demonstrable.
+ *
+ * What is deferred: pre-production re-evaluates routing entirely. The sentence
+ * this block replaces was right about the stakes, and the stakes have not
+ * changed — only the scope in which we accept them has (a throwaway demo PDI,
+ * with governance explicitly deferred to the hardening pass).
+ *
+ * See docs/role-elevation-phase0-ledger.md §10 item 7, which flagged this
+ * contradiction before any authoring code was written.
  *
  * Three platform behaviours make a naive reader wrong here, and all three were
  * measured on dev442675 before this was written:

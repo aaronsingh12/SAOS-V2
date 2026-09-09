@@ -1,0 +1,6 @@
+# Phase 1 — capture only. No transcription dependencies yet; faster-whisper and
+# ctranslate2 arrive in phase 2, and both have cp314 wheels (verified).
+PyAudioWPatch==0.2.12.8   # WASAPI loopback + microphone capture
+pycaw==20251023           # audio session enumeration -> meeting detection
+numpy>=2.0                # resampling and RMS
+onnxruntime>=1.20         # Silero VAD without pulling in PyTorch

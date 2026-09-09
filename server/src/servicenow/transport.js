@@ -192,6 +192,46 @@ async function createSetForScope(scopeId, name, parentSetId) {
       502, JSON.stringify(res?.report || null)
     );
   }
+
+  /*
+   * READ IT BACK. A sys_id IS NOT A WRITE.
+   *
+   * This block's own comment used to end "the read-back is what makes that
+   * failure impossible to miss" — and there was no read-back. `if (!setId)` is
+   * not one: M-1 measured a scoped script inserting into a GLOBAL table where
+   * `insert()` returned a real sys_id, `getLastErrorMessage()` was null, and
+   * every field had been discarded. `sys_update_set` is global and its
+   * Application Access is create=true / update=FALSE — the same shape as the
+   * `sys_user_preference` row that came back blank.
+   *
+   * So the fields are compared over a DIFFERENT transport (the REST Table API
+   * from Node) rather than trusted from the execution that wrote them. A set
+   * whose `application` was silently demoted to global would otherwise refuse
+   * every row the sweep later tried to put in it, at the 403 in trap #72 —
+   * failing far from the cause.
+   */
+  const [back] = await table.query('sys_update_set', {
+    query: `sys_id=${setId}`, fields: 'sys_id,name,application,state,parent', limit: 1, display: 'false',
+  }).catch(() => []);
+  if (!back) {
+    throw new SnowError(
+      `The harness reported creating update set ${setId} for ${scopeId}, and reading it back over the Table API `
+      + 'found no such record. The write did not land; nothing was captured.',
+      502, JSON.stringify({ scopeId, setId })
+    );
+  }
+  const wanted = { name, application: scopeId, ...(parentSetId ? { parent: parentSetId } : {}) };
+  const dropped = Object.entries(wanted)
+    .filter(([f, v]) => String(raw(back[f]) ?? '') !== String(v))
+    .map(([f, v]) => `${f}: asked ${JSON.stringify(v)}, stored ${JSON.stringify(raw(back[f]) ?? '')}`);
+  if (dropped.length) {
+    throw new SnowError(
+      `Update set ${setId} was created for ${scopeId} but the instance did not store what was asked: `
+      + `${dropped.join('; ')}. A scoped script writing to the global sys_update_set table has its field writes `
+      + 'silently discarded (M-1), so this set is unusable and capture must not proceed with it.',
+      502, JSON.stringify({ scopeId, setId, dropped })
+    );
+  }
   return setId;
 }
 

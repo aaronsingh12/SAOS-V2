@@ -15,8 +15,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { writeOutcome, captureReason } from '../../client/src/components/writeOutcome.js';
-import { APPROVAL_RESOLVED, executeTool } from '../src/agent/orchestrator.js';
+import { writeOutcome, captureReason, approvalProvenance } from '../../client/src/components/writeOutcome.js';
+import { APPROVAL_RESOLVED, APPROVAL_SOURCES, executeTool } from '../src/agent/orchestrator.js';
 
 const NOOP = {
   status: 'no-op', summary: 'no-op: the platform discarded this write — application unchanged',
@@ -142,12 +142,15 @@ test('an empty capture message does not become empty chrome', () => {
  * The gate audit
  * ------------------------------------------------------------------ */
 
+const CLICKED = { source: APPROVAL_SOURCES.USER_CLICK, autoApprove: false };
+const AUTO = { source: APPROVAL_SOURCES.AUTO_APPROVE, autoApprove: true };
+
 test('a mutating tool cannot execute without a resolved approval', async () => {
   let ran = false;
   const tool = { name: 'update_record', mutating: true, execute: async () => { ran = true; return {}; } };
   for (const approval of [null, undefined, 'rejected', 'pending', '']) {
     await assert.rejects(
-      () => executeTool(tool, {}, approval),
+      () => executeTool(tool, {}, approval, CLICKED),
       (err) => {
         assert.match(err.message, /Refusing to execute the mutating tool/);
         assert.equal(err.detail.reason, 'unapproved-mutation');
@@ -162,11 +165,92 @@ test('a mutating tool cannot execute without a resolved approval', async () => {
 test('approved and auto are the only values that let a mutation run', async () => {
   assert.deepEqual([...APPROVAL_RESOLVED].sort(), ['approved', 'auto']);
   const tool = { name: 'update_record', mutating: true, execute: async () => 'ok' };
-  assert.equal(await executeTool(tool, {}, 'approved'), 'ok');
-  assert.equal(await executeTool(tool, {}, 'auto'), 'ok');
+  assert.equal(await executeTool(tool, {}, 'approved', CLICKED), 'ok');
+  assert.equal(await executeTool(tool, {}, 'auto', AUTO), 'ok');
 });
 
 test('a read-only tool needs no approval', async () => {
   const tool = { name: 'query_records', mutating: false, execute: async () => 'rows' };
   assert.equal(await executeTool(tool, {}, null), 'rows');
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-4 — an approval nobody can be attributed is not an approval
+ * ------------------------------------------------------------------ */
+
+test('"approved" without a user_click source does NOT execute', async () => {
+  // The 2026-08-24 question the database could not answer, turned into a rule:
+  // `approval = "approved"` on its own is a string any code path can produce.
+  let ran = false;
+  const tool = { name: 'update_record', mutating: true, execute: async () => { ran = true; return 'ok'; } };
+  for (const source of [null, undefined, 'unknown', 'auto_approve', 'timeout']) {
+    await assert.rejects(
+      () => executeTool(tool, {}, 'approved', { source, autoApprove: false }),
+      (err) => {
+        assert.equal(err.detail.reason, 'unattributed-approval');
+        assert.match(err.message, /rather than user_click/);
+        return true;
+      },
+      `source=${source} was allowed to stand in for a click`,
+    );
+  }
+  assert.equal(ran, false);
+});
+
+test('"auto" cannot run while auto-approve is OFF', async () => {
+  // No server-side path may approve a mutation the user did not. If one ever
+  // reaches here with autoApprove false, it dies here rather than writing.
+  let ran = false;
+  const tool = { name: 'update_record', mutating: true, execute: async () => { ran = true; return 'ok'; } };
+  await assert.rejects(
+    () => executeTool(tool, {}, 'auto', { source: APPROVAL_SOURCES.AUTO_APPROVE, autoApprove: false }),
+    (err) => {
+      assert.equal(err.detail.reason, 'auto-without-auto-approve');
+      assert.match(err.message, /auto-approve is OFF/);
+      return true;
+    },
+  );
+  assert.equal(ran, false);
+});
+
+test('"auto" with a source that is not auto_approve does not execute either', async () => {
+  const tool = { name: 'update_record', mutating: true, execute: async () => 'ok' };
+  await assert.rejects(
+    () => executeTool(tool, {}, 'auto', { source: APPROVAL_SOURCES.USER_CLICK, autoApprove: true }),
+    (err) => { assert.equal(err.detail.reason, 'unattributed-approval'); return true; },
+  );
+});
+
+test('provenance is missing entirely — still refused', async () => {
+  // The shape every pre-WI-4 caller has. It must not be the permissive one.
+  const tool = { name: 'update_record', mutating: true, execute: async () => 'ok' };
+  await assert.rejects(() => executeTool(tool, {}, 'approved'), /rather than user_click/);
+  await assert.rejects(() => executeTool(tool, {}, 'auto'), /auto-approve is OFF/);
+});
+
+test('the three sources are the whole vocabulary', () => {
+  assert.deepEqual(Object.values(APPROVAL_SOURCES).sort(), ['auto_approve', 'unknown', 'user_click']);
+});
+
+/* ------------------------------------------------------------------ *
+ * WI-4 — the card says who decided, and never infers it
+ * ------------------------------------------------------------------ */
+
+test('the approval card names the person, the robot, or neither', () => {
+  assert.match(approvalProvenance({ decided: true, source: 'user_click', at: '2026-08-24T09:48:40.000Z' }), /^You approved · /);
+  assert.equal(approvalProvenance({ decided: true, source: 'auto_approve' }), 'Auto-approved — no human saw the gate');
+  // The honest rendering of a row written before provenance existed.
+  assert.match(approvalProvenance({ decided: true, source: 'unknown' }), /source was never recorded \(unknown\)/);
+  assert.match(approvalProvenance({ decided: true }), /source was never recorded \(unknown\)/);
+});
+
+test('a rejection says whether a person made it', () => {
+  assert.match(approvalProvenance({ decided: false, source: 'user_click' }), /^You rejected/);
+  // A timeout is a refusal nobody made, and must never read as one someone did.
+  assert.match(approvalProvenance({ decided: false, source: 'timeout' }), /^Expired — nobody answered/);
+  assert.match(approvalProvenance({ decided: false, source: 'unknown' }), /^Rejected \(unknown\)/);
+});
+
+test('a bad timestamp is shown, not swallowed', () => {
+  assert.match(approvalProvenance({ decided: true, source: 'user_click', at: 'not-a-date' }), /not-a-date/);
 });

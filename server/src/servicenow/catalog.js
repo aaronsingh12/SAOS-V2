@@ -358,7 +358,24 @@ export const catalog = {
       }
     }
     return {
-      item: { sys_id: itemId, name: item.name?.display_value ?? spec.name },
+      item: {
+        sys_id: itemId,
+        name: item.name?.display_value ?? spec.name,
+        /*
+         * PHASE 20 — THE RECORD ITSELF, alongside the summary.
+         *
+         * FOUND BY THE PHASE 20 PDI. The summary above carries a sys_id and a
+         * name, which is everything a reader wants and not enough for the
+         * read-back verifier: asked to confirm that `short_description` landed,
+         * it looked at a two-field object, could not find the field, and
+         * reported that the platform had dropped it. A direct insert proves the
+         * platform stores it perfectly — the information was lost here.
+         *
+         * Added rather than substituted, so every existing consumer of
+         * `item.sys_id` and `item.name` is untouched.
+         */
+        record: item,
+      },
       variables: createdVars,
     };
   },

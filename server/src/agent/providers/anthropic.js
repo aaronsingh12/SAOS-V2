@@ -1,4 +1,4 @@
-import { withRetry, retryable, isRetryableStatus } from './retry.js';
+import { withRetry, retryable, isRetryableStatus, isAbort, abortedError } from './retry.js';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
@@ -29,7 +29,7 @@ function toAnthropicMessages(history) {
   return out;
 }
 
-export async function chat({ apiKey, model, system, history, tools, maxTokens = 4096, decoding }) {
+export async function chat({ apiKey, model, system, history, tools, maxTokens = 4096, decoding, signal = null }) {
   const body = {
     model: model || DEFAULT_MODEL,
     max_tokens: maxTokens,
@@ -58,8 +58,16 @@ export async function chat({ apiKey, model, system, history, tools, maxTokens = 
           'anthropic-version': '2023-06-01',
         },
         body: payload,
+        // Phase 0. The model call is a read: aborting it in flight costs
+        // nothing and leaves nothing half-written, which is what makes it the
+        // one thing in a turn that IS safe to interrupt.
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
+      // Checked before the unreachable branch, which marks its error retryable
+      // — a cancelled request answered with three more requests is the opposite
+      // of cancelling it.
+      if (isAbort(err, signal)) throw abortedError('the Anthropic request');
       throw retryable(new Error(`Anthropic unreachable: ${err.message}`));
     }
     const parsed = await res.json().catch(() => null);

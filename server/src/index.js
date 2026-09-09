@@ -5,18 +5,32 @@ import { incidentsRouter } from './routes/incidents.js';
 import { catalogRouter } from './routes/catalog.js';
 import { flowsRouter } from './routes/flows.js';
 import { agentRouter } from './routes/agent.js';
+import { planRouter } from './routes/plan.js';
 import { slaRouter } from './routes/sla.js';
 import { accessRouter } from './routes/access.js';
+import { dbaRouter } from './routes/dba.js';
+import { meetingsRouter } from './routes/meetings.js';
+import { requeuePending } from './meetings/queue.js';
+import { closeOrphanedRecordings } from './meetings/store.js';
 import { auditRouter } from './routes/audit.js';
 import { applicationsRouter } from './routes/applications.js';
 import { transportRouter } from './routes/transport.js';
 import { logsRouter } from './routes/logs.js';
+import { knowledgeRouter } from './routes/knowledge.js';
+import { skillsRouter } from './routes/skills.js';
 import { log, requestLogger, banner } from './logging.js';
 import { SnowError } from './servicenow/client.js';
 import { getDb } from './memory/db.js';
 import { seedLedger } from './memory/facts.js';
 import { getSettings } from './config/store.js';
+// Loaded for its side effect: registers the instance-switch hook on config/store
+// so no path can save a connection without per-instance state being flushed (B6).
+import { boundInstance } from './servicenow/instance-binding.js';
 import { DB_PATH } from './memory/db.js';
+// Registration side effect: hooks the post-install state reconciler onto every
+// deploy, so an install cannot silently revert an out-of-SDK-model flag (F1).
+import './servicenow/post-install-state.js';
+import { primeCapability } from './servicenow/fluent.js';
 
 const app = express();
 app.use(cors());
@@ -29,12 +43,29 @@ app.use('/api/incidents', incidentsRouter);
 app.use('/api/catalog', catalogRouter);
 app.use('/api/flows', flowsRouter);
 app.use('/api/agent', agentRouter);
+// Phase 4: plan -> review -> approve -> execute -> verify. ADDITIVE — the
+// chat route above is untouched and still runs the ordinary turn loop.
+// Mounted UNDER /api/agent so a plan's approval card resolves through the
+// same POST /api/agent/approve endpoint every other approval already uses.
+app.use('/api/agent/plan', planRouter);
 app.use('/api/sla', slaRouter);
 app.use('/api/access', accessRouter);
+// Phase T1: the Tables pane. Read-only — see routes/dba.js.
+app.use('/api/dba', dbaRouter);
+// Meeting Intelligence phase 1: capture ingest from the local agent, plus the
+// reads the Meetings page needs. No transcription yet — see meetings/store.js.
+app.use('/api/meetings', meetingsRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/applications', applicationsRouter);
 app.use('/api/transport', transportRouter);
 app.use('/api/logs', logsRouter);
+app.use('/api/knowledge', knowledgeRouter);
+/*
+ * EXPERIENCE §28 — the skill registry. Read, install, enable, disable, remove.
+ * Nothing here executes a skill: a skill is data, and there is no route that
+ * could run one (§29, §31, §75).
+ */
+app.use('/api/skills', skillsRouter);
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
@@ -54,11 +85,56 @@ process.on('uncaughtException', (err) => { log.error('process', 'uncaught except
 
 const PORT = Number(process.env.PORT) || 4000;
 
+/*
+ * WI-3 — THE LISTENER BINDS LOOPBACK, AND SAYS SO IF IT CANNOT.
+ *
+ * This process holds a ServiceNow admin password, and `POST /api/agent/approve`
+ * authorises writes to a live instance. It has no authentication of any kind —
+ * that is a deliberate, documented property of a local dev tool, and it is only
+ * defensible while the socket is unreachable from anywhere else. `app.listen(PORT)`
+ * binds 0.0.0.0, which on a laptop on a conference network is the whole app,
+ * admin credentials included, offered to the LAN.
+ *
+ * `HOST` exists so that someone who genuinely means to expose it has to say so
+ * out loud. Anything but a loopback address fails at boot rather than starting
+ * and hoping — the alternative is a server that is only as safe as the network
+ * it happens to be on, with nothing anywhere saying which one that was.
+ */
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
+const HOST = process.env.HOST || '127.0.0.1';
+if (!LOOPBACK.has(HOST)) {
+  log.error('http',
+    `refusing to bind ${HOST}: NowHelpAssist is unauthenticated and holds instance admin credentials, ` +
+    `and its approval endpoint authorises writes to ${getSettings().connection.instanceUrl || 'the bound instance'}. ` +
+    `It may only listen on loopback (${[...LOOPBACK].join(', ')}). Unset HOST, or put a real proxy in front of it.`);
+  process.exit(1);
+}
+
 // Storage comes up before the listener: migrations are idempotent, and a
 // database that cannot open should stop the server rather than fail the first
 // chat turn with something unrecognisable.
 getDb();
 const seeded = seedLedger();
+
+/*
+ * SESSION 1 / WI-3 — the first SDK probe runs at boot, not on the first
+ * request that happens to need it. Non-blocking: it costs ~8 s of CLI
+ * start-up and the listener does not wait for it. Until it completes the SDK
+ * capabilities are honestly UNKNOWN; after it they stay known across every
+ * TTL refresh (stale-while-revalidate in fluent.js).
+ */
+primeCapability();
+
+/*
+ * The transcription queue is in memory, so a restart mid-meeting would leave
+ * every already-captured utterance permanently untranscribed while its audio
+ * sat on disk — a hole in the transcript that nothing would ever fill and
+ * nothing would report. Re-queuing on boot is what makes the crash-safety
+ * claim in meetings/queue.js true rather than aspirational.
+ */
+// A meeting still marked `recording` at boot is one the agent never closed.
+const orphans = closeOrphanedRecordings();
+const requeued = requeuePending();
 
 /*
  * The listener, and why it is not a one-liner any more.
@@ -94,14 +170,15 @@ const LISTEN_RETRIES = 10;
 let server = null;
 
 function start(attempt = 1) {
-  server = app.listen(PORT, () => {
+  server = app.listen(PORT, HOST, () => {
     const s = getSettings();
     banner([
-      `NowHelpAssist  ·  http://localhost:${PORT}`,
-      `instance   ${s.connection.instanceUrl || '(none bound)'}`,
+      `NowHelpAssist  ·  http://localhost:${PORT}   (bound ${HOST} — loopback only)`,
+      `instance   ${s.connection.instanceUrl || '(none bound)'}   (both tiers derive from this)`,
       `model      ${s.llm.provider} · ${s.llm.model || '(default)'}`,
       `storage    ${DB_PATH}`,
       `ledger     ${seeded.seeded} facts for ${seeded.instance}`,
+      `meetings   ${requeued} utterance(s) re-queued${orphans ? `, ${orphans} stuck meeting(s) closed` : ''}`,
       `log level  ${log.level}   (LOG_LEVEL=debug for polls and reads)`,
     ]);
   });

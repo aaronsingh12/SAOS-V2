@@ -59,6 +59,16 @@ export const captureMark = () => sweepMark();
  */
 export async function captureAfterTool({
   sessionId, sessionTitle, toolName, input, result, since,
+  /*
+   * PHASE 8 — the task that owns this capture, when one does.
+   *
+   * A capture event is written by whoever called the tool, so it belongs to
+   * that caller's task. NULL from the ordinary turn loop, which has no plan.
+   * Without this the plan executor tagged its own tool events but left the
+   * capture event beside them untagged, and the evidence then reported itself
+   * as only-correlated because of a row it had in fact produced.
+   */
+  taskId = null,
 }) {
   if (!isCaptureOn(sessionId)) return null;
 
@@ -81,6 +91,7 @@ export async function captureAfterTool({
       moved: 0, sets: [], failures: [],
     };
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'capture', name: toolName, payload: { table: hint },
       result: JSON.stringify(event), resultStatus: 'skipped', mutating: false, approval: null,
     });
@@ -110,6 +121,7 @@ export async function captureAfterTool({
           : 'nothing captured — this call produced no tracked configuration change',
     };
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'capture', name: toolName, payload: { sysIds: sysIds.slice(0, 20), since },
       result: JSON.stringify(event), resultStatus: swept.failures.length ? 'error' : 'ok',
       mutating: false, approval: null,
@@ -126,6 +138,7 @@ export async function captureAfterTool({
       message: `capture failed after ${toolName}: ${err.message}. The change itself succeeded and is in the Default update set.`,
     };
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'capture', name: toolName, payload: { since },
       result: JSON.stringify(event), resultStatus: 'error', mutating: false, approval: null,
     });
@@ -160,6 +173,7 @@ export async function reconcileTurn({ sessionId, sessionTitle, since }) {
         + (swept.unassigned.length ? `, ${swept.unassigned.length} unassigned` : ''),
     };
     recordToolEvent(sessionId, {
+      taskId,
       kind: 'capture', name: 'turn-reconcile', payload: { since },
       result: JSON.stringify(event), resultStatus: swept.failures.length ? 'error' : 'ok',
       mutating: false, approval: null,
