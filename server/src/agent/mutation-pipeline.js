@@ -116,6 +116,35 @@ export async function verifyMutation({ descriptor, result, before, toolName }) {
       refused: result.reason ?? 'refused',
     };
   }
+
+  /*
+   * SESSION 1 / WI-6 — AN SDK TOOL THAT REPORTS FAILURE, WITH A DESCRIPTOR.
+   *
+   * `create_flow_live` now carries a descriptor, so its `ok: false` results no
+   * longer reach the descriptor-less branch below. Diffing them would call a
+   * refused build a "no-op write" and register drops for it. Two cases:
+   *
+   *   before the install (capability, validate, naming, binding refusal)
+   *     nothing was attempted — the ledger declines to record it;
+   *   at the install (stage 'deploy')
+   *     the SDK said the install failed, and trap #116 says a red install
+   *     can still have landed. That is UNVERIFIED, not "not attempted" and
+   *     not "no-op": a claim the ledger records as such.
+   */
+  if (result && result.ok === false && descriptor?.mechanism === 'sdk') {
+    const atInstall = result.stage === 'deploy';
+    const why = atInstall
+      ? `${toolName} reported the install failed (${String(result.message ?? '').slice(0, 160) || 'no message'}); `
+        + 'whether artifacts landed is not established — a timed-out install can still have landed'
+      : `${toolName} stopped before installing (${result.stage ?? 'refused'}${result.bindingRefused ? ', binding refused' : ''}); nothing was attempted`;
+    return {
+      verified: false, status: 'unverified', summary: why,
+      applied: [], dropped: [], transformed: [],
+      unverifiable: [{ field: '(all)', reason: why }], noOpSignal: null,
+      verifiedBy: toolName,
+      notAttempted: !atInstall,
+    };
+  }
   if (!descriptor) {
     /*
      * WI-5 — A TOOL THAT REPORTED FAILURE HAS NOT SELF-VERIFIED ANYTHING.

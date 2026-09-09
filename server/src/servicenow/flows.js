@@ -61,6 +61,85 @@ const raw = (record, field) => {
   return v && typeof v === 'object' ? v.value : v;
 };
 
+/* ------------------------------------------------------------------ *
+ * SESSION 1 / WI-6 — PUBLISHED IS A THREE-WAY AGREEMENT
+ * ------------------------------------------------------------------ */
+
+/**
+ * The ways a flow can fail to be published, each named.
+ *
+ * MEASURED on dev424910, 2026-09-08. Every one of the 33 flows the SDK had
+ * installed was `active=false, status=draft, latest_snapshot=''` — and one of
+ * them ALSO had a `sys_hub_flow_snapshot` row with `status=published` under
+ * that draft header. OOTB published flows (303 of them) agree three ways: the
+ * header names a snapshot, that row exists and is published, and the header
+ * is active. Two OOTB flows are active with no snapshot at all. So neither
+ * `active` alone nor a snapshot row alone is proof; the agreement is.
+ */
+export const PUBLISH_MISMATCH = Object.freeze({
+  NO_SNAPSHOT: 'no_snapshot',
+  ACTIVE_WITHOUT_SNAPSHOT: 'active_without_snapshot',
+  HEADER_DRAFT_WITH_PUBLISHED_SNAPSHOT: 'header_draft_with_published_snapshot',
+  LATEST_SNAPSHOT_MISSING_ROW: 'latest_snapshot_missing_row',
+  LATEST_SNAPSHOT_UNREADABLE: 'latest_snapshot_unreadable',
+  SNAPSHOT_NOT_PUBLISHED: 'snapshot_not_published',
+  INACTIVE_WITH_SNAPSHOT: 'inactive_with_snapshot',
+});
+
+/**
+ * Decide, from the header and the snapshot rows, whether a flow is published.
+ *
+ * Pure: cells may be `{ value, display_value }` or plain strings, and the
+ * VALUE is read every time — a label is never compared. `published: true`
+ * requires all three facts to agree; a disagreement is `false` with the
+ * specific one named, so a caller can say WHICH half is missing rather than
+ * "not published".
+ *
+ * `named` is the row the header's `latest_snapshot` points at, fetched by
+ * sys_id — MEASURED 2026-09-09 on dev424910: the parent_flow query returns it
+ * for most OOTB flows, but on some ("Change - Conflict Detection") the row the
+ * header names is not readable over REST at all while an older parent-linked
+ * row is. So "the named row could not be read" is `published: null`
+ * (UNKNOWN, honestly) and never `false`: a guess in either direction would be
+ * the confident wrong answer this whole layer exists to prevent.
+ */
+export function publishedVerdict({ header, snapshots = [], named = null, namedUnreadable = false } = {}) {
+  const h = header ?? {};
+  const active = String(raw(h, 'active') ?? '') === 'true';
+  const latest = String(raw(h, 'latest_snapshot') ?? '').trim();
+  const norm = (s) => ({
+    sys_id: String(raw(s, 'sys_id') ?? ''),
+    status: String(raw(s, 'status') ?? ''),
+    active: String(raw(s, 'active') ?? '') === 'true',
+  });
+  const rows = (Array.isArray(snapshots) ? snapshots : []).map(norm);
+  const published = rows.filter((r) => r.status === 'published');
+  const pointed = named ? norm(named) : (latest ? rows.find((r) => r.sys_id === latest) ?? null : null);
+
+  const verdict = (mismatch, note, value = false) => ({
+    published: value, mismatch, snapshot: pointed?.sys_id ?? published[0]?.sys_id ?? null, active, latest_snapshot: latest || null, note,
+  });
+
+  if (!latest) {
+    if (published.length) {
+      return verdict(PUBLISH_MISMATCH.HEADER_DRAFT_WITH_PUBLISHED_SNAPSHOT,
+        `the header is ${active ? 'active' : 'a draft'} with no latest_snapshot, yet ${published.length} published snapshot row(s) exist — the publish did not complete on the header`);
+    }
+    if (active) return verdict(PUBLISH_MISMATCH.ACTIVE_WITHOUT_SNAPSHOT, 'the header is active but names no snapshot and none exists; active alone is not published');
+    return verdict(PUBLISH_MISMATCH.NO_SNAPSHOT, 'the header is a draft and no snapshot row exists');
+  }
+  if (!pointed) {
+    if (namedUnreadable) {
+      return verdict(PUBLISH_MISMATCH.LATEST_SNAPSHOT_UNREADABLE,
+        `the header names snapshot ${latest}, which this connection cannot read — published state is UNKNOWN, not false`, null);
+    }
+    return verdict(PUBLISH_MISMATCH.LATEST_SNAPSHOT_MISSING_ROW, `the header names snapshot ${latest}, and no such row exists`);
+  }
+  if (pointed.status !== 'published') return verdict(PUBLISH_MISMATCH.SNAPSHOT_NOT_PUBLISHED, `the header names snapshot ${latest}, whose status is "${pointed.status}"`);
+  if (!active) return verdict(PUBLISH_MISMATCH.INACTIVE_WITH_SNAPSHOT, `snapshot ${latest} is published but the header is inactive`);
+  return { published: true, mismatch: null, snapshot: latest, active: true, latest_snapshot: latest, note: 'header, snapshot row and active flag agree' };
+}
+
 /** A table that does not exist on this instance answers 400 "Invalid table X". */
 const isMissingTable = (err) => err?.status === 400 && /invalid table/i.test(err.message || '');
 
@@ -359,6 +438,33 @@ export const flows = {
       query: `sys_idIN${[...byFlow.keys()].join(',')}`, fields: 'sys_id,name,type,active', limit: 100, display: 'false',
     });
     return rows.map((r) => ({ sys_id: r.sys_id, name: r.name, type: r.type, active: r.active === 'true' }));
+  },
+
+  /**
+   * SESSION 1 / WI-6 — the live three-way read behind `publishedVerdict`.
+   *
+   * Two reads, both off the instance: the header's own `active`, `status` and
+   * `latest_snapshot`, and every snapshot row whose `parent_flow` is this flow.
+   * Returns the verdict plus the raw header cells, so a caller can hand the
+   * header to the read-back verifier rather than a summary of it.
+   */
+  async publishedProof(sysId) {
+    const header = await table.get('sys_hub_flow', sysId, 'false');
+    if (!header) throw Object.assign(new Error(`No flow found with sys_id ${sysId}`), { status: 404 });
+    const snapshots = await table.query('sys_hub_flow_snapshot', {
+      query: `parent_flow=${sysId}`, fields: 'sys_id,status,active,sys_created_on', limit: 50, display: 'false',
+    }).catch((err) => { if (isMissingTable(err)) return []; throw err; });
+    /* The row the header actually names, by sys_id. Unreadable is a distinct
+     * answer from absent — see publishedVerdict. */
+    const latest = String(raw(header, 'latest_snapshot') ?? '').trim();
+    let named = null;
+    let namedUnreadable = false;
+    if (latest) {
+      try { named = await table.get('sys_hub_flow_snapshot', latest, 'false'); } catch { namedUnreadable = true; }
+      if (named === undefined || named === null) named = null;
+    }
+    const verdict = publishedVerdict({ header, snapshots, named, namedUnreadable: namedUnreadable && !named });
+    return { ...verdict, header, snapshotRows: snapshots.length, namedRowReadable: latest ? Boolean(named) : null };
   },
 
   executions: (flowSysId) =>

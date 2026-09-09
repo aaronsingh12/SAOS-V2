@@ -1021,6 +1021,60 @@ ${description}` : description);
         blueprint: blueprint || null,
       });
     },
+    /*
+     * SESSION 1 / WI-6 — THE SDK TOOL JOINS THE TWO CONTRACTS.
+     *
+     * `describeWrite` aims the mutation pipeline at the artifact this tool
+     * produces: `sys_hub_flow`, THROUGH THE SDK (so the REST policy lets it
+     * pass), keyed by the read-back sys_id once there is one. It asks for the
+     * three things a person asked for — the workspace's scope, `active`, and
+     * `published` — and hands the verifier the read-back header, with
+     * `published` derived from the three-way proof rather than from `active`.
+     * A draft install therefore reads back as a FAILED write naming `active`
+     * and `published`, never as self-verified.
+     *
+     * Before execution there is no sys_id and nothing is invented: enough for
+     * the gate to know the table and the mechanism, no more.
+     */
+    describeWrite: ({ updates }, result) => {
+      const v = result?.verified ?? null;
+      const operation = updates ? 'update' : 'insert';
+      if (!v) return { table: 'sys_hub_flow', mechanism: 'sdk', operation, requested: { active: 'true', published: 'true' } };
+      const requested = { active: 'true' };
+      if (v.name ?? result?.name) requested.name = v.name ?? result.name;
+      if (v.expectedScopeId) requested.sys_scope = v.expectedScopeId;
+      const record = { ...(v.header ?? {}) };
+      /*
+       * `published` is asked for only when the proof could be READ. An
+       * unreadable snapshot row (published === null) is unknown, and asking the
+       * differ to compare "true" against an absence would report a drop that
+       * nobody measured; the tool result still carries `published: null` and
+       * the mismatch name, so the evidence says "unknown" in those words.
+       */
+      if (v.published !== null && v.published !== undefined) {
+        requested.published = 'true';
+        record.published = v.published === true ? 'true' : 'false';
+      }
+      return {
+        table: 'sys_hub_flow',
+        mechanism: 'sdk',
+        operation,
+        sys_id: v.sys_id,
+        requested,
+        record,
+      };
+    },
+    /*
+     * Declared outputs, read from the read-back — never from the request. A
+     * later step can now `$ref` the flow this one created: its identity, the
+     * table it lives in, the name the instance stored, and the scope.
+     */
+    outputs: {
+      sys_id: { type: 'sys_id', path: ['verified', 'sys_id'] },
+      table: { type: 'table_name', path: ['verified', 'table'] },
+      name: { type: 'string', path: ['verified', 'name'] },
+      scope: { type: 'string', path: ['verified', 'scope'] },
+    },
   },
   {
     name: 'list_live_flows',

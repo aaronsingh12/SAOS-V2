@@ -261,16 +261,29 @@ test('IDEMPOTENCY — a CREATE is never automatically repeatable', () => {
   assert.equal(R.isAutoRetryable(v.idempotency), false);
 });
 
-test('IDEMPOTENCY — an update with no sys_id, and a tool that cannot describe itself, are UNKNOWN', () => {
+test('IDEMPOTENCY — an update with no sys_id, and a tool that cannot describe itself, are UNKNOWN', async () => {
   assert.equal(R.classifyIdempotency({
     tool: 'update_record', descriptor: { table: 'incident', operation: 'update', requested: {}, sys_id: null },
   }).idempotency, 'UNKNOWN');
 
-  // create_flow_live mutates and has no describeWrite — a genuine unknown, not
+  // delete_live_flow mutates and has no describeWrite — a genuine unknown, not
   // an excuse to assume.
-  const sdk = R.classifyIdempotency({ tool: 'create_flow_live' });
+  const sdk = R.classifyIdempotency({ tool: 'delete_live_flow' });
   assert.equal(sdk.idempotency, 'UNKNOWN');
   assert.match(sdk.reason, /does not describe its write/);
+
+  /*
+   * SESSION 1 / WI-6 — create_flow_live now DOES describe its write (an insert
+   * into sys_hub_flow through the SDK). Without a descriptor it is still
+   * UNKNOWN, for a different reason (no stated operation); with one it is a
+   * CREATE, which is NON_IDEMPOTENT — an install that timed out may have
+   * landed (trap #116), and repeating it blind is how a second artifact appears.
+   */
+  const { toolMap } = await import('../src/agent/tools.js');
+  const flowTool = toolMap.get('create_flow_live');
+  assert.equal(R.classifyIdempotency({ tool: 'create_flow_live' }).idempotency, 'UNKNOWN');
+  const insert = R.classifyIdempotency({ tool: 'create_flow_live', descriptor: flowTool.describeWrite({ description: 'x' }, null) });
+  assert.equal(insert.idempotency, 'NON_IDEMPOTENT');
 
   assert.equal(R.classifyIdempotency({ tool: 'no_such_tool' }).idempotency, 'UNKNOWN');
 });

@@ -2117,21 +2117,66 @@ export async function deploy(name, emit = () => {}) {
       const sysId = row.sys_id?.value ?? row.sys_id;
       const detail = await flows.detail(sysId);
       const type = detail.flow.type?.value ?? detail.flow.type;
+      /*
+       * SESSION 1 / WI-6 — PUBLISHED IS READ, NOT INFERRED FROM `active`.
+       *
+       * `active` alone was the whole read-back, and on dev424910 it was false
+       * for every installed flow while the SDK's own log said nothing about
+       * activation. The three-way proof (header `latest_snapshot`, a published
+       * snapshot row, `active`) is read here, and the EXPECTED scope is the
+       * workspace's — resolved by name, before the header is consulted — so
+       * `describeWrite` can hand the verifier a request that does not depend
+       * on what came back.
+       */
+      const proof = await flows.publishedProof(sysId).catch((err) => ({
+        published: false, mismatch: 'unreadable', note: `published proof could not be read: ${err.message}`, header: null, snapshot: null,
+      }));
+      let expectedScopeId = null;
+      let scopeName = null;
+      try {
+        const identity = await readAppIdentity();
+        scopeName = identity?.scope ?? null;
+        if (scopeName) expectedScopeId = (await resolveScopeId(scopeName)).scopeId ?? null;
+      } catch { /* reported as null; the verifier then treats scope as unverifiable rather than guessed */ }
+      const cell = (v) => (v && typeof v === 'object' && 'value' in v ? v.value : v);
+      const headerCells = proof.header ?? detail.flow;
+      const header = {
+        sys_id: sysId,
+        name: cell(headerCells?.name) ?? null,
+        active: String(cell(headerCells?.active) ?? ''),
+        status: cell(headerCells?.status) ?? null,
+        latest_snapshot: cell(headerCells?.latest_snapshot) ?? '',
+        sys_scope: cell(headerCells?.sys_scope) ?? null,
+        type,
+      };
       verified = {
         sys_id: sysId,
-        name: detail.flow.name?.value ?? detail.flow.name,
+        table: 'sys_hub_flow',
+        name: header.name,
         type,
         internal_name: detail.flow.internal_name?.value ?? detail.flow.internal_name ?? null,
         // A subflow's contract is read back off the instance, not inferred from
         // the source that was just installed. The two are reported side by side
         // so a drift is visible instead of assumed away.
         contract: type === 'subflow' ? await flows.contract(sysId).catch(() => null) : null,
-        active: (detail.flow.active?.value ?? detail.flow.active) === 'true',
+        active: header.active === 'true',
+        published: proof.published === true,
+        proof: { published: proof.published === true, mismatch: proof.mismatch ?? null, snapshot: proof.snapshot ?? null, note: proof.note ?? null },
+        scope: scopeName,
+        scopeId: header.sys_scope,
+        expectedScopeId,
+        header,
         link: base ? `${base}/nav_to.do?uri=sys_hub_flow.do?sys_id=${sysId}` : null,
         sourceTables: detail.sourceTables,
         triggers: detail.triggers.length,
         actions: detail.actions.length,
         logic: detail.logic.length,
+        /* The calls this flow makes, read from sys_hub_sub_flow_instance_v2 — a
+         * flow whose only step is a call is otherwise "0 actions". */
+        subflow_calls: (detail.subflowCalls ?? []).map((c) => ({
+          sys_id: cell(c.sys_id), subflow: cell(c.subflow), subflow_name: c.subflow?.display_value ?? null,
+          wait_for_completion: String(cell(c.wait_for_completion) ?? '') === 'true',
+        })),
         notes: detail.notes,
       };
     }
