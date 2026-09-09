@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { chatOnce } from '../providers/index.js';
+import { chatTurn } from '../providers/index.js';
+import { tableExists } from '../../servicenow/schema.js';
 import { codegenDecoding } from '../decoding.js';
 import { log } from '../../logging.js';
 import { CAPABILITIES, discoverAll } from '../capability-discovery.js';
@@ -36,6 +37,20 @@ import { semanticConstraints } from '../../servicenow/semantic/artifacts.js';
 
 /** How many steps a single plan may have. A bound, not a target. */
 export const MAX_STEPS = 20;
+
+/**
+ * SESSION 1 / WI-5 — THE COMPLETION BUDGET, SIZED FROM MEASUREMENT.
+ *
+ * 2,048 was the default, and against gpt-oss:120b-cloud it was the reason the
+ * warm plan route could not plan the golden flow request at all: three of
+ * three samples came back `finish=length`. The model is a reasoning model whose
+ * reasoning is billed as completion — 6,385 and 9,334 characters of it before
+ * or while writing a 2,900-character plan — and the prompt was only 2.3k
+ * tokens. Roughly 3.5k tokens of room were needed; 8,192 gives that a 2×
+ * margin. A caller with a bigger plan (the Doctor threads its own) still
+ * passes its own number.
+ */
+export const PLAN_MAX_TOKENS = 8192;
 
 /**
  * The planning prompt.
@@ -331,7 +346,7 @@ export async function generatePlan({
    * Threaded rather than raised for everybody, so existing callers keep exactly
    * the budget they had and nothing about their cost or behaviour changes.
    */
-  maxTokens = 2048,
+  maxTokens = PLAN_MAX_TOKENS,
 } = {}) {
   const discovered = discoverAll(discoverOpts);
   const available = discovered.available
@@ -351,22 +366,43 @@ export async function generatePlan({
   }
 
   let raw;
+  let stopReason = null;
   try {
     if (propose) {
       raw = await propose({ goal, capabilities: available, semantics });
     } else {
-      raw = await chatOnce({
+      /*
+       * WI-5 — `chatTurn` rather than `chatOnce`, for one field: `stopReason`.
+       * `chatOnce` returns the text alone, and a completion cut off by the
+       * budget then read as "the planner output is not valid JSON" — true,
+       * and silent about why. Same neutral seam, same decoding profile.
+       */
+      const res = await chatTurn({
         system: plannerSystem({ capabilities: available, semantics }),
-        user: `REQUEST (this is the user's own instruction):\n${goal}`,
+        history: [{ role: 'user', text: `REQUEST (this is the user's own instruction):\n${goal}` }],
+        tools: [],
         maxTokens,
         // Structured generation, so the codegen decoding profile rather than
         // the conversational one.
         decoding: codegenDecoding(),
         signal,
       });
+      raw = res?.text ?? '';
+      stopReason = res?.stopReason ?? null;
     }
   } catch (err) {
     return { ok: false, reason: 'planner_failed', note: `The planner could not produce a plan: ${err.message}`, discovered };
+  }
+
+  /*
+   * WI-5 — A TRUNCATED PLAN IS REPORTED AS TRUNCATED. Loudly, with the budget
+   * named, before any attempt to parse what is by construction incomplete.
+   */
+  if (stopReason === 'length') {
+    const note = `The planner's answer was cut off by the completion budget (finish=length at maxTokens ${maxTokens}) `
+      + 'before the plan was complete. The prompt was not the problem; the room to answer was. Nothing was planned.';
+    log.warn('plan', `plan truncated: finish=length at maxTokens ${maxTokens} (${String(raw).length} chars received)`);
+    return { ok: false, reason: 'plan_truncated', note, discovered, raw, maxTokens };
   }
 
   const parsed = typeof raw === 'string' ? extractPlanJson(raw) : { ok: true, plan: raw };
@@ -379,7 +415,28 @@ export async function generatePlan({
   // could rewrite the goal could quietly plan for a different request.
   candidate.goal = goal;
 
-  const verdict = validatePlan(candidate, { ...validateOpts, discoverOpts });
+  /*
+   * SESSION 1 / WI-4 — RESOLVE THE TABLES A MUTATING STEP AIMS AT, live, and
+   * hand the CONFIRMED set to the validator. The validator stays offline and
+   * pure; this is the one place a plan's target tables meet the instance
+   * before a human is asked. A lookup that fails leaves its table unconfirmed,
+   * and an unconfirmed table is refused as unknown_table rather than assumed.
+   */
+  const knownTables = new Set();
+  const aimed = new Set();
+  for (const s of candidate.steps) {
+    const entry = s.tool ? toolMap.get(s.tool) : null;
+    if (!entry?.mutating) continue;
+    const t = s.inputs?.table ?? s.target?.table ?? null;
+    if (typeof t === 'string' && t.trim()) aimed.add(t.trim());
+  }
+  for (const t of aimed) {
+    try { if (await tableExists(t)) knownTables.add(t); } catch (err) {
+      log.warn('plan', `could not confirm that table "${t}" exists (${err.message}); the plan will not assume it does`);
+    }
+  }
+
+  const verdict = validatePlan(candidate, { ...validateOpts, discoverOpts, knownTables: aimed.size ? knownTables : null });
   if (!verdict.valid) {
     log.warn('plan', `rejected a candidate plan: ${verdict.fatal.map((p) => p.code).join(', ')}`);
     return { ok: false, reason: 'invalid', problems: verdict.problems, fatal: verdict.fatal, candidate, discovered };
