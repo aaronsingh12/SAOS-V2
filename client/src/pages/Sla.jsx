@@ -6,6 +6,8 @@ import { TableField } from '../components/ReferenceField.jsx';
 import { SkeletonRows, LoadingRegion, EmptyState } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import { useScopeLabels } from '../hooks/useScopeLabels.js';
+import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
 
 /**
  * SLA definitions.
@@ -36,6 +38,30 @@ const EMPTY = {
   active: true,
 };
 
+/* `text` drives sorting and filtering; `cell` is only presentation, so the
+   badges stay badges while sorting still compares the real values. */
+const slaColumns = (slaScopes) => [
+  { key: 'name', header: 'Name', width: 280, text: (r) => r.name,
+    cell: (r) => (
+      <>
+        {r.name}
+        {!r.active && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}
+      </>
+    ) },
+  { key: 'collection', header: 'Table', width: 160, text: (r) => r.collection,
+    cell: (r) => <span className="mono">{r.collection}</span> },
+  { key: 'scope', header: 'Scope', width: 150, text: (r) => r.scope?.name ?? '',
+    cell: (r) => <ScopeBadge scope={slaScopes[r.scope?.sys_id] || r.scope?.sys_id} name={r.scope?.name} /> },
+  { key: 'duration', header: 'Duration', width: 150,
+    text: (r) => r.duration?.human || (r.duration_type ? 'relative' : '—'),
+    cell: (r) => <span className="mono">{r.duration.human || (r.duration_type ? 'relative' : '—')}</span> },
+  { key: 'clock', header: 'Clock', width: 130,
+    text: (r) => (r.schedule_effective ? r.schedule.name : '24×7'),
+    cell: (r) => (r.schedule_effective
+      ? <span className="badge blue" title={r.schedule.name}>{r.schedule.name}</span>
+      : <span className="badge green">24×7</span>) },
+];
+
 export default function Sla() {
   const [meta, setMeta] = useState(null);
   const [rows, setRows] = useState([]);
@@ -64,6 +90,9 @@ export default function Sla() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters.collection]);
 
   const openNew = () => { setForm({ ...EMPTY }); setEditingId(null); setCheck(null); setNotice(null); };
+  /* Exactly what the Close button did — now also reached by Escape and the
+     backdrop, so the drawer has the three ways out a dialog owes. */
+  const closeForm = () => { setForm(null); setEditingId(null); setCheck(null); };
 
   const openEdit = (r) => {
     setSelected(r);
@@ -143,72 +172,54 @@ export default function Sla() {
 
   return (
     <div className="stack">
-      <div className="split">
-        <div className="card">
-          <div className="spread" style={{ marginBottom: 12 }}>
-            <div className="card-title" style={{ marginBottom: 0 }}>SLA definitions</div>
-            <button className="btn primary sm" onClick={openNew}>New SLA</button>
-          </div>
-          <div className="row" style={{ marginBottom: 10 }}>
-            <input className="input" style={{ flex: 1 }} placeholder="Search by name…"
-              value={filters.search}
-              onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-              onKeyDown={(e) => e.key === 'Enter' && load()} />
-            <input className="input mono" style={{ width: 140 }} placeholder="table"
-              value={filters.collection}
-              onChange={(e) => setFilters({ ...filters, collection: e.target.value })}
-              onKeyDown={(e) => e.key === 'Enter' && load()} />
-          </div>
-          {error && <p className="error-text">{error}</p>}
-          <table className="table">
-            <thead><tr><th>Name</th><th>Table</th><th>Scope</th><th>Duration</th><th>Clock</th></tr></thead>
-            {loading && <SkeletonRows rows={5} cols={5} />}
-            {!loading && <tbody>
-              {rows.map((r) => (
-                <tr key={r.sys_id} className={`click ${editingId === r.sys_id ? 'selected' : ''}`} onClick={() => openEdit(r)}>
-                  <td>
-                    {r.name}
-                    {!r.active && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}
-                  </td>
-                  <td className="mono">{r.collection}</td>
-                  <td><ScopeBadge scope={slaScopes[r.scope?.sys_id] || r.scope?.sys_id} name={r.scope?.name} /></td>
-                  <td className="mono">{r.duration.human || (r.duration_type ? 'relative' : '—')}</td>
-                  <td>
-                    {r.schedule_effective
-                      ? <span className="badge blue" title={r.schedule.name}>{r.schedule.name}</span>
-                      : <span className="badge green">24×7</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>}
-          </table>
-          {loading && <LoadingRegion label="Loading SLA definitions" />}
-          {!loading && rows.length === 0 && !error && (
-            <EmptyState
-              title="No SLA definitions match."
-              hint="Clear the filters, or define one — its conditions are checked against the target table before anything is written."
-              actionLabel="New SLA definition"
-              onAction={openNew}
-            />
-          )}
-        </div>
-
-        <div className="card">
-          {!form ? (
-            <EmptyState
-              title="Nothing selected."
-              hint="Pick a definition on the left, or create one. Conditions are checked against the target table's real schema before anything is written."
-              actionLabel="New SLA definition"
-              onAction={openNew}
-            />
-          ) : (
+      {/*
+        * Full width, and no reserved column beside it. The loader, the filters
+        * and the scope labels are untouched — DataTable renders the same rows
+        * load() has always produced.
+        */}
+      <div className="page-full">
+        <DataTable
+          title="SLA definitions"
+          rows={rows}
+          loading={loading}
+          error={error}
+          getRowId={(r) => r.sys_id}
+          activeId={editingId}
+          onRowClick={openEdit}
+          selectable
+          filterPlaceholder="Filter loaded definitions…"
+          empty="No SLA definitions match."
+          columns={slaColumns(slaScopes)}
+          toolbar={(
             <>
-              <div className="spread" style={{ marginBottom: 12 }}>
-                <div className="card-title" style={{ marginBottom: 0 }}>
-                  {editingId ? <>Edit <span className="mono">{form.name}</span></> : 'New SLA definition'}
+              <input className="input dt-tool-input" placeholder="Search by name…"
+                value={filters.search}
+                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && load()} />
+              <input className="input mono" style={{ width: 130 }} placeholder="table"
+                value={filters.collection}
+                onChange={(e) => setFilters({ ...filters, collection: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && load()} />
+              <button className="btn primary sm" onClick={openNew}>New SLA</button>
+            </>
+          )}
+        />
+
+        {/* The same form and the same handlers, in a drawer. */}
+        <RecordDrawer
+          open={Boolean(form)}
+          onClose={closeForm}
+          title={editingId ? `Edit ${form?.name ?? ''}` : 'New SLA definition'}
+          width={560}
+        >
+          {form && (
+            <>
+              {editingId && (
+                <div className="spread" style={{ marginBottom: 12 }}>
+                  <span />
+                  <button className="btn danger sm" onClick={remove} aria-busy={busy} disabled={busy}>Delete</button>
                 </div>
-                {editingId && <button className="btn danger sm" onClick={remove} aria-busy={busy} disabled={busy}>Delete</button>}
-              </div>
+              )}
 
               <div className="field">
                 <label className="label">Name</label>
@@ -309,7 +320,7 @@ export default function Sla() {
                 <button className="btn primary" onClick={submit} aria-busy={busy} disabled={busy || !form.name || !form.collection}>
                   {busy ? 'Saving…' : editingId ? 'Save changes' : 'Create SLA'}
                 </button>
-                <button className="btn ghost" onClick={() => { setForm(null); setEditingId(null); setCheck(null); }}>Close</button>
+                <button className="btn ghost" onClick={closeForm}>Close</button>
               </div>
 
               {check && <ValidationPanel check={check} />}
@@ -317,7 +328,7 @@ export default function Sla() {
               {error && <p className="error-text">{error}</p>}
             </>
           )}
-        </div>
+        </RecordDrawer>
       </div>
 
       {/* Verification is a separate, deliberate action: it writes a real record. */}

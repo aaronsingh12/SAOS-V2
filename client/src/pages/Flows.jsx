@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
 import { api, sse, val, disp } from '../api.js';
 import { confirmDestructive, CONSEQUENCE } from '../components/confirm.js';
 import { toast } from '../components/toast.js';
@@ -680,6 +682,19 @@ function Blueprint({ bp, capOk, onDeploy }) {
   );
 }
 
+/* text sorts and filters; cell only draws. */
+const flowColumns = (scopeLabels) => [
+  { key: 'name', header: 'Name', width: 300, text: (r) => disp(r, 'name') },
+  { key: 'type', header: 'Type', width: 110, text: (r) => val(r, 'type') || 'flow',
+    cell: (r) => <span className={`badge ${val(r, 'type') === 'subflow' ? 'blue' : ''}`}>{val(r, 'type') || 'flow'}</span> },
+  { key: 'scope', header: 'Scope', width: 160, text: (r) => disp(r, 'sys_scope'),
+    cell: (r) => <ScopeBadge scope={scopeLabels[val(r, 'sys_scope')] || val(r, 'sys_scope')} name={disp(r, 'sys_scope')} /> },
+  { key: 'status', header: 'Status', width: 130, text: (r) => disp(r, 'status') || '—',
+    cell: (r) => <span className="badge">{disp(r, 'status') || '—'}</span> },
+  { key: 'active', header: 'Active', width: 100, text: (r) => (val(r, 'active') === 'true' ? 'on' : 'off'),
+    cell: (r) => <span className={`badge ${val(r, 'active') === 'true' ? 'green' : ''}`}>{val(r, 'active') === 'true' ? 'on' : 'off'}</span> },
+];
+
 export default function Flows() {
   const [rows, setRows] = useState([]);
   // One batched resolve for the whole list, not one per row.
@@ -797,56 +812,50 @@ export default function Flows() {
         )}
       </div>
 
-      <div className="split">
-        <div className="card">
-          <div className="card-title">Flows &amp; subflows on instance</div>
-          <div className="row" style={{ marginBottom: 10 }}>
-            <input className="input" placeholder="Search…" value={search}
-              onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
-            <select className="input" style={{ maxWidth: 130 }} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-              <option value="all">All types</option>
-              <option value="flow">Flows</option>
-              <option value="subflow">Subflows</option>
-            </select>
-          </div>
-          <table className="table">
-            <thead><tr><th>Name</th><th>Type</th><th>Scope</th><th>Status</th><th>Active</th></tr></thead>
-            {loading && <SkeletonRows rows={6} cols={5} />}
-            {!loading && <tbody>
-              {rows.map((r) => (
-                <tr key={val(r, 'sys_id')} className={`click ${detail && val(detail.flow, 'sys_id') === val(r, 'sys_id') ? 'selected' : ''}`} onClick={() => open(r)}>
-                  <td>{disp(r, 'name')}</td>
-                  <td><span className={`badge ${val(r, 'type') === 'subflow' ? 'blue' : ''}`}>{val(r, 'type') || 'flow'}</span></td>
-                  <td><ScopeBadge scope={scopeLabels[val(r, 'sys_scope')] || val(r, 'sys_scope')} name={disp(r, 'sys_scope')} /></td>
-                  <td><span className="badge">{disp(r, 'status') || '—'}</span></td>
-                  <td><span className={`badge ${val(r, 'active') === 'true' ? 'green' : ''}`}>{val(r, 'active') === 'true' ? 'on' : 'off'}</span></td>
-                </tr>
-              ))}
-            </tbody>}
-          </table>
-          {loading && <LoadingRegion label="Loading flows" />}
-          {/* "or not connected" is gone: the binding is answered before the
-              page renders, so an empty list is now only an empty list. */}
-          {!loading && rows.length === 0 && (
-            <EmptyState
-              title="No flows or subflows match."
-              hint="Clear the search and type filter, or build one — NowHelpAssist authors real Flow Designer flows through the SDK."
-            />
+      {/*
+        * Full width. Reading a flow now opens a drawer rather than filling a
+        * column that was reserved whether or not anything was selected.
+        * open() is unchanged — it still fetches the flow's detail.
+        */}
+      <div className="page-full">
+        <DataTable
+          title="Flows & subflows on instance"
+          rows={rows}
+          loading={loading}
+          error={error}
+          getRowId={(r) => val(r, 'sys_id')}
+          activeId={detail ? val(detail.flow, 'sys_id') : null}
+          onRowClick={open}
+          selectable
+          filterPlaceholder="Filter loaded flows…"
+          empty="No flows or subflows match."
+          columns={flowColumns(scopeLabels)}
+          toolbar={(
+            <>
+              <input className="input dt-tool-input" placeholder="Search…" value={search}
+                onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
+              <select className="input" style={{ maxWidth: 130 }} value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}>
+                <option value="all">All types</option>
+                <option value="flow">Flows</option>
+                <option value="subflow">Subflows</option>
+              </select>
+            </>
           )}
-          {error && <p className="error-text">{error}</p>}
-        </div>
+        />
 
-        <div className="card">
-          {!detail ? (
-            <EmptyState
-              title="Nothing selected."
-              hint="Pick a flow on the left to read it top-to-bottom: trigger, actions, logic and recent executions."
-            />
-          ) : (
+        {/* The same read-only detail — trigger, actions, logic, executions —
+            in a drawer instead of a permanently reserved column. */}
+        <RecordDrawer
+          open={Boolean(detail)}
+          onClose={() => setDetail(null)}
+          title={detail ? disp(detail.flow, 'name') : 'Flow'}
+          width={620}
+        >
+          {detail && (
             <>
               <div className="spread">
                 <div className="row">
-                  <h3 style={{ fontSize: 16, margin: 0 }}>{disp(detail.flow, 'name')}</h3>
                   <span className={`badge ${val(detail.flow, 'type') === 'subflow' ? 'blue' : ''}`}>
                     {val(detail.flow, 'type') || 'flow'}
                   </span>
@@ -980,7 +989,7 @@ export default function Flows() {
               )}
             </>
           )}
-        </div>
+        </RecordDrawer>
       </div>
     </div>
   );
