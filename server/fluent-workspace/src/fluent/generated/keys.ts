@@ -274,6 +274,26 @@ declare global {
                         table: 'sys_hub_trigger_instance_v2'
                         id: 'c0c731a08daa44bb91c887e4c99bfb30'
                     }
+                    dh_log_short_desc: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '5974fcbe4343416ab052df16c5031cc3'
+                    }
+                    dhs_assign_outputs: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '31b04c5883c54b6a8994086cd21a0764'
+                    }
+                    dhs_lookup_incident: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '2d0a9328a83b44969dd33691d2fad628'
+                    }
+                    dhs_subflow: {
+                        table: 'sys_hub_flow'
+                        id: '4a212a8086ae4819b2eaeacd4dbae17a'
+                    }
+                    dhs_update_incident: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '5c7f6f59244847bc9b33a884e7730a47'
+                    }
                     dip_demo_incident_processor_flow: {
                         table: 'sys_hub_flow'
                         id: 'bd7e60d5ecf44d00a6e436bd58be64b7'
@@ -1954,6 +1974,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_hub_flow_input'
+                        id: '11b6184de5ab4d2c8d6b6e36390e2905'
+                        key: {
+                            model: '4a212a8086ae4819b2eaeacd4dbae17a'
+                            element: 'short_description'
+                        }
+                    },
+                    {
                         table: 'sys_choice'
                         id: '11c13cd91e3e436498468ce82e308d0d'
                         key: {
@@ -2475,6 +2503,14 @@ declare global {
                     },
                     {
                         table: 'sys_hub_flow_input'
+                        id: '532522b4eaea4b8a91cb288ab1ed6e5d'
+                        key: {
+                            model: '4a212a8086ae4819b2eaeacd4dbae17a'
+                            element: 'incident_sys_id'
+                        }
+                    },
+                    {
+                        table: 'sys_hub_flow_input'
                         id: '534b66eb43bf4841af6863e6d9b0d08a'
                         deleted: true
                         key: {
@@ -2675,6 +2711,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_hub_flow_output'
+                        id: '6c66d2fc0f3b48a7a348857177daa1e3'
+                        key: {
+                            model: '4a212a8086ae4819b2eaeacd4dbae17a'
+                            element: 'status'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: '6d9254c88449443db2e184236a91dc6b'
                         key: {
@@ -2840,6 +2884,15 @@ declare global {
                         key: {
                             name: 'x_2002152_nwforge_net_inc_demo'
                             element: 'assignment_group'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '8156b21433fd487f9a37ba9e31f51005'
+                        key: {
+                            name: 'var__m_sys_hub_flow_output_4a212a8086ae4819b2eaeacd4dbae17a'
+                            element: 'status'
+                            language: 'en'
                         }
                     },
                     {
@@ -3047,6 +3100,15 @@ declare global {
                         key: {
                             name: 'var__m_sys_hub_flow_input_964921fb389d47b2ba636866f1e35523'
                             element: 'requestItem'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '99ddd7f5e0af41dcb6ca0e5d81ff67c9'
+                        key: {
+                            name: 'var__m_sys_hub_flow_input_4a212a8086ae4819b2eaeacd4dbae17a'
+                            element: 'incident_sys_id'
                             language: 'en'
                         }
                     },
@@ -3691,6 +3753,15 @@ declare global {
                         key: {
                             model: '20455bf77e754d48b4f9b057b831b534'
                             element: 'managerEmail'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'd6ee18d972e84e279b01dd3c5241fd77'
+                        key: {
+                            name: 'var__m_sys_hub_flow_input_4a212a8086ae4819b2eaeacd4dbae17a'
+                            element: 'short_description'
+                            language: 'en'
                         }
                     },
                     {

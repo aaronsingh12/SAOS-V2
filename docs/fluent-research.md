@@ -6111,24 +6111,90 @@ after an execution. `master_snapshot` is the more stable of the two. Re-running
 activation repaired `latest_snapshot`. (Compare §U2's note that
 `sys_flow_context.snapshot` also points at `sys_hub_snapshot`.)
 
-### Trap #132 — record-triggered flows do not fire on this instance
+### Trap #132 — RETRACTED, and replaced: a scoped flow's record trigger on a
+### global table never fires
 
-The golden flow is published, `active=true`, `master_snapshot` set, its published
-snapshot carries a `record_create` trigger on `incident`, and it has a
-`remote_trigger_id`. A disposable incident produced **no execution** in 150 s and
-no work notes.
+**Retraction (2026-09-09).** The original #132 claimed record-triggered flows
+never fire on dev424910, because the `Flow Engine Event Handler` jobs were
+"queued and unclaimed since April". **Both halves are wrong.**
 
-The reason is not the flow. Across the last 500 `sys_flow_context` rows the
-`source_table` distribution is `sysauto_script` 216, `sys_flow_timer_trigger` 38,
-`task_sla` 1 — **zero record-triggered executions, ever**. The `Flow Engine Event
-Handler` and `Flow Engine Interactive Event Handler` jobs in `sys_trigger` sit at
-`state=0`, unclaimed, with `next_action` of 2026-04-30 and 2026-09-01.
+- The handlers are **running**. Five `sys_trigger` rows named `Flow Engine *`
+  carry `run_count > 0`; four of the five incremented inside a single 30 s
+  window (`315810 → 315821` in 21 s on an earlier read), and one was caught
+  mid-run at `state=1` with `claimed_by` set. The rows that looked stalled are
+  inert **PRIMARY NODES** templates: `run_count=0`, `job_context` reading
+  "created by Processing Framework for queue: flow_engine.[0-9]", `next_action`
+  frozen at creation forever. The identical pattern appears on *Process
+  Automation Event Handler*, a job that demonstrably works. `next_action` lag on
+  a `run_count=0` row is **not** evidence of a stall.
+- Record triggers **do** fire here. `Run SC Notifications` produced
+  `sys_flow_context` rows with `calling_source=CRUD_TRIGGER` at 06:04:37,
+  06:05:06 and 06:11:46 on 2026-09-09 — minutes before and during our own probe.
+  Three distinct flows have fired this way (228 `CRUD_TRIGGER` contexts total).
 
-This refines §0's "scheduler healthy": that probe used a one-shot
-`sysauto_script`, which is exactly the path that works. Timer, script and SLA
-sources run; the record-trigger event queue is not drained. **A record-triggered
-flow cannot be proven to execute on this PDI**, and no amount of authoring fixes
-it.
+The original conclusion "no amount of authoring fixes it" was therefore
+unfounded, and the recommendation it implied — re-arming `sys_trigger` rows —
+would have been a write to platform internals to fix a problem that does not
+exist. Vendor guidance is explicit that manipulating Schedule-table records is
+not recommended.
+
+**What is actually true.** The *symptom* is real and is now measured first-hand.
+With both artifacts four-way published and the handlers verified advancing in the
+same script, one disposable incident produced **zero** `sys_flow_context` rows
+and zero work notes in 180 s. Fixture deleted. That is a controlled negative, not
+an inference from a missing row.
+
+The failure is **specific to this flow**, and the only structural difference that
+survives is **scope**:
+
+| flow | trigger table | table scope | flow scope | same scope | ever fired |
+| --- | --- | --- | --- | --- | --- |
+| Run SC Notifications | `sn_vsc_event` | `a51d46e3…` | `a51d46e3…` | yes | yes |
+| Change - Conflict Detection | `change_request` | global | global | yes | yes |
+| Change - Refresh Impacted Services | `cmdb_ci_service` | global | global | yes | yes |
+| **Onboarding Priority Check Flow** | `incident` | **global** | **`x_2002152_nwforge`** | **no** | **no** |
+
+Every flow that has ever fired via `CRUD_TRIGGER` on this instance triggers on a
+table **in its own scope**. Ours is the only cross-scope registration, and it is
+the only exercised failure. Cross-scope *data* privileges are not the gap:
+`sys_scope_privilege` grants our app both `read` and `write` on `incident`, both
+`status=allowed`, and `runtime_access_tracking` is `permissive`.
+
+**Ruled out by direct measurement**, so do not re-investigate these:
+
+- scheduler health (above);
+- `published_version` on `sys_hub_trigger_instance_v2` — empty on **all 108**
+  rows instance-wide, including every flow that fires, so it is not a marker of
+  a live trigger;
+- the trigger's own configuration — decoded from the gzipped `trigger_inputs`
+  blob it reads `table=incident`, `condition=""` (empty), `run_when_setting=both`,
+  `run_when_user_setting=any`, `run_on_extended=false`. Nothing excludes a
+  REST-created record, and the session setting covers non-interactive callers;
+- `run_flow_in=background` as a defect — it is the **platform default**, and the
+  `sys_choice` list for our trigger definition
+  (`798916a0c31322002841b63b12d3ae7c`) offers only `background` and `foreground`.
+  `any`, which all three firing flows use, is **not a valid choice** for the
+  record-created trigger; it belongs to other trigger definitions;
+- the v1/v2 table confusion — the trigger is registered in
+  `sys_hub_trigger_instance_v2` (v1 holds zero rows for it), which is the table
+  the current engine reads.
+
+**Status: cross-scope is a hypothesis, not a proven cause.** It is the only
+structural difference left standing, but no firing counter-example exists on this
+instance to separate "cross-scope triggers do not register" from "no scoped app
+here has ever been exercised". The decisive test is one install: author a
+record-created trigger on a table **inside** `x_2002152_nwforge`, publish it, and
+create one row.
+
+- fires → cross-scope registration is the cause, and the fix is an authoring-layer
+  one (own-scope trigger table, or a global-scope flow — see §A9, the SDK can
+  target global);
+- does not fire → the problem is our app's flows generally, not scope, and the
+  next suspect is trigger registration at install time.
+
+Either way the answer is reached through the normal install/activate channel.
+**No write to `sys_trigger` or any `sys_hub_*` table is warranted, and none was
+made.**
 
 ### What publishing actually takes, and what proves it
 
@@ -6160,6 +6226,9 @@ no leftovers. First artifact ever proven to execute in this scope.
   `sys_upgrade_history.deleted`; the artifact's absence is the only proof
 - **#131** `latest_snapshot` can name a `sys_hub_snapshot` rather than a
   `sys_hub_flow_snapshot` after an execution; `master_snapshot` is more stable
-- **#132** record-triggered flows never fire on dev424910 — the Flow Engine
-  Event Handler jobs are queued and unclaimed since April; only
-  `sysauto_script`, timer and SLA sources execute
+- **#132 RETRACTED and replaced** — record triggers *do* fire on dev424910
+  (`CRUD_TRIGGER` contexts on 2026-09-09) and the Flow Engine handlers *are*
+  running (`run_count` advancing); the stalled-looking rows are inert
+  `run_count=0` node templates. What is real: **our scoped flow's record trigger
+  on the global `incident` table** does not fire, measured by controlled
+  experiment. Every flow that fires here triggers on a table in its own scope
