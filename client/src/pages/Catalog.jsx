@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
 import { api, val, disp } from '../api.js';
 import ReferenceField, { TableField } from '../components/ReferenceField.jsx';
 import VariableEditor from '../components/VariableEditor.jsx';
@@ -13,6 +15,31 @@ const CHOICE_TYPES = [3, 5, 18, 22];
 const REF_TYPES = [8, 21];
 
 /* ── Shared variable builder ── */
+/* Columns for the three catalog lists. `text` sorts and filters; `cell`
+   only draws, so the badges stay badges while sorting compares real values. */
+const itemColumns = (itemScopes) => [
+  { key: 'name', header: 'Name', width: 300, text: (r) => disp(r, 'name') },
+  { key: 'class', header: 'Class', width: 190, text: (r) => val(r, 'sys_class_name'),
+    cell: (r) => <span className="mono" style={{ fontSize: 11 }}>{val(r, 'sys_class_name')}</span> },
+  { key: 'scope', header: 'Scope', width: 160, text: (r) => disp(r, 'sys_scope'),
+    cell: (r) => <ScopeBadge scope={itemScopes[val(r, 'sys_scope')] || val(r, 'sys_scope')} name={disp(r, 'sys_scope')} /> },
+  { key: 'active', header: 'Active', width: 110, text: (r) => (val(r, 'active') === 'true' ? 'active' : 'off'),
+    cell: (r) => <span className={`badge ${val(r, 'active') === 'true' ? 'green' : ''}`}>{val(r, 'active') === 'true' ? 'active' : 'off'}</span> },
+];
+
+const SET_COLUMNS = [
+  { key: 'title', header: 'Title', width: 320, text: (r) => disp(r, 'title') },
+  { key: 'internal', header: 'Internal name', width: 260, text: (r) => disp(r, 'internal_name'),
+    cell: (r) => <span className="mono" style={{ fontSize: 11 }}>{disp(r, 'internal_name')}</span> },
+];
+
+const GUIDE_COLUMNS = [
+  { key: 'name', header: 'Name', width: 320, text: (r) => disp(r, 'name') },
+  { key: 'two_step', header: 'Two-step', width: 130, text: (r) => (val(r, 'two_step') === 'true' ? 'yes' : 'no') },
+  { key: 'active', header: 'Active', width: 120, text: (r) => (val(r, 'active') === 'true' ? 'active' : 'off'),
+    cell: (r) => <span className={`badge ${val(r, 'active') === 'true' ? 'green' : ''}`}>{val(r, 'active') === 'true' ? 'active' : 'off'}</span> },
+];
+
 function VariableForm({ types, onSubmit, busy }) {
   const [v, setV] = useState({ name: '', question_text: '', type: '6', mandatory: false, order: 100, refTable: null, choicesText: '' });
   const typeCode = Number(v.type);
@@ -216,7 +243,7 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
   };
 
   return (
-    <div className="split">
+    <div className="page-full">
       <div className="card">
         <div className="spread" style={{ marginBottom: 12 }}>
           <div className="card-title" style={{ marginBottom: 0 }}>Catalog items</div>
@@ -269,40 +296,32 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
           <input className="input" placeholder="Search items…" value={search}
             onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
         </div>
-        <table className="table">
-          <thead><tr><th>Name</th><th>Class</th><th>Scope</th><th>Active</th></tr></thead>
-          {loading && <SkeletonRows rows={6} cols={4} />}
-          {!loading && <tbody>
-            {items.map((r) => (
-              <tr key={val(r, 'sys_id')} className={`click ${selected && val(selected.item, 'sys_id') === val(r, 'sys_id') ? 'selected' : ''}`}
-                onClick={() => openItem(val(r, 'sys_id'))}>
-                <td>{disp(r, 'name')}</td>
-                <td className="mono" style={{ fontSize: 11 }}>{val(r, 'sys_class_name')}</td>
-                <td><ScopeBadge scope={itemScopes[val(r, 'sys_scope')] || val(r, 'sys_scope')} name={disp(r, 'sys_scope')} /></td>
-                <td><span className={`badge ${val(r, 'active') === 'true' ? 'green' : ''}`}>{val(r, 'active') === 'true' ? 'active' : 'off'}</span></td>
-              </tr>
-            ))}
-          </tbody>}
-        </table>
-        {loading && <LoadingRegion label="Loading catalog items" />}
-        {!loading && items.length === 0 && (
-          <EmptyState
-            title="No catalog items match."
-            hint="Clear the search, or create one below — variables, choices and UI policies are all editable in place once it exists."
-            actionLabel={creating ? 'Close the form' : 'New item'}
-            onAction={() => setCreating(!creating)}
-          />
-        )}
-        {error && <p className="error-text">{error}</p>}
       </div>
 
-      <div className="card">
-        {!selected ? (
-          <EmptyState
-            title="Nothing selected."
-            hint="Pick an item on the left to inspect and edit its variables, their choices, its UI policies, and the variable sets attached to it."
-          />
-        ) : (
+      {/* The catalog list, full width, with no column reserved beside it.
+          openItem() is untouched — it still fetches the deep view. */}
+      <DataTable
+        title="Catalog items"
+        rows={items}
+        loading={loading}
+        error={error}
+        getRowId={(r) => val(r, 'sys_id')}
+        activeId={selected ? val(selected.item, 'sys_id') : null}
+        onRowClick={(r) => openItem(val(r, 'sys_id'))}
+        selectable
+        filterPlaceholder="Filter loaded items…"
+        empty="No catalog items match."
+        columns={itemColumns(itemScopes)}
+      />
+
+      {/* The deep view — variables, choices, policies — in a drawer. */}
+      <RecordDrawer
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+        title={selected ? disp(selected.item, 'name') : 'Catalog item'}
+        width={640}
+      >
+        {selected && (
           <>
             <div className="spread">
               <h3 style={{ fontSize: 16 }}>{disp(selected.item, 'name')}</h3>
@@ -365,7 +384,7 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
             )}
           </>
         )}
-      </div>
+      </RecordDrawer>
     </div>
   );
 }
@@ -408,7 +427,7 @@ function SetsTab({ meta, typeLabel }) {
   };
 
   return (
-    <div className="split">
+    <div className="page-full">
       <div className="card">
         <div className="card-title">Variable sets</div>
         <div className="field"><label className="label">Title</label>
@@ -416,35 +435,34 @@ function SetsTab({ meta, typeLabel }) {
         <div className="field"><label className="label">Description</label>
           <input className="input" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></div>
         <button className="btn primary sm" onClick={create} aria-busy={busy} disabled={busy || !draft.title}>Create set</button>
-        <table className="table" style={{ marginTop: 14 }}>
-          <thead><tr><th>Title</th><th>Internal name</th></tr></thead>
-          <tbody>
-            {sets.map((s) => (
-              <tr key={val(s, 'sys_id')} className={`click ${selected && val(selected, 'sys_id') === val(s, 'sys_id') ? 'selected' : ''}`} onClick={() => setSelected(s)}>
-                <td>{disp(s, 'title')}</td>
-                <td className="mono" style={{ fontSize: 11 }}>{disp(s, 'internal_name')}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {error && <p className="error-text">{error}</p>}
       </div>
-      <div className="card">
-        {!selected ? (
-          <EmptyState
-            title="Nothing selected."
-            hint="Pick a variable set on the left to add variables to it. Sets are attached to items from the Items tab."
-          />
-        ) : (
+
+      <DataTable
+        title="Variable sets"
+        rows={sets}
+        error={error}
+        getRowId={(r) => val(r, 'sys_id')}
+        activeId={selected ? val(selected, 'sys_id') : null}
+        onRowClick={setSelected}
+        filterPlaceholder="Filter sets…"
+        empty="No variable sets yet."
+        columns={SET_COLUMNS}
+      />
+      <RecordDrawer
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+        title={selected ? disp(selected, 'title') : 'Variable set'}
+        width={560}
+      >
+        {selected && (
           <>
-            <h3 style={{ fontSize: 15 }}>{disp(selected, 'title')}</h3>
-            <div className="card-title" style={{ marginTop: 12 }}>Variables in this set</div>
+            <div className="card-title">Variables in this set</div>
             <VariableTable variables={vars} typeLabel={typeLabel} />
             <div className="card-title" style={{ marginTop: 14 }}>Add variable</div>
             <VariableForm types={meta.variableTypes} onSubmit={addVariable} busy={busy} />
           </>
         )}
-      </div>
+      </RecordDrawer>
     </div>
   );
 }
@@ -500,7 +518,7 @@ function GuidesTab() {
   };
 
   return (
-    <div className="split">
+    <div className="page-full">
       <div className="card">
         <div className="card-title">Order guides</div>
         <div className="field"><label className="label">Name</label>
@@ -511,30 +529,29 @@ function GuidesTab() {
           <input type="checkbox" checked={draft.two_step} onChange={(e) => setDraft({ ...draft, two_step: e.target.checked })} /> Two-step checkout
         </label>
         <button className="btn primary sm" onClick={create} aria-busy={busy} disabled={busy || !draft.name}>Create guide</button>
-        <table className="table" style={{ marginTop: 14 }}>
-          <thead><tr><th>Name</th><th>Two-step</th><th>Active</th></tr></thead>
-          <tbody>
-            {guides.map((g) => (
-              <tr key={val(g, 'sys_id')} className={`click ${selected && val(selected, 'sys_id') === val(g, 'sys_id') ? 'selected' : ''}`} onClick={() => open(g)}>
-                <td>{disp(g, 'name')}</td>
-                <td>{val(g, 'two_step') === 'true' ? 'yes' : 'no'}</td>
-                <td><span className={`badge ${val(g, 'active') === 'true' ? 'green' : ''}`}>{val(g, 'active') === 'true' ? 'active' : 'off'}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {error && <p className="error-text">{error}</p>}
       </div>
-      <div className="card">
-        {!selected ? (
-          <EmptyState
-            title="Nothing selected."
-            hint="Pick an order guide on the left to manage the catalog items in its rule base."
-          />
-        ) : (
+
+      <DataTable
+        title="Order guides"
+        rows={guides}
+        error={error}
+        getRowId={(r) => val(r, 'sys_id')}
+        activeId={selected ? val(selected, 'sys_id') : null}
+        onRowClick={open}
+        filterPlaceholder="Filter guides…"
+        empty="No order guides yet."
+        columns={GUIDE_COLUMNS}
+      />
+      <RecordDrawer
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+        title={selected ? disp(selected, 'name') : 'Order guide'}
+        width={560}
+      >
+        {selected && (
           <>
             <div className="spread">
-              <h3 style={{ fontSize: 15 }}>{disp(selected, 'name')}</h3>
+              <span />
               <button className="btn danger sm" onClick={() => removeGuide(selected)}>Delete guide</button>
             </div>
             <div className="note warn" style={{ margin: '10px 0' }}>
@@ -571,7 +588,7 @@ function GuidesTab() {
             <button className="btn primary sm" onClick={addGuideItem} aria-busy={busy} disabled={busy || !addItem.item}>Add to guide</button>
           </>
         )}
-      </div>
+      </RecordDrawer>
     </div>
   );
 }

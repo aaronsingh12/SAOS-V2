@@ -44,6 +44,12 @@ const TYPE_LABEL = {
 
 function ActivityPanel({
   rows = [], taskId = null, running = false, progress = null, skills = [], onOpenEvidence = null,
+  /*
+   * The drawer draws its own header — one that carries these same counts — so
+   * rendering this one too put "Activity" on screen twice. Default true, so
+   * any other use of this component is unchanged.
+   */
+  showHeader = true,
 }) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -88,6 +94,7 @@ function ActivityPanel({
 
   return (
     <section className="ax" aria-label="Agent activity">
+      {showHeader && (
       <header className="ax-head">
         <span className="ax-title">Activity</span>
         <span className="ax-counts">
@@ -109,6 +116,7 @@ function ActivityPanel({
           </button>
         )}
       </header>
+      )}
 
       {/* §26 — plan progress, from the server's own counts. Never estimated. */}
       {progress && progress.total > 0 && (
