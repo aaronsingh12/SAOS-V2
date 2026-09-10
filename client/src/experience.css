@@ -75,6 +75,10 @@
   color: var(--blue); font-size: 11.5px; cursor: pointer; font-family: var(--font-body);
 }
 .ax-list { list-style: none; margin: 0; padding: 4px 0; max-height: 260px; overflow-y: auto; }
+/* Inside the drawer the BODY is the scroller, so the list flows instead of
+   scrolling within it — two scrollbars in one panel is what made following
+   the newest event feel like it was fighting you. */
+.act-drawer-body .ax-list { max-height: none; overflow: visible; }
 .ax-row { border-left: 2px solid transparent; }
 .ax-row.ax-running   { border-left-color: var(--blue); }
 .ax-row.ax-completed { border-left-color: var(--verdigris-dim); }
@@ -260,3 +264,1297 @@
   .ax-list { max-height: 200px; }
   .ax-type { flex-basis: 52px; }
 }
+
+/* ── The agent workspace, in the app's left column ─────────────────────────
+   The chats/tasks/skills rail used to be a bordered panel floating inside the
+   Agent playground. It is the same markup and the same component — AgentChat
+   portals it here (components/agentRail.js) — so everything below is about
+   how it SITS, never about what it does.
+
+   Nothing here introduces a colour, radius or font: the rail already reused
+   the sidebar's visual language, which is exactly why it can now be dropped
+   into the sidebar and stop looking like a panel at all. */
+
+.sidebar-rule {
+  flex: 0 0 auto;
+  height: 1px; margin: 10px 0;
+  background: var(--line);
+}
+
+/* The Gradient Waves layer now lives in the app shell as .app-bg — see the
+   SHARED PLAYGROUND BACKGROUND section at the end of this file. */
+
+/* ── The composer ──────────────────────────────────────────────────────────
+   One rounded control on the waves, not a card containing a control. Every
+   colour is an existing token; the only new geometry is the pill radius and
+   the two circles, which is what makes it read as modern without introducing
+   a second visual language into an app built on 10px corners. */
+
+.composer-dock {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 820px;
+  margin: 10px auto 0;
+}
+
+.composer {
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  /* Translucent, so the waves show THROUGH the composer rather than being
+     interrupted by it — the reason it reads as sitting on the background
+     instead of on top of it. The blur keeps the text legible over whatever
+     the waves happen to be doing underneath. */
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 8px 30px #00000055;
+  transition: border-color 140ms, box-shadow 140ms;
+}
+.composer:focus-within {
+  border-color: var(--verdigris-dim);
+  box-shadow: 0 8px 30px #00000066, 0 0 0 3px #57b57c1f;
+}
+.composer.is-listening { border-color: var(--verdigris); }
+
+/* The textarea carries no chrome of its own: the pill around it IS the field,
+   and a second border inside would draw a box in a box. */
+.composer-input {
+  flex: 1 1 auto; min-width: 0;
+  border: 0; outline: 0; resize: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-body); font-size: 14px; line-height: 1.5;
+  padding: 8px 2px;
+  max-height: 200px;   /* the JS ceiling, stated here too so it is not a magic
+                          number living only in a component */
+}
+.composer-input::placeholder { color: var(--muted); }
+
+/* The two ghost controls. 34px is the smallest that still gives a comfortable
+   pointer target beside a 36px send button. */
+.composer-btn {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border: 0; border-radius: 50%;
+  background: transparent; color: var(--muted);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.composer-btn:hover { background: var(--panel-2); color: var(--text); }
+.composer-btn[aria-expanded='true'] { background: var(--panel-2); color: var(--text); }
+.composer-btn.voice.on { color: var(--verdigris); background: var(--verdigris-dim); }
+
+/* Listening is shown by the waveform actually moving. Five bars on staggered
+   delays; the global prefers-reduced-motion rule in styles.css turns this off
+   with everything else, and the colour above still says the mic is live. */
+.composer-btn.voice.on .wf { animation: wf-bounce 900ms ease-in-out infinite; transform-origin: center; }
+.composer-btn.voice.on .wf-2 { animation-delay: 120ms; }
+.composer-btn.voice.on .wf-3 { animation-delay: 240ms; }
+.composer-btn.voice.on .wf-4 { animation-delay: 360ms; }
+.composer-btn.voice.on .wf-5 { animation-delay: 480ms; }
+@keyframes wf-bounce { 0%, 100% { transform: scaleY(0.55); } 50% { transform: scaleY(1); } }
+
+/* The send button. Green because that is the app's accent, circular because
+   the reference is, and 36px so it is the heaviest thing in the row. */
+.composer-send {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
+  border: 0; border-radius: 50%;
+  background: var(--verdigris); color: #0b130e;
+  cursor: pointer;
+  transition: background 120ms, opacity 120ms, transform 120ms;
+}
+.composer-send:hover:not(:disabled) { background: #63c88b; }
+.composer-send:active:not(:disabled) { transform: scale(0.94); }
+/* Nothing to send. Dimmed and inert rather than hidden, so the row does not
+   change width the moment somebody starts typing. */
+.composer-send:disabled { background: var(--panel-2); color: var(--muted); cursor: not-allowed; }
+
+/* Running: the button IS the progress indicator, and is still the way to stop.
+   The ring is drawn on a pseudo-element so the glyph inside stays still while
+   it turns. */
+.composer-send.is-running { background: var(--verdigris-dim); color: var(--text); position: relative; }
+.composer-send.is-running::after {
+  content: ''; position: absolute; inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent; border-top-color: var(--verdigris);
+  animation: composer-spin 800ms linear infinite;
+}
+.composer-send.is-running:disabled { opacity: 0.7; }
+@keyframes composer-spin { to { transform: rotate(360deg); } }
+
+/* ── The "+" menu ──────────────────────────────────────────────────────────
+   Frontend-only: this app has no attachment pipeline, so rather than invent
+   one the button surfaces actions that already exist — a new chat, and the
+   `remember:` prefix the old placeholder used to advertise. */
+.composer-menu {
+  position: absolute; bottom: calc(100% + 8px); left: 0;
+  z-index: 5;
+  width: min(440px, 100%);
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 16px 40px #00000070;
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 60vh; overflow-y: auto;
+}
+.composer-menu-label {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted);
+  padding: 8px 10px 4px;
+}
+.composer-menu-item {
+  display: block; width: 100%; text-align: left;
+  padding: 8px 10px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text);
+  font-family: var(--font-body); font-size: 13px; cursor: pointer;
+}
+.composer-menu-item:hover:not(:disabled) { background: var(--panel-2); }
+.composer-menu-item:disabled { opacity: 0.45; cursor: not-allowed; }
+.composer-menu-item b { display: block; font-weight: 500; }
+.composer-menu-item em {
+  display: block; margin-top: 1px;
+  font-style: normal; font-size: 11.5px; color: var(--muted);
+}
+.composer-menu-item code { font-family: var(--font-mono); font-size: 11px; color: var(--verdigris); }
+/* The sample prompts are one long line each; they wrap rather than truncate,
+   because a prompt you cannot read is one you cannot choose. */
+.composer-menu-item.sample { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.composer-menu-item.sample:hover:not(:disabled) { color: var(--text); }
+
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   COMPOSER — the lower bar
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* The shell becomes a column of two rows: the input above, the bar below,
+   inside one border and one radius so it stays ONE control. */
+.composer { flex-direction: column; align-items: stretch; gap: 0; padding: 6px 6px 0; }
+.composer-row { display: flex; align-items: flex-end; gap: 8px; padding: 2px 2px 0 4px; }
+
+.composer-bar {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 6px;
+  padding: 6px 4px 7px;
+  border-top: 1px solid var(--line-soft);
+}
+.composer-bar-spacer { flex: 1 1 auto; }
+
+.composer-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px; border: 0; border-radius: 999px;
+  background: transparent; color: var(--muted);
+  font-family: var(--font-body); font-size: 11.5px; cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.composer-chip:hover { background: var(--panel-2); color: var(--text); }
+.composer-chip[aria-expanded="true"] { background: var(--panel-2); color: var(--text); }
+
+/* The status, in the app's existing vocabulary and tones. Subtle by design —
+   it is a readout, not the thing you look at. */
+
+.composer-model {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px; border-radius: 999px;
+  color: var(--muted); font-family: var(--font-mono); font-size: 11px;
+  text-decoration: none;
+  transition: background 120ms, color 120ms;
+}
+.composer-model:hover { background: var(--panel-2); color: var(--text); }
+.composer-model-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The command menu opens from the bar, anchored to its left edge. */
+.composer-cmd { width: min(380px, 100%); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONVERSATION — entrance, not a second scroller
+
+   The transcript deliberately does NOT get wrapped in the vendored
+   AnimatedList: that component owns its own scroll container, makes every row
+   a pointer-cursor click target and re-runs an in-view animation on scroll,
+   which between them would break text selection, the existing follow-the-tail
+   behaviour and the approval cards' own buttons. What it contributes is its
+   MOTION — the same scale-and-fade entrance, applied to messages as they
+   arrive, with no extra scroller and no interaction of its own.
+   ══════════════════════════════════════════════════════════════════════════ */
+.msgs > * { animation: msg-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+/* The always-mounted Agent page fills the area beside the column when it is
+   the active route, and is display:none otherwise — which also parks the
+   Gradient Waves render loop, since its IntersectionObserver stops seeing it. */
+.agent-host { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.agent-host[hidden] { display: none; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE NEW-CHAT STATE
+
+   Content on the waves. There is deliberately no border, no background, no
+   radius and no shadow on .welcome or anything above the chips — the
+   playground background IS the surface, and a card here would put a rectangle
+   between the type and the thing it is meant to be floating on.
+
+   Centring is `margin: auto` inside .msgs, which is already a flex column.
+   That means no new positioning context, no absolute placement to go wrong at
+   another viewport size, and no second scroll container: when the conversation
+   starts, this element is simply gone and the messages lay out exactly as they
+   always did.
+   ══════════════════════════════════════════════════════════════════════════ */
+.welcome {
+  margin: auto;
+  width: 100%;
+  max-width: 680px;
+  padding: 0 16px 4vh;
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+}
+
+/* The signature, not a logo. */
+.welcome-mark { opacity: 0.85; margin-bottom: 14px; flex: none; }
+
+/* StrokeText scales its SVG to the width of this box, so the headline's size
+   is set here rather than by a font-size — and it stays proportional on every
+   viewport instead of needing breakpoints. */
+.welcome-headline { width: 100%; max-width: 560px; }
+@media (max-width: 760px) { .welcome-headline { max-width: 100%; } }
+
+.welcome-sub {
+  margin: 6px 0 0;
+  font-size: 14.5px; line-height: 1.5;
+  color: var(--muted);
+  max-width: 420px;
+}
+
+
+
+/* Short windows: the composer is the thing that must stay usable, so the
+   welcome gives up its breathing room first. */
+@media (max-height: 720px) {
+  .welcome { padding-bottom: 0; }
+  .welcome-mark { display: none; }
+}
+/* ══════════════════════════════════════════════════════════════════════════
+   BORDER GLOW — React Bits, around the existing composer
+
+   The component ships as a CARD: its own 1px border, its own opaque
+   background and a six-layer drop shadow. All three are switched off here,
+   because the composer inside it already is the surface and a second one
+   would be exactly the outer container this must not add.
+
+   What is kept is the part that is actually the effect — the mesh-gradient
+   edge and the .edge-light halo, in the component's own palette. It is not
+   recoloured to the app's green on purpose.
+   ══════════════════════════════════════════════════════════════════════════ */
+.composer-glow.border-glow-card {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  /* The glow layers are z-index:-1 children; without a stacking context of its
+     own the wrapper would let them fall behind the playground background. The
+     vendor sets isolation:isolate for this — kept, not overridden. */
+}
+/* The vendor's inner is `overflow: auto`, which would clip the "+" and command
+   menus that open UPWARD out of the composer, and put a scrollbar around a
+   control that has never had one. */
+.composer-glow .border-glow-inner { overflow: visible; display: block; }
+
+/* The halo extends 20px past the composer via .edge-light's negative inset.
+   .composer-dock must not clip it, and nothing here may take layout space. */
+.composer-dock { overflow: visible; }
+.composer-glow .edge-light { pointer-events: none; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TRANSCRIPT ROWS — AnimatedItem as the flex child
+
+   The wrapper is now the child of .msgs, so the alignment that used to sit on
+   .msg.user has to live on it: without this, every user message would render
+   left-aligned and full width, because align-self on a grandchild does
+   nothing.
+   ══════════════════════════════════════════════════════════════════════════ */
+.msgs > .msg-row { max-width: 100%; min-width: 0; }
+.msgs > .msg-row.is-user { align-self: flex-end; max-width: 100%; }
+
+/* AnimatedItem now provides the entrance, so the CSS keyframe that used to do
+   it is removed — running both would compose two transforms on the same
+   element and fight over the same 260ms. */
+.msgs > * { animation: none; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   BORDER GLOW — PERIMETER ONLY
+
+   BorderGlow paints three layers. Two of them trace the edge and are wanted:
+   ::before is the gradient border ring, and > .edge-light is the halo just
+   outside it. The third, ::after, is a mesh gradient spread across the card's
+   INTERIOR with mix-blend-mode: soft-light — that is the one that made the
+   composer look illuminated from within and put a coloured cast behind the
+   textarea. fillOpacity={0} already zeroes it; this takes it out of the paint
+   altogether so no future prop change can bring it back by accident.
+   ══════════════════════════════════════════════════════════════════════════ */
+.composer-glow.border-glow-card::after { display: none; }
+
+/* The halo is the effect, so let it read: it lives outside the composer's own
+   pill and must not be dimmed or clipped by anything between the two. */
+.composer-glow > .edge-light { z-index: 0; }
+
+/* The composer's own surface is the composer's own business. Stated here so a
+   glow layer can never be what decides the colour behind the textarea. */
+.composer-glow .composer { background: color-mix(in srgb, var(--panel) 82%, transparent); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   COMPOSER STABILITY
+
+   The composer must not move when a stage card appears between the transcript
+   and it. That is a layout property, not something to correct with offsets:
+   .msgs is the flex item that gives up the space (flex: 1 1 0% with
+   min-height: 0, fixed last session), and .composer-dock is fixed-size at the
+   end of the column, so anything inserted above it is absorbed by the
+   transcript rather than pushing the composer down.
+
+   What is left is animation. AnimatedItem's entrance scales from 0.7, and on
+   the stage card that reads as the panel — and with it the composer's
+   neighbour — flexing on every status change. The stage keeps the fade and
+   drops the scale.
+   ══════════════════════════════════════════════════════════════════════════ */
+.composer-dock { flex: 0 0 auto; }
+
+
+/* ── Border Glow: the perimeter, and only the perimeter ────────────────────
+   Measured, after the first attempt still washed the whole composer. Three
+   layers reach inward and each had to be dealt with on its own terms:
+
+   ::after   — a mesh gradient across the interior on soft-light. Off already
+               (fillOpacity 0), and display:none above so it cannot return.
+
+   ::before  — the gradient border ring. It only READS as a ring because its
+               first background layer, `linear-gradient(var(--card-bg))
+               padding-box`, paints over the interior and leaves just the
+               border-box edge showing. The composer needs a transparent
+               wrapper so the waves stay visible through it, and a transparent
+               --card-bg masks nothing: every mesh gradient then floods the
+               full padding box, which is the violet cast over the textarea.
+               An opaque --card-bg would fix the mask and lose the
+               translucency, so the layer goes instead — .edge-light already
+               draws an edge.
+
+   .edge-light — the halo. Its ::before carries seven INSET shadows spreading
+               up to 50px inward; on a 92px-tall composer that is the whole
+               control lit from the rim. The outset half of the same shadow
+               list is the glow that belongs outside the border, so the inset
+               half is dropped and the outset half kept verbatim, in the
+               component's own --glow-color (warm, not the app's green). */
+
+.composer-glow.border-glow-card::before { display: none; }
+
+.composer-glow > .edge-light::before {
+  box-shadow:
+    0 0 0 1px var(--glow-color, hsl(40deg 80% 80% / 100%)),
+    0 0 1px 0 var(--glow-color-60, hsl(40deg 80% 80% / 60%)),
+    0 0 3px 0 var(--glow-color-50, hsl(40deg 80% 80% / 50%)),
+    0 0 6px 0 var(--glow-color-40, hsl(40deg 80% 80% / 40%)),
+    0 0 15px 0 var(--glow-color-30, hsl(40deg 80% 80% / 30%)),
+    0 0 25px 2px var(--glow-color-20, hsl(40deg 80% 80% / 20%));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ACTIVITY — indicator beside the composer, drawer down the right
+
+   Replaces the stage card that used to sit between the transcript and the
+   composer. Nothing here renders inside .msgs, so activity can no longer take
+   space from the conversation or land on top of a message bubble.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* The transcript and the drawer share one row; the drawer takes width from the
+   messages rather than covering them. min-width/min-height 0 so .msgs can
+   actually give that width up — a flex item defaults to min-width: auto and
+   would refuse to shrink below its content. */
+.playground-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0;
+}
+.playground-body > .msgs { flex: 1 1 auto; min-width: 0; }
+
+/* The composer keeps the row it always had; the indicator sits beside it. */
+.composer-line {
+  display: flex; align-items: flex-end; gap: 10px;
+  flex: 0 0 auto;
+  width: 100%; max-width: 1010px;   /* 820 composer + gap + 180 indicator */
+  margin: 0 auto;
+}
+.composer-line > .composer-dock { flex: 1 1 auto; margin-left: 0; margin-right: 0; }
+
+/* ── The compact indicator ─────────────────────────────────────────────── */
+.act-dot {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  height: 54px; padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  color: var(--muted);
+  cursor: pointer;
+  box-shadow: 0 8px 30px #00000055;
+  transition: border-color 140ms, color 140ms, background 140ms;
+}
+.act-dot:hover { border-color: var(--muted); color: var(--text); }
+.act-dot.is-open { border-color: var(--verdigris-dim); color: var(--text); }
+
+.act-dot-icon { display: inline-flex; flex: none; }
+.act-dot-text { display: flex; flex-direction: column; line-height: 1.15; text-align: left; }
+.act-dot-label {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.act-dot-state { font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.act-dot-count {
+  font-family: var(--font-mono); font-size: 10.5px;
+  padding: 1px 6px; border-radius: 999px;
+  background: var(--panel-2); color: var(--muted);
+}
+.act-dot-chevron { display: inline-flex; transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1); }
+.act-dot-chevron.is-open { transform: rotate(180deg); }
+
+/* The tone vocabulary already used everywhere else, so a working agent here
+   reads as the same severity as a working agent anywhere in the app. */
+.act-dot.ag-busy .act-dot-icon { color: var(--verdigris); }
+.act-dot.ag-warn .act-dot-icon { color: var(--amber); }
+.act-dot.ag-bad  .act-dot-icon { color: var(--red); }
+.act-dot.ag-ok   .act-dot-icon { color: var(--verdigris); }
+/* Only a WORKING agent pulses — the same rule the old header followed. */
+.act-dot.is-live .act-dot-icon { animation: act-pulse 1.6s ease-in-out infinite; }
+@keyframes act-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* ── The drawer, and the macOS-style open ──────────────────────────────────
+   Width is what animates, because width is what makes room: the transcript
+   gives up the space in the same frames the panel takes it, so the two move as
+   one gesture rather than the panel appearing on top of a reflow.
+
+   The easing is the one macOS uses for window expansion — a fast start that
+   settles rather than overshoots. There is deliberately no bounce: a spring
+   here would move the composer's neighbour and read as the jitter this UI was
+   asked to stop having.
+
+   The inner surface also scales and fades slightly, anchored to the right edge
+   (transform-origin), so it grows out of the indicator's corner instead of
+   sliding in from off-screen. */
+.act-drawer {
+  /* ONE source of truth for the panel's size. The drawer reserves the panel
+     PLUS the gap that separates it from the transcript; the inner is exactly
+     the panel. Before this the two disagreed by the width of the gap, so the
+     right edge was clipped by the drawer's own overflow.
+
+     clamp() is what makes it responsive: the panel gives width back on a
+     narrow viewport instead of being cut off. */
+  --act-gap: 14px;
+  --act-w: clamp(240px, 26vw, 340px);
+  flex: 0 0 auto;
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  will-change: width;
+  transition: width 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.act-drawer.is-open { width: calc(var(--act-w) + var(--act-gap)); }
+
+.act-drawer-inner {
+  width: var(--act-w);
+  height: 100%;
+  margin-left: var(--act-gap);
+  display: flex; flex-direction: column; min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  opacity: 0;
+  transform: scale(0.96);
+  transform-origin: 100% 100%;
+  transition: opacity 200ms ease-out, transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.act-drawer.is-open .act-drawer-inner { opacity: 1; transform: scale(1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .act-drawer, .act-drawer-inner, .act-dot-chevron { transition: none; }
+}
+
+.act-drawer-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 10px 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+.act-drawer-title {
+  font-family: var(--font-display); font-size: 13px; font-weight: 600;
+  color: var(--text); flex: 0 0 auto;
+}
+.act-drawer-skills { font-size: 11px; color: var(--muted); }
+.act-drawer-close {
+  margin-left: auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; flex: none;
+  border: 0; border-radius: 50%;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.act-drawer-close:hover { background: var(--panel-2); color: var(--text); }
+
+/* The drawer scrolls its own events. That is a separate region from the
+   transcript, not a second scrollbar on it — .msgs remains the one and only
+   scroller for the conversation. */
+.act-drawer-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px; }
+.act-drawer-body .ax { background: none; border: 0; }
+.act-drawer-empty { margin: 8px 4px; font-size: 12px; color: var(--muted); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   GLOBAL NAVIGATION — Card Nav, adapted
+
+   Borrowed from React Bits' Card Nav: one control that collapses the whole
+   thing, a size transition rather than a pop, grouped rounded surfaces, and
+   contents that stagger in behind the transition. Not borrowed: its shape.
+   Card Nav is horizontal with nested links under every heading; this is
+   vertical, grouped under three, and nests exactly one item — Skills — because
+   that is the only place sub-items are real.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.nav-brand {
+  display: flex; align-items: center; gap: 9px;
+  padding: 16px 12px 12px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.nav-brand-text { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.nav-brand-name {
+  font-family: var(--font-display); font-weight: 700; font-size: 15px;
+  white-space: nowrap;
+}
+.nav-brand-name .assist { color: var(--verdigris); }
+.nav-brand-sub {
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--muted);
+  white-space: nowrap; margin-top: 1px;
+}
+.nav-collapse {
+  margin-left: auto; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--muted); cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.nav-collapse:hover { background: var(--panel-2); color: var(--text); }
+
+/* The scrolling middle. The brand above and the profile below keep their
+   natural height; everything else lives in here and scrolls if it must, so the
+   profile is never pushed off the bottom. */
+.nav-scroll {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 0 8px 8px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+
+.nav-section { display: flex; flex-direction: column; gap: 1px; padding-bottom: 6px; }
+.nav-section + .nav-section { border-top: 1px solid var(--line-soft); padding-top: 8px; margin-top: 4px; }
+/* Title case, as written in the source — the labels say "Servicenow
+   Automations" and "Settings", so the stylesheet should not re-case them. */
+.nav-section-label {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 10px 4px;
+  white-space: nowrap;
+}
+
+/* One row shape for links, toggles and the Delete Chats button alike, so the
+   column reads as one list rather than three kinds of control. */
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--muted);
+  font-family: var(--font-body); font-size: 13.5px; font-weight: 500;
+  text-align: left; cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.nav-item:hover { background: var(--panel-2); color: var(--text); }
+.nav-item .nav-ic { flex: none; }
+.nav-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Active route: the app's accent, used as a rail and a wash rather than a
+   block of colour, so it marks the row without shouting. */
+.nav-item.active {
+  background: color-mix(in srgb, var(--verdigris) 12%, transparent);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--verdigris);
+}
+.nav-item.active .nav-ic { color: var(--verdigris); }
+
+.nav-toggle .nav-ic:last-child { transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1); }
+.nav-toggle.is-open .nav-ic:last-child { transform: rotate(90deg); }
+.nav-toggle.is-open { color: var(--text); }
+
+.nav-danger:hover:not(:disabled) { color: var(--red); }
+.nav-item:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* An expanded group's contents. Capped and scrollable so a long chat list
+   cannot push the sections below it out of reach. */
+.nav-panel {
+  margin: 2px 0 6px;
+  padding: 2px 0 2px 8px;
+  border-left: 1px solid var(--line-soft);
+  margin-left: 18px;
+  animation: nav-open 220ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+@keyframes nav-open {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.nav-slot { display: flex; flex-direction: column; min-width: 0; }
+/* Capped so an open chat list cannot push the Settings section out of
+   reach. The list scrolls inside the cap; the column scrolls outside it. */
+.nav-panel .nav-slot { max-height: 32vh; overflow-y: auto; overflow-x: hidden; }
+.nav-controls { gap: 1px; }
+
+/* The rail panes, inside the column. Their own horizontal padding was measured
+   against a floating panel edge; in the column that edge is the nav's own, so
+   it is dropped and the rows line up with the links above them. */
+.nav-slot .rail-head,
+.nav-slot .rail-search,
+.nav-slot .rail-note,
+.nav-slot .rail-list,
+.nav-slot .rail-foot { padding-left: 0; padding-right: 0; }
+.nav-slot .rail-head { border-bottom: 0; padding-bottom: 6px; }
+.nav-slot .rail-head .btn { width: 100%; }
+.nav-slot .rail-foot { background: none; }
+.nav-slot .rail-empty { padding: 10px 6px; }
+.nav-slot .rail-pane { overflow: visible; }
+.nav-slot .sk { border: 0; background: none; }
+
+.agent-switches { display: flex; flex-direction: column; gap: 1px; }
+.agent-switches .check {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 13px; color: var(--muted); cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.agent-switches .check:hover { color: var(--text); background: var(--panel-2); }
+
+/* ── Collapsed: a 68px icon rail ─────────────────────────────────────────── */
+.sidebar.is-collapsed .nav-label,
+.sidebar.is-collapsed .nav-section-label,
+.sidebar.is-collapsed .nav-brand-text,
+.sidebar.is-collapsed .nav-user-text,
+.sidebar.is-collapsed .nav-toggle .nav-ic:last-child { display: none; }
+/* The brand stacks: mark on one row, toggle on the next. In flow, so the
+   button is a real row that cannot be painted over and needs no containing
+   block of its own. */
+.sidebar.is-collapsed .nav-brand {
+  flex-direction: column; align-items: center; justify-content: flex-start;
+  gap: 8px; padding: 14px 0 10px;
+}
+.sidebar.is-collapsed .nav-collapse { margin: 0; }
+.sidebar.is-collapsed .nav-scroll { padding: 4px 8px 10px; align-items: center; }
+.sidebar.is-collapsed .nav-section { width: 100%; align-items: center; gap: 4px; }
+/* One fixed row per icon: a 44px target inside a 72px rail, centred, with the
+   4px gap above keeping consecutive rows visibly apart. */
+.sidebar.is-collapsed .nav-item,
+.sidebar.is-collapsed .agent-switches .check {
+  justify-content: center;
+  width: 44px; height: 40px; padding: 0;
+  flex: 0 0 auto;
+}
+.sidebar.is-collapsed .nav-section + .nav-section { padding-top: 10px; margin-top: 6px; }
+.sidebar.is-collapsed .nav-user { justify-content: center; }
+/* The rail must never scroll sideways or clip a target. */
+.sidebar.is-collapsed .nav-scroll { overflow-x: hidden; }
+
+/* Skills, collapsed: a flyout rather than a wider rail. Anchored to the rail's
+   right edge, capped, and it cannot widen the column because it is absolutely
+   positioned out of the flow. */
+.nav-flyout-host { position: relative; width: 100%; display: flex; justify-content: center; }
+.nav-flyout {
+  position: absolute; left: calc(100% + 6px); bottom: 0;
+  z-index: 40;
+  width: 300px; max-width: calc(100vw - 90px);
+  max-height: 70vh; overflow-y: auto;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 16px 40px #00000070;
+  animation: nav-open 200ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+.nav-flyout-title {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--muted); padding: 2px 4px 6px;
+}
+
+/* ── Profile placeholder ──────────────────────────────────────────────────
+   Generic on purpose. This app has no user identity to show, and inventing one
+   would put a name on screen that means nothing. */
+.nav-user {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 9px;
+  margin: 0 8px 10px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+  min-width: 0;
+}
+.nav-user-avatar {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--muted);
+}
+.nav-user-text { display: flex; flex-direction: column; min-width: 0; }
+.nav-user-name { font-size: 12.5px; color: var(--text); }
+.nav-user-sub { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); }
+
+/* Staggered reveal — Card Nav's cards animating in behind the expansion. */
+.sidebar-inner > * { animation: nav-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.sidebar-inner > *:nth-child(2) { animation-delay: 50ms; }
+.sidebar-inner > *:nth-child(3) { animation-delay: 90ms; }
+@keyframes nav-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+
+/* The mobile way in. */
+.nh-reopen {
+  position: fixed; top: 12px; left: 12px; z-index: 50;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  color: var(--muted); cursor: pointer;
+  box-shadow: 0 6px 20px #00000055;
+}
+.nh-reopen:hover { color: var(--text); border-color: var(--muted); }
+.nh-burger { display: inline-flex; flex-direction: column; justify-content: center; gap: 5px; width: 18px; height: 18px; }
+.nh-burger-line { display: block; height: 1.5px; width: 100%; border-radius: 2px; background: currentColor; }
+
+/* ── The compact activity indicator, uncramped ─────────────────────────────
+   Measured at the old size: 120px overall with only 50px left for the status
+   word, icon and chevron pressed against it. The footprint stays small; what
+   changes is that the three regions are now genuinely separate — a fixed icon,
+   a flexible text column that may ellipsis, and a fixed control — so nothing
+   can collide however long the status gets. */
+.act-dot {
+  gap: 10px;
+  padding: 0 10px 0 12px;
+  width: clamp(150px, 15vw, 190px);
+  text-align: left;
+}
+.act-dot-icon,
+.act-dot-chevron { flex: 0 0 auto; }
+/* min-width: 0 is what lets the ellipsis happen: without it a flex item
+   refuses to shrink below its content and pushes the chevron out instead. */
+.act-dot-text { flex: 1 1 auto; min-width: 0; gap: 1px; }
+.act-dot-label { line-height: 1.1; }
+.act-dot-state {
+  line-height: 1.25;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The count sat between the text and the chevron and stole the width the
+   status needed. It belongs with the detail, which the panel already shows. */
+.act-dot-count { display: none; }
+
+@media (max-width: 640px) {
+  .act-dot { width: 100%; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE SHARED PLAYGROUND BACKGROUND
+
+   One React Bits Gradient Waves instance for the whole application, mounted in
+   the shell. A LAYER rather than a wrapper: absolutely placed so it takes no
+   space in .main's flex flow, which is why no page needed restructuring to sit
+   "inside" it, and pointer-events: none so it can never intercept a click on a
+   table row, a form field or a button above it.
+
+   There is deliberately no border, radius or surface here — the waves are the
+   background of the content area, not a card drawn on top of it.
+   ══════════════════════════════════════════════════════════════════════════ */
+.app-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.app-bg .gradient-waves-container { width: 100%; height: 100%; }
+
+/* Everything in the shell paints above the layer. Stacking, not wrapping. */
+.main > .topbar,
+.main > .content,
+.main > .agent-host { position: relative; z-index: 1; }
+
+/* The content area no longer paints its own ground, so the waves show through
+   it. Cards, tables and panels keep their own opaque surfaces, so page content
+   stays as readable as it was. */
+.content { background: transparent; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   COLLAPSIBLE NAVIGATION SECTIONS
+
+   Independent of collapsing the sidebar itself: this hides one group's items
+   while the column keeps whatever width it has. The heading and its control
+   always remain, so a closed section is still findable.
+
+   grid-template-rows 0fr -> 1fr animates to the content's natural height with
+   no JavaScript measuring anything — which is what keeps it smooth and free of
+   the jump a height:auto swap gives you.
+   ══════════════════════════════════════════════════════════════════════════ */
+.nav-section-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%;
+  border: 0; background: transparent;
+  cursor: pointer;
+  font: inherit;
+  /* Inherits .nav-section-label's type, colour and padding. */
+}
+.nav-section-toggle:hover { color: var(--text); }
+.nav-section-chevron {
+  flex: none;
+  transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.nav-section:not(.is-open) .nav-section-chevron { transform: rotate(-90deg); }
+
+.nav-section-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.32, 0.72, 0, 1),
+              opacity 180ms ease-out;
+  opacity: 0;
+}
+.nav-section.is-open > .nav-section-body { grid-template-rows: 1fr; opacity: 1; }
+/* min-height: 0 is what lets the row actually collapse to zero — a grid item
+   defaults to min-height: auto and would refuse to go below its content. */
+.nav-section-inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex; flex-direction: column; gap: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-section-body, .nav-section-chevron { transition: none; }
+}
+
+/* The one Activity header carries the counts the panel used to repeat. */
+.act-drawer-counts {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Delete Chats in the nav; the two switches on the Preferences page. */
+.agent-actions { display: flex; flex-direction: column; gap: 1px; }
+.prefs-slot .agent-switches { gap: 4px; }
+.prefs-slot .check {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 13.5px; color: var(--text); cursor: pointer;
+  border: 1px solid var(--line-soft);
+}
+.prefs-slot .check:hover { background: var(--panel-2); border-color: var(--line); }
+
+/* "Chats" is its own heading, so the group carries no label above it. */
+.nav-section-bare { padding-top: 2px; }
+
+/* The counts wrap rather than truncate. At 340px "5 events · 4 done · 1
+   running · 7 skills" does not fit beside the title and the close button, and
+   an ellipsis at "7 …" hides the number it was there to report. */
+.act-drawer-head { flex-wrap: wrap; row-gap: 2px; }
+.act-drawer-counts {
+  flex: 1 1 100%;
+  order: 3;
+  white-space: normal; overflow: visible; text-overflow: clip;
+  font-size: 11px;
+}
+.act-drawer-close { order: 2; }
+
+/* ── Update Set, at the foot of the Activity panel ─────────────────────────
+   Roughly a tenth of the panel. The 9:1 flex-grow pair is the split itself
+   rather than a guessed pixel height: the activity list takes nine parts of
+   the free space and this takes one, at any panel height. min-height keeps the
+   heading and one line readable when the panel is short, and max-height stops
+   a long reason from eating the list it sits under. */
+.act-updateset {
+  flex: 1 1 0;
+  min-height: 62px;
+  max-height: 26%;
+  display: flex; flex-direction: column; min-width: 0;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-2) 40%, transparent);
+  padding: 7px 10px 8px;
+  overflow-y: auto;
+}
+.act-updateset-head {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+  flex: 0 0 auto; margin-bottom: 5px;
+}
+.act-updateset-body { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+.act-updateset-body .badge { flex: 0 0 auto; }
+/* Wraps rather than escaping the panel; capped so it cannot push the list up,
+   with the full text on hover. */
+.act-updateset-reason {
+  min-width: 0; flex: 1 1 auto;
+  font-size: 11.5px; line-height: 1.4; color: var(--muted);
+  overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.act-updateset-empty { margin: 0; font-size: 11.5px; color: var(--muted); }
+
+/* The activity list keeps the lion's share. */
+.act-drawer-body { flex: 9 1 0; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SCROLLBARS — dim at rest, legible on approach
+
+   One treatment for every intentional scroller in the app. The track stays
+   invisible so a scroller costs nothing visually when idle; the thumb sits at
+   the line colour until the pointer is over the region that scrolls, then
+   lifts to the muted colour. Firefox gets the same idea through
+   scrollbar-color, which is the only knob it exposes.
+   ══════════════════════════════════════════════════════════════════════════ */
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+*:hover { scrollbar-color: var(--muted) transparent; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 8px;
+  /* The border is transparent padding: it keeps the thumb slim at rest and
+     lets it appear to thicken on hover without the track changing width. */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 140ms;
+}
+/* Brighter only while the pointer is over the scrolling region — not globally,
+   which would be the always-on bright bar this had to avoid. */
+*:hover > ::-webkit-scrollbar-thumb,
+.msgs:hover::-webkit-scrollbar-thumb,
+.nav-scroll:hover::-webkit-scrollbar-thumb,
+.act-drawer-body:hover::-webkit-scrollbar-thumb,
+.dt-scroll:hover::-webkit-scrollbar-thumb,
+.content:hover::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-width: 2px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text); border-width: 2px; }
+
+/* ── 6. The collapsed rail never scrolls ──────────────────────────────────
+   At 72px there is nothing to scroll horizontally and the icon list is short
+   enough to fit; a scrollbar there is 10px of a 72px rail spent on nothing.
+   The rows are laid out to fit instead of being clipped — see the collapsed
+   sizing in the navigation section. */
+.sidebar.is-collapsed .nav-scroll {
+  overflow-y: hidden;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.sidebar.is-collapsed .nav-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* Nothing may overflow it either, so the rail stays scrollbar-free rather than
+   simply hiding content: the rows shrink their vertical rhythm first. */
+.sidebar.is-collapsed .nav-section { padding-bottom: 2px; }
+.sidebar.is-collapsed .nav-section + .nav-section { padding-top: 6px; margin-top: 4px; }
+.sidebar.is-collapsed .nav-item,
+.sidebar.is-collapsed .agent-switches .check { height: 36px; }
+
+/* ── 7. The collapsed mark, which is also the expand control ──────────────
+   Both glyphs live in one fixed 26px box and cross-fade, so the rail width is
+   identical in both states and nothing reflows on hover. */
+.nav-mark-toggle {
+  position: relative;
+  width: 26px; height: 26px; flex: none;
+  padding: 0; border: 0; background: transparent;
+  cursor: pointer; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+}
+.nav-mark-toggle > * {
+  position: absolute; inset: 0; margin: auto;
+  transition: opacity 160ms ease-out, transform 160ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.nav-mark-toggle .logomark { opacity: 1; transform: scale(1); }
+.nav-mark-toggle .nav-ic { opacity: 0; transform: scale(0.8); }
+.nav-mark-toggle:hover .logomark,
+.nav-mark-toggle:focus-visible .logomark { opacity: 0; transform: scale(0.8); }
+.nav-mark-toggle:hover .nav-ic,
+.nav-mark-toggle:focus-visible .nav-ic { opacity: 1; transform: scale(1); color: var(--verdigris); }
+@media (prefers-reduced-motion: reduce) { .nav-mark-toggle > * { transition: none; } }
+
+/* Collapsed, the old toggle is gone entirely — not hidden beside the mark. */
+.sidebar.is-collapsed .nav-collapse { display: none; }
+
+/* ── 4. The conversation scrollbar sits at the playground's edge ──────────
+   .msgs is the scroller, and it used to be inset by .chat-wrap's 22px of
+   horizontal padding — so the bar floated 22px in from the true edge. The
+   padding moves onto the rows and the composer instead: the scroller now runs
+   edge to edge while the content it holds keeps exactly the margins it had.
+
+   There is still only ONE scroller for the conversation. */
+.agent-layout .chat-wrap { padding-left: 0; padding-right: 0; }
+.msgs { padding-left: 22px; padding-right: 12px; }
+.chat-wrap > .composer-line,
+.chat-wrap > .stage,
+.chat-wrap > .from-meeting,
+.chat-wrap > .ax { margin-left: 22px; margin-right: 22px; }
+.playground-body > .act-drawer { margin-right: 22px; }
+
+@media (max-width: 900px) {
+  .msgs { padding-left: 14px; padding-right: 8px; }
+  .chat-wrap > .composer-line,
+  .playground-body > .act-drawer { margin-left: 14px; margin-right: 14px; }
+}
+@media (max-width: 640px) {
+  .msgs { padding-left: 10px; padding-right: 6px; }
+  .chat-wrap > .composer-line,
+  .playground-body > .act-drawer { margin-left: 10px; margin-right: 10px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   DATA TABLE — card frame, quiet rows, compact footer
+
+   The reference is a TanStack table in a card frame; what is borrowed is the
+   structure and the interaction quality, not the palette. Every colour here is
+   an existing NHA token, so a ServiceNow list reads as part of this app rather
+   than as a widget dropped into it.
+   ══════════════════════════════════════════════════════════════════════════ */
+.dt {
+  display: flex; flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.dt-top {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--panel-2) 45%, transparent);
+}
+.dt-title {
+  font-family: var(--font-display); font-size: 13px; font-weight: 600;
+  margin: 0; flex: 0 0 auto;
+}
+.dt-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+
+.dt-filter {
+  display: flex; align-items: center; gap: 7px;
+  flex: 1 1 200px; min-width: 0; max-width: 340px;
+  padding: 0 9px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--ink); color: var(--muted);
+}
+.dt-filter:focus-within { border-color: var(--verdigris-dim); }
+.dt-filter-input {
+  flex: 1 1 auto; min-width: 0;
+  border: 0; outline: 0; background: transparent;
+  color: var(--text); font-family: var(--font-body); font-size: 12.5px;
+  padding: 7px 0;
+}
+.dt-filter-input::placeholder { color: var(--muted); }
+.dt-filter-clear {
+  border: 0; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px;
+}
+.dt-filter-clear:hover { color: var(--text); }
+
+/* A wide table scrolls HERE and nowhere else — the page never moves sideways. */
+.dt-scroll { overflow-x: auto; overflow-y: hidden; min-width: 0; }
+
+.dt-table {
+  width: 100%; border-collapse: separate; border-spacing: 0;
+  font-size: 13px; table-layout: fixed;
+  min-width: 520px;
+}
+.dt-table th, .dt-table td {
+  text-align: left; padding: 0;
+  border-bottom: 1px solid var(--line-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dt-right { text-align: right; }
+
+/* The header is the one row that is allowed to look different. */
+.dt-table thead th {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 1;
+}
+.dt-th { display: flex; align-items: center; position: relative; }
+.dt-th-btn {
+  flex: 1 1 auto; min-width: 0;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 9px 12px;
+  border: 0; background: transparent;
+  color: var(--muted); cursor: pointer;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.05em;
+  text-transform: uppercase; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dt-th-btn.as-text { cursor: default; }
+.dt-th-btn:hover { color: var(--text); }
+.dt-table th.is-sorted .dt-th-btn { color: var(--verdigris); }
+.dt-sort { flex: none; }
+
+/* Resize handle: a wide invisible grab area over a hairline. */
+.dt-resize {
+  flex: none; width: 9px; align-self: stretch;
+  margin-right: -4px;
+  cursor: col-resize;
+  background: linear-gradient(var(--line), var(--line)) center / 1px 60% no-repeat;
+  touch-action: none;
+}
+.dt-resize:hover { background: linear-gradient(var(--verdigris), var(--verdigris)) center / 2px 100% no-repeat; }
+
+.dt-table tbody td {
+  padding: 9px 12px;
+  color: var(--text);
+  transition: background 100ms;
+}
+.dt-table tbody tr:last-child td { border-bottom: 0; }
+.dt-click { cursor: pointer; }
+.dt-click:hover td { background: var(--panel-2); }
+/* Selected and active are different states: selected is a checkbox, active is
+   the record whose drawer is open. Both subtle, neither shouting. */
+.dt-table tbody tr.is-selected td { background: color-mix(in srgb, var(--verdigris) 8%, transparent); }
+.dt-table tbody tr.is-active td { box-shadow: inset 2px 0 0 var(--verdigris); }
+.dt-check { width: 38px; text-align: center; }
+.dt-check input { cursor: pointer; }
+
+.dt-state {
+  padding: 22px 14px; text-align: center;
+  font-size: 12.5px; color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+}
+.dt-error { margin: 10px 14px 0; }
+
+.dt-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--panel-2) 45%, transparent);
+  font-size: 11.5px; color: var(--muted);
+}
+.dt-count { font-family: var(--font-mono); }
+.dt-selcount { color: var(--verdigris); }
+.dt-size { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.dt-size .select { padding: 3px 6px; font-size: 11.5px; width: auto; }
+.dt-pager { display: inline-flex; align-items: center; gap: 4px; }
+.dt-page-btn {
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: transparent; color: var(--muted); cursor: pointer; font-size: 14px;
+}
+.dt-page-btn:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+.dt-page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.dt-page-now { font-family: var(--font-mono); min-width: 44px; text-align: center; }
+
+/* The list now owns the whole content column. */
+.page-full { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+@media (max-width: 640px) {
+  .dt-top { padding: 10px; }
+  .dt-filter { max-width: none; flex-basis: 100%; order: 3; }
+  .dt-tools { margin-left: 0; }
+  .dt-foot { padding: 8px 10px; gap: 8px; }
+  .dt-size { margin-left: 0; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   RECORD DRAWER
+   ══════════════════════════════════════════════════════════════════════════ */
+.rd { position: fixed; inset: 0; z-index: 70; }
+.rd-backdrop {
+  position: absolute; inset: 0;
+  background: #0009;
+  animation: rd-fade 160ms ease-out;
+}
+@keyframes rd-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.rd-panel {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  /* Comfortable on a desktop, the whole width on a phone, never wider than the
+     viewport — so it cannot be the thing that makes the page scroll sideways. */
+  width: min(var(--rd-w, 520px), 100vw);
+  display: flex; flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  box-shadow: -18px 0 50px #00000070;
+  animation: rd-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
+  outline: 0;
+}
+@keyframes rd-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .rd-backdrop, .rd-panel { animation: none; }
+}
+
+.rd-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 14px 12px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+.rd-title {
+  margin: 0; flex: 1 1 auto; min-width: 0;
+  font-family: var(--font-display); font-size: 14px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rd-close {
+  flex: none; width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.rd-close:hover { background: var(--panel-2); color: var(--text); }
+
+.rd-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px 18px 22px; }
+/* The detail markup came out of a .card, which drew its own frame. Inside the
+   drawer the panel IS the frame, so the inner one is dropped. */
+.rd-body > .card { border: 0; background: none; padding: 0; margin: 0; }
+
+@media (max-width: 640px) {
+  .rd-panel { width: 100vw; }
+  .rd-head { padding: 12px 10px 10px 14px; }
+  .rd-body { padding: 12px 14px 18px; }
+}
+
+/* Page-supplied toolbar controls sit beside the built-in filter, so they need
+   a sensible basis rather than the full width an .input would take. */
+.dt-tools .dt-tool-input { width: clamp(140px, 22vw, 260px); }
+.dt-tools .input, .dt-tools .select { padding: 6px 9px; font-size: 12.5px; }
+@media (max-width: 640px) { .dt-tools .dt-tool-input { width: 100%; } }
+
+/* The gap between the transcript and the activity panel belongs to the panel
+   only while the panel is there. As a permanent right margin it held .msgs
+   22px off the playground edge even with the drawer closed — measured, and it
+   was exactly the gap that stopped the conversation scrollbar sitting at the
+   true edge. */
+.playground-body > .act-drawer { margin-right: 0; }
+.playground-body > .act-drawer.is-open { margin-right: 22px; }
+@media (max-width: 900px) { .playground-body > .act-drawer.is-open { margin-right: 14px; } }
+@media (max-width: 640px) { .playground-body > .act-drawer.is-open { margin-right: 10px; } }
+
+/* The vendored AnimatedList ships its own scrollbar colour (a purple from its
+   demo). Its list does not scroll here, but the rule still applies to it — so
+   it is brought back onto the app's tokens rather than left as the one
+   scrollbar that does not match. */
+.scroll-list::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.scroll-list::-webkit-scrollbar-track { background: transparent; }

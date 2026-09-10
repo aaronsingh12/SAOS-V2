@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { toast } from '../components/toast.js';
-import { SkeletonLines, EmptyState, LoadingRegion } from '../components/states.jsx';
+import { EmptyState, LoadingRegion } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
+import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
 
 /**
  * Transport — the update sets NowHelpAssist created, and what is in them.
@@ -17,6 +19,28 @@ import ScopeBadge from '../components/ScopeBadge.jsx';
  * differences when it does not match. A blob would have to re-implement that
  * check on the client to know whether it was handing over something real.
  */
+
+/* `text` is what sorting and filtering see, so a set whose count is missing
+   sorts by the words shown rather than by an empty string. */
+const SET_COLUMNS = [
+  { key: 'set', header: 'Set', width: 340, text: (s) => s.setName,
+    cell: (s) => (
+      <>
+        {s.setName}
+        <div className="mono" style={{ color: 'var(--muted)', fontSize: 11 }}>
+          {s.sessionTitle || 'session removed'}
+          {s.parentSet && ' · batched'}
+        </div>
+      </>
+    ) },
+  { key: 'scope', header: 'Scope', width: 190, text: (s) => s.scope || '',
+    cell: (s) => <ScopeBadge scope={s.scope} /> },
+  { key: 'updates', header: 'Updates', width: 170,
+    text: (s) => (s.present ? String(s.updateCount ?? '?') : 'deleted on instance'),
+    cell: (s) => (s.present
+      ? <span className="mono">{s.updateCount ?? '?'}</span>
+      : <span className="badge red">deleted on instance</span>) },
+];
 
 export default function Transport() {
   const [data, setData] = useState(null);
@@ -65,51 +89,29 @@ export default function Transport() {
         they are data, and no update set has ever contained them.
       </div>
 
-      <div className="split">
-        <div className="card">
-          <div className="spread card-title">
-            <span>Captured sets</span>
-            <button className="btn sm ghost" onClick={load}>Refresh</button>
-          </div>
-          {loading ? <><SkeletonLines lines={4} /><LoadingRegion label="Loading captured sets" /></> : sets.length === 0 ? (
-            <EmptyState
-              title="Nothing captured yet"
-              hint="Turn on Capture changes in an agent session, then make a configuration change. A set is created the first time there is something to put in it."
-            />
-          ) : (
-            <table className="table">
-              <thead><tr><th>Set</th><th>Scope</th><th>Updates</th></tr></thead>
-              <tbody>
-                {sets.map((s) => (
-                  <tr
-                    key={s.setSysId}
-                    className={`click${selected?.setSysId === s.setSysId ? ' selected' : ''}`}
-                    onClick={() => open(s)}
-                  >
-                    <td>
-                      {s.setName}
-                      <div className="mono" style={{ color: 'var(--muted)', fontSize: 11 }}>
-                        {s.sessionTitle || 'session removed'}
-                        {s.parentSet && ' · batched'}
-                      </div>
-                    </td>
-                    <td><ScopeBadge scope={s.scope} /></td>
-                    <td>
-                      {s.present
-                        ? <span className="mono">{s.updateCount ?? '?'}</span>
-                        : <span className="badge red">deleted on instance</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        <div className="card">
-          {!selected ? (
-            <EmptyState title="Select a set" hint="Its contents — every update that would travel — are listed here." />
-          ) : !selected.present ? (
+      {/* The captured sets, full width. Nothing is reserved beside the list:
+          a set opens in a drawer, so the page is the list until one is asked for. */}
+      <div className="page-full">
+        <DataTable
+          title="Captured sets"
+          rows={sets}
+          loading={loading}
+          getRowId={(s) => s.setSysId}
+          activeId={selected ? selected.setSysId : null}
+          onRowClick={open}
+          filterPlaceholder="Filter captured sets…"
+          empty="Nothing captured yet. Turn on Capture changes in an agent session, then make a configuration change — a set is created the first time there is something to put in it."
+          toolbar={<button className="btn sm ghost" onClick={load}>Refresh</button>}
+          columns={SET_COLUMNS}
+        />
+        {/* The set's contents — the same JSX as before, in a dismissible drawer. */}
+        <RecordDrawer
+          open={Boolean(selected)}
+          onClose={() => { setSelected(null); setContents(null); }}
+          title={selected ? selected.setName : 'Update set'}
+          width={620}
+        >
+          {!selected ? null : !selected.present ? (
             <div className="note warn">
               <b>{selected.setName}</b> was created by NowHelpAssist but no longer exists on this
               instance. It was deleted there, not here — nothing was lost locally, and nothing can be exported.
@@ -119,7 +121,7 @@ export default function Transport() {
           ) : contents ? (
             <>
               <div className="spread card-title">
-                <span>{contents.set.name}</span>
+                <span />
                 <button className="btn sm primary" onClick={() => download(selected)}>Export XML</button>
               </div>
               <dl className="kv" style={{ marginBottom: 14 }}>
@@ -159,7 +161,7 @@ export default function Transport() {
               )}
             </>
           ) : null}
-        </div>
+        </RecordDrawer>
       </div>
     </div>
   );

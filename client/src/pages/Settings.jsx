@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AGENT_PREFS_SLOT_ID } from '../components/agentRail.js';
 import { api } from '../api.js';
 import { toast } from '../components/toast.js';
 import { DisconnectedBanner } from '../components/states.jsx';
@@ -142,6 +143,24 @@ export default function Settings() {
           {saving ? 'Saving…' : 'Save settings'}
         </button>
         {error && <p className="error-text">{error}</p>}
+      </div>
+
+      {/*
+        * AGENT BEHAVIOUR — the two switches that used to sit in the navigation.
+        *
+        * Relocated, not reimplemented. The slot below is filled by AgentChat
+        * through the same portal seam the chat list and skills already use, so
+        * these are the SAME checkboxes bound to the SAME capture/autoApprove
+        * state and the same handlers that talk to the same endpoints. Nothing
+        * about approval or capture logic changed; only where they are drawn.
+        */}
+      <div className="card">
+        <div className="card-title">Agent behaviour</div>
+        <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--muted)' }}>
+          How the agent treats changes it makes on your behalf. Both apply to the
+          next turn; a turn already running keeps the settings it started with.
+        </p>
+        <div id={AGENT_PREFS_SLOT_ID} className="prefs-slot" />
       </div>
 
       <div className="card">

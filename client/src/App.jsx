@@ -22,6 +22,8 @@ import ConfirmDialog from './components/ConfirmDialog.jsx';
 import MeetingDock from './components/MeetingDock.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { RequiresInstance } from './components/states.jsx';
+import Sidebar from './components/Sidebar.jsx';
+import PlaygroundBackground from './components/PlaygroundBackground.jsx';
 
 const TITLES = {
   '/': 'Dashboard',
@@ -81,6 +83,19 @@ function Topbar({ title }) {
 function Shell() {
   const { pathname } = useLocation();
   const title = TITLES[pathname] || 'NowHelpAssist';
+  /*
+   * The Agent page is the one immersive route: no topbar, no content padding,
+   * so the playground background reaches every edge of the area beside the
+   * sidebar.
+   *
+   * The Topbar COMPONENT is untouched and still renders on all twelve other
+   * routes — this decides where it is drawn, not what it does. Its readouts
+   * come from useHealth and useBinding, which are module-level shared stores
+   * with refcounted subscribers: not mounting one subscriber here changes
+   * nothing about the binding, and AgentChat is itself a useHealth subscriber,
+   * so the health poller keeps running on this route regardless.
+   */
+  const immersive = pathname === '/agent';
 
   // D-4 — the tab says which page you left open. With eight routes behind one
   // title, a pinned NowHelpAssist tab was unidentifiable among its own siblings.
@@ -92,36 +107,25 @@ function Shell() {
 
   return (
     <div className="shell">
-      <aside className="sidebar">
-        {/* The wordmark is unchanged; the mark is the same file the browser
-            tab loads, so the two can never drift apart. The subtitle stays on
-            its own full-width line — putting it beside the mark cost it 35px
-            and broke it onto two. */}
-        <div className="logo">
-          <span className="logo-row">
-            <img className="logomark" src="/favicon.svg" alt="" width="26" height="26" aria-hidden="true" />
-            <span>Now<span className="assist">HelpAssist</span></span>
-          </span>
-          <span className="logo-sub">agentic servicenow studio</span>
-        </div>
-        <NavLink to="/" end className="navlink">Dashboard</NavLink>
-        <NavLink to="/agent" className="navlink">Agent</NavLink>
-        <NavLink to="/incidents" className="navlink">Incidents</NavLink>
-        <NavLink to="/catalog" className="navlink">Catalog</NavLink>
-        <NavLink to="/flows" className="navlink">Flows</NavLink>
-        <NavLink to="/sla" className="navlink">SLA</NavLink>
-        <NavLink to="/access" className="navlink">ACL</NavLink>
-        <NavLink to="/tables" className="navlink">Tables</NavLink>
-        <NavLink to="/meetings" className="navlink">Meetings</NavLink>
-        <NavLink to="/applications" className="navlink">Applications</NavLink>
-        <NavLink to="/transport" className="navlink">Transport</NavLink>
-        <NavLink to="/audit" className="navlink">Audit</NavLink>
-        <NavLink to="/settings" className="navlink">Settings</NavLink>
-        <div className="sidebar-foot">v1.0</div>
-      </aside>
+      <Sidebar />
       <div className="main">
-        <Topbar title={title} />
-        <div className="content">
+        {/*
+          * THE SHARED PLAYGROUND BACKGROUND.
+          *
+          * One instance for the whole application, mounted here rather than
+          * inside any page, so it is a property of the shell and not of a
+          * route. Navigating cannot remount it: the waves keep running while
+          * the content above them swaps, which is what makes the background
+          * read as constant.
+          *
+          * It is a LAYER, not a wrapper. Absolutely placed, so it takes no
+          * space in .main's flex flow and no page had to be restructured to
+          * sit "inside" it; pointer-events: none, so it can never take a click
+          * meant for a form, a table row or a button above it.
+          */}
+        <PlaygroundBackground />
+        {!immersive && <Topbar title={title} />}
+        <div className="content" hidden={immersive}>
           {/* Keyed on the path so navigating away clears a caught error — a
               boundary that latches means one bad page bricks the session. */}
           <ErrorBoundary key={pathname} where={title}>
@@ -138,7 +142,6 @@ function Shell() {
                 banner instead. */}
             <Routes>
               <Route path="/" element={<Dashboard />} />
-              <Route path="/agent" element={<AgentChat />} />
               <Route path="/incidents" element={<RequiresInstance what="Incident Management"><Incidents /></RequiresInstance>} />
               <Route path="/catalog" element={<RequiresInstance what="Catalog Management"><Catalog /></RequiresInstance>} />
               <Route path="/flows" element={<RequiresInstance what="Flow Designer"><Flows /></RequiresInstance>} />
@@ -156,6 +159,34 @@ function Shell() {
               <Route path="/audit" element={<Audit />} />
               <Route path="/settings" element={<Settings />} />
             </Routes>
+          </ErrorBoundary>
+        </div>
+
+        {/*
+          * THE AGENT PAGE IS MOUNTED ONCE, FOR THE WHOLE SESSION.
+          *
+          * Its chats, tasks, skills, history and the two turn switches are
+          * required to be in the global sidebar on EVERY route, and all of
+          * that state lives here — the session id, the loaded list, the search
+          * hits, the running flag that makes rows inert mid-turn, the capture
+          * and auto-approve values re-read on every session switch. The
+          * alternative was hoisting the entire turn engine, SSE callbacks and
+          * all, into a provider: a rewrite of working code to change where a
+          * panel is drawn.
+          *
+          * So the component simply never unmounts. Only its VISIBILITY is
+          * routed. Nothing inside it changed; its portals keep filling the
+          * sidebar from wherever you are, and a turn started on /agent now
+          * survives a trip to Incidents instead of being torn down mid-stream.
+          *
+          * Its own boundary, because it is no longer inside the routed one —
+          * and unkeyed, because latching is the right behaviour here: this
+          * subtree is not remounted by navigation, so clearing it on a path
+          * change would clear an error nothing had fixed.
+          */}
+        <div className="agent-host" hidden={!immersive}>
+          <ErrorBoundary where="Agent">
+            <AgentChat />
           </ErrorBoundary>
         </div>
       </div>

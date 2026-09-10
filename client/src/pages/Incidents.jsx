@@ -4,6 +4,8 @@ import { confirmDestructive, CONSEQUENCE } from '../components/confirm.js';
 import { toast } from '../components/toast.js';
 import ReferenceField from '../components/ReferenceField.jsx';
 import { SkeletonRows, LoadingRegion, EmptyState } from '../components/states.jsx';
+import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
 
 const EMPTY = {
   short_description: '', description: '', category: '', state: '1',
@@ -14,6 +16,25 @@ const EMPTY = {
 function choicesFor(schema, field) {
   return schema?.fields?.find((f) => f.name === field)?.choices || [];
 }
+
+/* Priority tone. Module level because the column definitions below are. */
+const badgeFor = (p) => (p === '1' ? 'red' : p === '2' ? 'amber' : '');
+
+/*
+ * Columns for the shared table. `text` is what sorting compares and filtering
+ * matches; `cell` is only how it is drawn — so the badges below stay badges
+ * while sorting still works on the underlying value.
+ */
+const INCIDENT_COLUMNS = [
+  { key: 'number', header: 'Number', width: 130, text: (r) => disp(r, 'number'),
+    cell: (r) => <span className="mono">{disp(r, 'number')}</span> },
+  { key: 'short_description', header: 'Short description', width: 420,
+    text: (r) => disp(r, 'short_description') },
+  { key: 'state', header: 'State', width: 130, text: (r) => disp(r, 'state'),
+    cell: (r) => <span className="badge">{disp(r, 'state')}</span> },
+  { key: 'priority', header: 'Pri', width: 80, text: (r) => val(r, 'priority'),
+    cell: (r) => <span className={`badge ${badgeFor(val(r, 'priority'))}`}>{val(r, 'priority')}</span> },
+];
 
 export default function Incidents() {
   const [schema, setSchema] = useState(null);
@@ -43,6 +64,8 @@ export default function Incidents() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters.state, filters.priority]);
 
   const openNew = () => { setForm({ ...EMPTY }); setEditingId(null); setNotice(''); };
+  /* One way to leave the drawer, shared by Escape, the backdrop and Close. */
+  const closeForm = () => { setForm(null); setEditingId(null); };
 
   const openEdit = (r) => {
     setEditingId(val(r, 'sys_id'));
@@ -117,7 +140,6 @@ export default function Incidents() {
   const impactChoices = choicesFor(schema, 'impact');
   const urgencyChoices = choicesFor(schema, 'urgency');
 
-  const badgeFor = (p) => (p === '1' ? 'red' : p === '2' ? 'amber' : '');
 
   return (
     <div className="stack">
@@ -130,72 +152,67 @@ export default function Incidents() {
         </div>
       )}
 
-      <div className="split">
-        <div className="card">
-          <div className="spread" style={{ marginBottom: 12 }}>
-            <div className="card-title" style={{ marginBottom: 0 }}>Incidents</div>
-            <button className="btn primary sm" onClick={openNew}>New incident</button>
-          </div>
-          <div className="row" style={{ marginBottom: 10 }}>
-            <input className="input" style={{ flex: 1 }} placeholder="Search number or description…"
-              value={filters.search}
-              onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-              onKeyDown={(e) => e.key === 'Enter' && load()} />
-            <select className="select" style={{ width: 130 }} value={filters.state}
-              onChange={(e) => setFilters({ ...filters, state: e.target.value })}>
-              <option value="">All states</option>
-              {stateChoices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-            </select>
-            <select className="select" style={{ width: 120 }} value={filters.priority}
-              onChange={(e) => setFilters({ ...filters, priority: e.target.value })}>
-              <option value="">All priority</option>
-              {prioChoices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-            </select>
-          </div>
-          {error && <p className="error-text">{error}</p>}
-          <table className="table">
-            <thead><tr><th>Number</th><th>Short description</th><th>State</th><th>Pri</th></tr></thead>
-            {loading && <SkeletonRows rows={6} cols={4} />}
-            {!loading && <tbody>
-              {rows.map((r) => (
-                <tr key={val(r, 'sys_id')} className={`click ${editingId === val(r, 'sys_id') ? 'selected' : ''}`} onClick={() => openEdit(r)}>
-                  <td className="mono">{disp(r, 'number')}</td>
-                  <td>{disp(r, 'short_description')}</td>
-                  <td><span className="badge">{disp(r, 'state')}</span></td>
-                  <td><span className={`badge ${badgeFor(val(r, 'priority'))}`}>{val(r, 'priority')}</span></td>
-                </tr>
-              ))}
-            </tbody>}
-          </table>
-          {loading && <LoadingRegion label="Loading incidents" />}
-          {/* "Nothing matched" now only ever means nothing matched — the
-              binding is answered by RequiresInstance before we get here. */}
-          {!loading && rows.length === 0 && !error && (
-            <EmptyState
-              title="No incidents match these filters."
-              hint="Clear the search and state filters, or raise one to work against."
-              actionLabel="New incident"
-              onAction={openNew}
-            />
-          )}
-        </div>
-
-        <div className="card">
-          {!form ? (
-            <EmptyState
-              title="Nothing selected."
-              hint="Pick an incident on the left to edit it, or start a new one. Caller, group and assignee resolve live against your instance."
-              actionLabel="New incident"
-              onAction={openNew}
-            />
-          ) : (
+      {/*
+        * The list owns the whole content column now. The right-hand panel that
+        * used to sit beside it — and that read "Nothing selected" whenever it
+        * had nothing to show — is a drawer at the foot of this file.
+        *
+        * The loader, the filters and the records are untouched: DataTable is
+        * handed `rows` exactly as they arrive from load().
+        */}
+      <div className="page-full">
+        <DataTable
+          title="Incidents"
+          rows={rows}
+          loading={loading}
+          error={error}
+          getRowId={(r) => val(r, 'sys_id')}
+          activeId={editingId}
+          onRowClick={openEdit}
+          selectable
+          filterPlaceholder="Filter loaded incidents…"
+          empty="No incidents match these filters."
+          columns={INCIDENT_COLUMNS}
+          toolbar={(
             <>
-              <div className="spread" style={{ marginBottom: 12 }}>
-                <div className="card-title" style={{ marginBottom: 0 }}>
-                  {editingId ? <>Edit <span className="mono">{form._number}</span></> : 'New incident'}
+              <input className="input dt-tool-input" placeholder="Search number or description…"
+                value={filters.search}
+                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && load()} />
+              <select className="select" style={{ width: 130 }} value={filters.state}
+                onChange={(e) => setFilters({ ...filters, state: e.target.value })}>
+                <option value="">All states</option>
+                {stateChoices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </select>
+              <select className="select" style={{ width: 120 }} value={filters.priority}
+                onChange={(e) => setFilters({ ...filters, priority: e.target.value })}>
+                <option value="">All priority</option>
+                {prioChoices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </select>
+              <button className="btn primary sm" onClick={openNew}>New incident</button>
+            </>
+          )}
+        />
+
+        {/*
+          * The same form, the same handlers, the same save and delete — moved
+          * into a drawer so it appears when a record is chosen and takes no
+          * space when one is not. The "Nothing selected" state is gone with the
+          * column that needed it.
+          */}
+        <RecordDrawer
+          open={Boolean(form)}
+          onClose={closeForm}
+          title={editingId ? `Edit ${form?._number ?? ''}` : 'New incident'}
+        >
+          {form && (
+            <>
+              {editingId && (
+                <div className="spread" style={{ marginBottom: 12 }}>
+                  <span />
+                  <button className="btn danger sm" onClick={remove} aria-busy={busy} disabled={busy}>Delete</button>
                 </div>
-                {editingId && <button className="btn danger sm" onClick={remove} aria-busy={busy} disabled={busy}>Delete</button>}
-              </div>
+              )}
               <div className="field">
                 <label className="label">Short description</label>
                 <input className="input" value={form.short_description} onChange={(e) => setForm({ ...form, short_description: e.target.value })} />
@@ -253,13 +270,13 @@ export default function Incidents() {
                 <button className="btn primary" onClick={submit} aria-busy={busy} disabled={busy || !form.short_description}>
                   {busy ? 'Saving…' : editingId ? 'Save changes' : 'Create incident'}
                 </button>
-                <button className="btn ghost" onClick={() => { setForm(null); setEditingId(null); }}>Close</button>
+                <button className="btn ghost" onClick={closeForm}>Close</button>
               </div>
               {notice && <p className="ok-text">{notice}</p>}
               {error && <p className="error-text">{error}</p>}
             </>
           )}
-        </div>
+        </RecordDrawer>
       </div>
     </div>
   );

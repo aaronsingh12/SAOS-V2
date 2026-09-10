@@ -42,37 +42,73 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 }
 
 /* ── App shell ── */
-.shell { display: grid; grid-template-columns: 232px 1fr; height: 100vh; }
+/* ── App shell ────────────────────────────────────────────────────────────
+   The column width is a custom property so collapsing is one animated value on
+   one element: the playground grows in the same frame the column shrinks, so
+   the two read as a single movement rather than a gap opening between them.
+
+   Three widths, not two. Collapsed is a 68px ICON RAIL, not zero — every
+   destination stays one click away, which a hidden column cannot manage. Below
+   900px the rail would still cost width the content needs, so the column
+   leaves the grid entirely and becomes an overlay drawer. */
+.shell {
+  --nav-w: 272px;
+  --nav-w-collapsed: 72px;
+  display: grid;
+  grid-template-columns: var(--nav-w) minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;              /* mobile browser chrome eats vh; dvh does not */
+  transition: grid-template-columns 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.shell:has(.sidebar.is-collapsed) { --nav-w: var(--nav-w-collapsed); }
+/* On mobile the drawer floats over the page, so the grid keeps no column. */
+.shell:has(.sidebar.is-mobile) { grid-template-columns: minmax(0, 1fr); }
+@media (prefers-reduced-motion: reduce) { .shell { transition: none; } }
+
 .sidebar {
   background: var(--panel);
   border-right: 1px solid var(--line);
+  overflow: hidden;
+  min-width: 0;
+  transition: border-color 200ms;
+}
+/* The inner keeps its natural width inside the clipping shell, so labels do
+   not re-wrap on every frame of the collapse — animating a container's width
+   reflows its text, and reflowing thirteen labels 60 times a second is the
+   content-jumping this had to avoid. */
+.sidebar-inner {
+  width: var(--nav-w);
+  height: 100%;
   display: flex; flex-direction: column;
-  padding: 18px 12px;
-  gap: 4px;
+  min-height: 0;
+  transition: width 260ms cubic-bezier(0.32, 0.72, 0, 1);
 }
-.logo {
-  font-family: var(--font-display);
-  font-weight: 700; font-size: 18px; letter-spacing: 0.2px;
-  padding: 4px 10px 16px;
-}
-/* The mark sits beside the wordmark, on its own row. The subtitle keeps the
-   full 188px it had before — sharing the row with the mark left it 153px and
-   wrapped "studio" onto a second line, which moved every nav item down. */
-.logo-row { display: flex; align-items: center; gap: 9px; }
-.logomark { flex: none; }
-.logo .assist { color: var(--verdigris); }
-.logo-sub { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 2px; }
-.navlink {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 10px; border-radius: var(--radius-sm);
-  color: var(--muted); font-weight: 500; font-size: 13.5px;
-  transition: background 120ms, color 120ms;
-}
-.navlink:hover { background: var(--panel-2); color: var(--text); }
-.navlink.active { background: var(--panel-2); color: var(--text); box-shadow: inset 2px 0 0 var(--verdigris); }
-.sidebar-foot { margin-top: auto; padding: 10px; font-size: 11px; color: var(--muted); }
+.sidebar.is-collapsed .sidebar-inner { width: var(--nav-w-collapsed); }
+@media (prefers-reduced-motion: reduce) { .sidebar-inner { transition: none; } }
 
-.main { display: flex; flex-direction: column; min-width: 0; }
+/* Off-canvas drawer below 900px. Fixed rather than absolute so it is reachable
+   whatever the page beneath is doing with scroll. */
+.sidebar.is-mobile {
+  position: fixed; inset: 0 auto 0 0; z-index: 60;
+  width: min(300px, 86vw);
+  transform: translateX(-100%);
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  box-shadow: 0 0 40px #00000080;
+}
+.sidebar.is-mobile.is-drawer-open { transform: none; }
+.sidebar.is-mobile .sidebar-inner { width: 100%; }
+.nav-backdrop {
+  position: fixed; inset: 0; z-index: 55;
+  background: #000000a6;
+  animation: nav-fade 180ms ease-out;
+}
+@keyframes nav-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* The shared background is absolutely placed against this, so .main is the
+   positioned ground for it. Everything else in here sits above it via z-index,
+   never by being wrapped in it. */
+.main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 22px; border-bottom: 1px solid var(--line);
@@ -100,6 +136,11 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .instance-pill.status-busy { color: var(--blue); }
 @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
 .content { padding: 22px; overflow-y: auto; flex: 1; }
+/* The Agent route only. No padding, so the playground background reaches the
+   sidebar on one side and the window on the other three; no scrolling here,
+   because the transcript inside does its own and two nested scrollers on one
+   axis is how you get a page that scrolls when you meant to scroll a list. */
+.content-immersive { padding: 0; overflow: hidden; }
 
 /* ── Layout helpers ── */
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -116,7 +157,9 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 /* A flex child will not shrink below its content unless told it may. This is
    what actually lets long text inside a .row or .spread wrap. */
 .row > *, .spread > * { min-width: 0; }
-@media (max-width: 1100px) { .split, .grid2, .grid3 { grid-template-columns: 1fr; } .shell { grid-template-columns: 200px 1fr; } }
+/* Superseded by the responsive section at the end of this file. The old
+   rule hardcoded grid-template-columns and so beat the --nav-w variable the
+   collapse animates, which meant the column could not collapse below 1100px. */
 
 /* ── Cards ── */
 .card {
@@ -233,7 +276,13 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 
 /* ── Agent chat ── */
 .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 120px); }
-.msgs { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 4px 2px 16px; }
+/* min-height: 0 is load-bearing and its absence was a real bug. A flex item
+   defaults to min-height: auto, so this could not shrink below its content:
+   a transcript taller than the window grew .chat-wrap, .agent-layout and
+   .main past 100vh instead of scrolling inside itself. Measured at 1600x1000
+   with a fourteen-row conversation — .main came out 1296px tall in a 904px
+   window, and .msgs never scrolled at all. */
+.msgs { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 4px 2px 16px; }
 .msg { max-width: 780px; }
 .msg.user { align-self: flex-end; }
 .msg.user .bubble { background: var(--verdigris-dim); border: 1px solid #3a6a50; }
@@ -283,23 +332,28 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; word-break: break-word; }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
+/* Scrollbar treatment lives in experience.css (SCROLLBARS section) so the
+   dim-at-rest / brighter-on-approach rules are all in one place. */
 
 /* ── Agent session rail (A-2) ───────────────────────────────────────────
    Extends the existing token system; nothing here introduces a new colour,
    font or radius. The rail reuses the sidebar's own visual language — panel
    ground, verdigris inset for the active row, amber only where a mutation is
    being counted — so it reads as part of the same app rather than a bolt-on. */
+/* The rail moved to the app's left column and the topbar is not drawn on this
+   route, so the playground IS the content area rather than a card sitting
+   inside one: no border, no radius, no inset. It keeps position: relative
+   only because that is the ground the Gradient Waves layer is placed against,
+   and the height comes from the flex parent rather than a viewport
+   calculation — calc(100vh - 120px) was measuring a topbar that is no longer
+   there. */
 .agent-layout {
-  display: grid;
-  grid-template-columns: 244px 1fr;
-  gap: 16px;
-  height: calc(100vh - 120px);
+  position: relative;
+  display: flex; flex-direction: column;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
-@media (max-width: 1100px) { .agent-layout { grid-template-columns: 200px 1fr; } }
 
 .session-rail {
   display: flex; flex-direction: column; min-height: 0;
@@ -393,8 +447,16 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
   border-radius: 6px; padding: 8px 11px; font-size: 12px; color: var(--muted);
 }
 
-/* The chat column now lives inside .agent-layout and owns its own height. */
-.agent-layout .chat-wrap { height: auto; min-height: 0; }
+/* The chat column now lives inside .agent-layout and owns its own height.
+   z-index puts it above the background layer; without the stacking context a
+   later sibling would paint over the transcript. */
+.agent-layout .chat-wrap {
+  position: relative; z-index: 1;
+  flex: 1 1 auto; height: auto; min-height: 0;
+  /* The inset the container no longer has. On the column, not the parent, so
+     it indents the TEXT without indenting the background behind it. */
+  padding: 18px 22px 20px;
+}
 
 /* ── Catalog: policy builder and variable editor (Track C) ──────────────
    Every colour, radius, font and spacing step below already exists in the
@@ -1420,3 +1482,140 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .ab-bad { background: rgba(197, 48, 48, 0.14); color: #c53030; }
 .ab-nochange { margin-top: 6px; font-weight: 600; }
 .ab-problem { font-size: 13px; margin: 4px 0; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   RESPONSIVE — the whole app, not just the column
+
+   The rules below were written against measured overflow at 1440 / 1200 /
+   1024 / 768 / 480, not guessed at. The desktop layout is deliberately
+   untouched above 1180px.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Nothing may push the document sideways. Every scrolling region in this app
+   is a deliberate one (.msgs, .nav-scroll, .act-drawer-body, table wrappers);
+   the page itself is not. */
+html, body { max-width: 100%; overflow-x: hidden; }
+
+/* Long unbroken strings — sys_ids, URLs, table names — are the most common
+   cause of a card wider than its column. */
+.card, .bubble, .tool-card, .approval-card, .kv dd, .rail-title, .rail-snippet {
+  overflow-wrap: anywhere;
+}
+
+/* Tables get a scrolling wrapper of their own rather than widening the page.
+   The existing .md-table-wrap already did this for markdown; this extends the
+   same strategy to the app's own tables. */
+.table-wrap, .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.table { min-width: 520px; }        /* below this a data table stops being readable */
+
+/* ── ~1180px and down: laptops ──────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .shell { --nav-w: 244px; }
+  .split { grid-template-columns: minmax(0, 320px) minmax(0, 1fr); }
+}
+
+/* ── ~1024px and down: small laptops / large tablets ───────────────────── */
+@media (max-width: 1024px) {
+  .split, .grid2, .grid3 { grid-template-columns: minmax(0, 1fr); }
+  .content { padding: 16px; }
+  .topbar { padding: 10px 16px; gap: 10px; flex-wrap: wrap; }
+  .instance-pill { max-width: 240px; }
+  /* The drawer would leave the transcript too narrow to read. */
+  /* Panel width is clamp()ed on .act-drawer; nothing to override here. */
+}
+
+/* ── ~900px and down: the column becomes a drawer (see .sidebar.is-mobile) ─ */
+@media (max-width: 900px) {
+  /* Room for the fixed drawer button, which sits over the top-left corner. */
+  .topbar { padding-left: 60px; }
+  .agent-layout .chat-wrap { padding: 14px 14px 16px; }
+  .welcome { padding-bottom: 2vh; }
+
+  /* The activity drawer stops being a column and becomes a sheet over the
+     transcript — at this width a 260px panel beside the chat leaves neither
+     usable. It is still not covering anything while closed. */
+  .act-drawer.is-open { width: 0; }
+  .act-drawer.is-open .act-drawer-inner {
+    position: fixed; inset: auto 10px 96px 10px;
+    width: auto; max-height: 55vh; margin-left: 0;
+    z-index: 30;
+  }
+}
+
+/* ── ~768px and down: tablets ──────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .content { padding: 12px; }
+  .card { padding: 12px; }
+  .grid2, .grid3, .split { gap: 12px; }
+  .topbar h1 { font-size: 14px; }
+  /* The status pills wrap under the title instead of squeezing it away. */
+  .topbar .instance-pill { max-width: 100%; }
+  .msg { max-width: 100%; }
+  .bubble, .tool-card, .approval-card { max-width: 100%; }
+  .composer-line { max-width: 100%; }
+  .welcome-sub { font-size: 13.5px; }
+  /* Row/spread helpers stop forcing their children onto one line. */
+  .spread { flex-wrap: wrap; row-gap: 8px; }
+}
+
+/* ── ~640px and down: phones ───────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .agent-layout .chat-wrap { padding: 10px 10px 12px; }
+  .msgs { padding: 4px 0 12px; }
+
+  /* The composer keeps the send control and the input; the indicator moves
+     under it rather than competing for a 320px row. */
+  .composer-line { flex-wrap: wrap; gap: 8px; }
+  .composer-line > .composer-dock { flex: 1 1 100%; }
+  .act-dot { width: 100%; height: 44px; justify-content: flex-start; }
+
+  /* The lower bar drops the model readout first — it is a readout, and the
+     controls beside it are not. */
+  .composer-model-name { display: none; }
+  .composer-bar { gap: 6px; }
+
+  .welcome-mark { display: none; }
+  .welcome-headline { max-width: 100%; }
+
+  .act-drawer.is-open .act-drawer-inner { inset: auto 8px 88px 8px; max-height: 50vh; }
+
+  /* Buttons stay tappable rather than shrinking to fit a row. */
+  .btn { min-height: 34px; }
+  .chip { max-width: 100%; }
+}
+
+/* ── Short viewports ───────────────────────────────────────────────────── */
+@media (max-height: 640px) {
+  .nav-brand { padding-top: 10px; padding-bottom: 8px; }
+  .nav-user { padding-top: 8px; margin-bottom: 6px; }
+  .nav-panel .nav-slot { max-height: 32vh; }
+}
+
+/* A wide table should scroll inside its own card, not drag the whole page
+   sideways. Measured at 480px: the scrolling ancestor was .content, because
+   `overflow-y: auto` with a visible x-axis computes x to auto — so every card
+   on the page moved when the table did.
+
+   Scoped with :has() rather than by editing each page's markup: Incidents,
+   SLA, ACL, Catalog, Flows and Audit all render `.card > .table` already, and
+   none of those files needs to change for this to work. */
+@media (max-width: 900px) {
+  .card:has(> .table) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+
+/* The meeting-capture dock is fixed to the bottom-right of the viewport, and
+   the Agent playground puts its composer and activity indicator in exactly
+   that corner. Measured: at 1200px and 1024px the dock's pill sat on top of
+   the activity indicator's centre — elementFromPoint at the indicator returned
+   `.dock-pill`, so the panel could not be opened by clicking it at all. It
+   only worked at 1440px, where the wider indicator's midpoint happened to fall
+   clear of the pill.
+
+   Lifted above the composer row, and only while the playground is the visible
+   route, so the two fixed corners stop competing. Raising a z-index would not
+   have helped: both controls are interactive, so whichever won would still be
+   covering the other. */
+body:has(.agent-host:not([hidden])) .dock { bottom: 104px; }
+@media (max-width: 640px) {
+  body:has(.agent-host:not([hidden])) .dock { bottom: 150px; }
+}

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, sse } from '../api.js';
 import { logToServer } from '../logging.js';
 import { useHealth } from '../hooks/useHealth.js';
@@ -18,17 +19,15 @@ import AppBuildPanel from '../components/AppBuildPanel.jsx';
 import { writeOutcome, captureReason, approvalProvenance } from '../components/writeOutcome.js';
 import { elevationOutcome } from '../components/elevationOutcome.js';
 import EvidencePanel from '../components/EvidencePanel.jsx';
-import ActivityPanel from '../components/ActivityPanel.jsx';
 import PlanPanel from '../components/PlanPanel.jsx';
 import SkillsPanel from '../components/SkillsPanel.jsx';
 import TaskHistory from '../components/TaskHistory.jsx';
-import { rowFromFrame, mergeRows, deriveStatus, STATUS_LABEL, AGENT_STATUS } from '../components/activity.js';
-
-const SAMPLES = [
-  'Create a "Laptop Request" catalog item with 6 sensible variables including a reference to sys_user and a model select box',
-  'Show me all critical incidents that are assigned to no one',
-  'Design a flow: when a P1 incident is created, notify the assignment group manager',
-];
+import { rowFromFrame, mergeRows, deriveStatus } from '../components/activity.js';
+import { useAgentSlots } from '../components/agentRail.js';
+import Composer from '../components/Composer.jsx';
+import { ActivityIndicator, ActivityDrawer } from '../components/ActivityDock.jsx';
+import AgentWelcome from '../components/AgentWelcome.jsx';
+import { AnimatedItem } from '../components/AnimatedList.jsx';
 
 const SESSION_KEY = 'nowhelpassist.sessionId';
 // Read once, for anyone who had a chat open across the rename. Cleared on the
@@ -94,6 +93,16 @@ export default function AgentChat() {
    * "Build with the agent".
    */
   const [params, setParams] = useSearchParams();
+  /*
+   * Picking a chat IS opening the playground.
+   *
+   * The rail lives in the navigation now, so it can be clicked from any route —
+   * and selecting a conversation while looking at Incidents used to change the
+   * session behind a page you could not see. Navigation is the only thing added
+   * here: the same setSessionId, the same newChat, the same persistence.
+   */
+  const navigate = useNavigate();
+  const openAgent = () => { if (window.location.pathname !== '/agent') navigate('/agent'); };
   const [sessionId, setSessionId] = useState(
     () => params.get('session')
       || localStorage.getItem(SESSION_KEY)
@@ -133,6 +142,9 @@ export default function AgentChat() {
    */
   const [taskId, setTaskId] = useState(null);
   const [showEvidence, setShowEvidence] = useState(false);
+  /* Whether the activity drawer is open. Purely presentational and local: it
+     changes where existing activity state is DRAWN, never what it contains. */
+  const [activityOpen, setActivityOpen] = useState(false);
 
   /*
    * EXPERIENCE §6 — THE ACTIVITY TIMELINE FOR THE TASK ON SCREEN.
@@ -150,7 +162,16 @@ export default function AgentChat() {
   const [activeSkills, setActiveSkills] = useState([]);
   const [progress, setProgress] = useState(null);
   const [serverStatus, setServerStatus] = useState(null);
-  const [rail, setRail] = useState('chats');       // chats | tasks | skills
+  /*
+   * Where the rail below is DRAWN — the app's left column, not this page.
+   *
+   * Only the DOM position moves. The markup, the handlers and every piece of
+   * state they close over stay exactly where they were, which is why nothing
+   * under here had to be rewritten to relocate it.
+   */
+  /* Where each pane is DRAWN. Only the DOM position moves; the markup, the
+     handlers and every piece of state they close over stay here. */
+  const slots = useAgentSlots();
   /*
    * The task the frames arriving RIGHT NOW belong to, as a ref.
    *
@@ -374,12 +395,80 @@ export default function AgentChat() {
    * topbar with it. Setting scrollTop on the one container that should move
    * cannot do that, whatever the layout above it is doing.
    */
-  useEffect(() => {
+  /*
+   * TWO DIFFERENT SCROLLS, and they used to be one.
+   *
+   * OPENING a conversation must land on the newest message: a chat that opens
+   * at the top of a forty-message history shows you the oldest thing you have
+   * already read. That jump is INSTANT and unconditional — it is a starting
+   * position, not an animation, and smooth-scrolling a long transcript on open
+   * makes the newest message arrive after a visible slide.
+   *
+   * FOLLOWING a live turn is different, and it must not fight the reader. The
+   * old rule scrolled to the bottom on every change to `messages`, which meant
+   * scrolling up to re-read something during a streaming answer yanked you back
+   * down on the next frame. So the tail is followed only when you were already
+   * near it; scroll up and it leaves you alone until you come back.
+   */
+  const nearBottomRef = useRef(true);
+  const onMsgsScroll = () => {
     const el = msgsRef.current;
     if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
+
+  /*
+   * Hold the bottom while the transcript settles.
+   *
+   * A single scrollTop lands short: markdown, tool cards and their <pre>
+   * blocks lay out after the commit that added them, so the container grows
+   * underneath the scroll that just happened. Measured — 93px short on opening
+   * a fourteen-row chat, 25px short at the end of a turn.
+   *
+   * Bounded at 30 frames, and every frame re-checks nearBottomRef, which
+   * onMsgsScroll clears the instant anyone scrolls up. So this can never
+   * become a loop that drags a reader back down.
+   */
+  const pinBottom = useCallback((smooth) => {
+    const el = msgsRef.current;
+    if (!el) return undefined;
+    let frame = 0;
+    let raf = 0;
+    const step = () => {
+      const node = msgsRef.current;
+      if (!node || !nearBottomRef.current) return;
+      if (smooth && frame === 0) node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
+      else node.scrollTop = node.scrollHeight;
+      if (++frame < 30) raf = requestAnimationFrame(step);
+    };
+    step();
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  /*
+   * Opening: land on the latest, instantly.
+   *
+   * Re-asserted across a few frames rather than set once, because the
+   * transcript is still growing when the effect first runs — markdown, tool
+   * cards and their <pre> blocks lay out after this commit, and a single
+   * scrollTop landed 93px short of the end on a measured fourteen-row chat.
+   *
+   * Bounded, and it yields the moment the reader takes over: every pass checks
+   * nearBottomRef, which onMsgsScroll clears as soon as anyone scrolls up. So
+   * this cannot become a loop that fights you for the first half-second.
+   */
+  useEffect(() => {
+    if (loadingSession) return undefined;
+    nearBottomRef.current = true;
+    return pinBottom(false);
+  }, [sessionId, loadingSession, pinBottom]);
+
+  // Live turns: follow the tail only if the reader is already there.
+  useEffect(() => {
+    if (!nearBottomRef.current) return undefined;
     const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
-  }, [messages]);
+    return pinBottom(smooth);
+  }, [messages, pinBottom]);
 
   const push = (m) => setMessages((ms) => [...ms, { id: uid(), ...m }]);
   const patchMsg = (match, patch) =>
@@ -863,9 +952,18 @@ export default function AgentChat() {
                 + `${evt.held.join(', ')} — so the write was withheld and discarded. Answer above and it will re-plan.`,
             });
             break;
-          // WI-2 — the turn ended on a question only you can answer.
+          /*
+           * WI-2 — the turn ended on a question only you can answer.
+           *
+           * DELIBERATELY RENDERS NOTHING. The frame is still handled here, and
+           * the waiting state itself is untouched: rowFromFrame() above turns
+           * this same frame into a BLOCKED activity row titled "Waiting for
+           * you" before this switch ever runs, deriveStatus() reads that row,
+           * and the composer's indicator shows it. What is gone is the chat
+           * bubble that repeated it a third time — the question the agent asked
+           * is already the message directly above it.
+           */
           case 'awaiting_user':
-            push({ kind: 'system', text: 'Waiting for your answer — nothing was changed on the instance.' });
             break;
           // WI-3 — a write the harness proved is a no-op never reached the gate.
           case 'tool_blocked':
@@ -1009,6 +1107,7 @@ export default function AgentChat() {
 
   const newChat = async () => {
     if (running) return;
+    openAgent();
     const id = crypto.randomUUID();
     try { await api.post('/agent/sessions', { id }); } catch { /* created on first message anyway */ }
     setSessionId(id);
@@ -1104,7 +1203,6 @@ export default function AgentChat() {
    * the durable rows, so the header and the timeline cannot disagree.
    */
   const status = deriveStatus({ running, stopping, rows: activity, serverStatus });
-  const statusLabel = STATUS_LABEL[status] ?? STATUS_LABEL[AGENT_STATUS.IDLE];
   /*
    * §16/§19 — the plan panel's inputs, split out of the one timeline.
    *
@@ -1125,87 +1223,100 @@ export default function AgentChat() {
   });
   const dataflow = activity.filter((r) => r.id.includes(':dataflow:'));
 
+  /*
+   * THE LATEST UPDATE-SET REPORT.
+   *
+   * Derived, not stored: the capture frames are already in `messages` exactly
+   * as they always were, and this reads the last one. No second copy to keep in
+   * sync, and no new event — only the newest is shown because a capture report
+   * supersedes the one before it rather than adding to a list.
+   */
+  const latestCapture = useMemo(
+    () => [...messages].reverse().find((m) => m.kind === 'capture') ?? null,
+    [messages],
+  );
+
   return (
     <div className="agent-layout">
-      <aside className="session-rail">
-        {/*
-          * EXPERIENCE §4/§28 — three things live in this column, and only one at
-          * a time: the chats, this chat's tasks, and the skills.
-          *
-          * Tabs rather than three stacked sections, because all three are lists
-          * that want the whole column. §68 is the constraint that decides it —
-          * the conversation stays primary, so the rail must not grow until it
-          * competes with the transcript for attention.
-          */}
-        <div className="rail-tabs" role="tablist" aria-label="Workspace">
-          {[['chats', 'Chats'], ['tasks', 'Tasks'], ['skills', 'Skills']].map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={rail === id}
-              className={`rail-tab${rail === id ? ' active' : ''}`}
-              onClick={() => setRail(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {rail === 'skills' && (
-          <div className="rail-pane">
-            {/*
-              * §45 — a skill toggled while a turn is running does NOT change
-              * that turn. The task recorded its skill set when it opened; this
-              * changes what the NEXT task sees. The control is disabled while a
-              * turn runs so the UI cannot suggest otherwise.
-              */}
-            <SkillsPanel disabled={running} />
-            {running && (
-              <p className="rail-note">
-                A turn is running. Skill changes apply to the next task — this one keeps the set it started with.
-              </p>
-            )}
-          </div>
-        )}
-
-        {rail === 'tasks' && (
-          <div className="rail-pane">
-            {/*
-              * Opening a past task REPLACES the timeline with that task's
-              * durable projection. Doing that mid-turn would leave the live
-              * stream appending this turn's rows onto another task's list —
-              * two id spaces in one panel, which is exactly the mixing §11
-              * exists to prevent. So the rows are inert while a turn runs, and
-              * the reason is on screen rather than left to be discovered.
-              */}
-            <TaskHistory
-              sessionId={sessionId}
-              currentTaskId={taskId}
-              onOpen={running ? null : openTask}
-              onContinue={running ? null : (prompt) => setInput(prompt)}
-            />
-            {running && (
-              <p className="rail-note">
-                A turn is running. Past tasks open once it finishes — their timelines would otherwise
-                mix with this one’s.
-              </p>
-            )}
-          </div>
-        )}
-
-        <div className="rail-pane" hidden={rail !== 'chats'}>
-        <div className="rail-head">
-          <button className="btn primary sm" onClick={newChat} disabled={running}>New chat</button>
+      {/*
+        * The Gradient Waves are no longer mounted here. They live once in the
+        * app shell (App.jsx) so every route shares one instance and one WebGL
+        * context; this page sits above that layer like every other page does.
+        */}
+      {/*
+        * CAPTURE AND AUTO-APPROVE, AT THE FOOT OF THE NAVIGATION.
+        *
+        * Relocated, not reimplemented: the same two labels, bound to the same
+        * `capture`/`autoApprove` state and the same toggleCapture/toggleAuto
+        * handlers that talk to the same endpoints they always did. They are
+        * agent settings that outlive the page you happen to be looking at,
+        * which is why they read correctly from the column rather than from the
+        * playground.
+        */}
+      {/* Delete Chats stays in the navigation, beside the chat list it clears. */}
+      {slots.actions && createPortal(
+        <div className="agent-actions">
+          {/* The same removeAll the rail head called — relocated, not
+              reimplemented. */}
           <button
             type="button"
-            className="btn ghost sm"
+            className="nav-item nav-danger"
             onClick={removeAll}
             disabled={running || !(sessions?.length)}
             title="Delete every conversation. The audit trail is not affected."
           >
-            Delete chats
+            <svg className="nav-ic" viewBox="0 0 24 24" width="17" height="17" fill="none"
+              stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
+              aria-hidden="true">
+              <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6" />
+            </svg>
+            <span className="nav-label">Delete Chats</span>
           </button>
+        </div>,
+        slots.actions,
+      )}
+
+      {/*
+        * CAPTURE AND AUTO-APPROVE, ON THE PREFERENCES PAGE.
+        *
+        * The same two labels, bound to the same `capture`/`autoApprove` state
+        * and the same toggleCapture/toggleAuto handlers hitting the same
+        * endpoints they always did. Relocated, not reimplemented — there is one
+        * implementation of each and it is this one.
+        */}
+      {slots.prefs && createPortal(
+        <div className="agent-switches">
+          <label
+            className="check"
+            title="Configuration this session changes is moved into an update set named after it, one per scope. Task data — incidents, requests — is never captured, because update sets do not carry data."
+          >
+            <input type="checkbox" checked={capture} onChange={(e) => toggleCapture(e.target.checked)} />
+            Capture changes
+          </label>
+          <label className="check" title="When off, every create/update/delete pauses for your approval — like Claude Code permissions.">
+            <input type="checkbox" checked={autoApprove} onChange={(e) => toggleAuto(e.target.checked)} />
+            Auto-approve mutations
+          </label>
+        </div>,
+        slots.prefs,
+      )}
+
+      {/*
+        * FOUR PORTALS, ONE OWNER.
+        *
+        * The navigation files these under different headings now, so each pane
+        * goes to its own slot instead of one blob going to one place. The
+        * markup inside each is exactly what the old rail rendered — same
+        * components, same props, same handlers — and every piece of state they
+        * read still lives on this page.
+        */}
+      {slots.chats && createPortal(
+        <div className="rail-pane">
+        <div className="rail-head">
+          {/* Delete Chats moved to the Settings section; New chat stays with
+              the list it adds to. Same handlers either way. */}
+          <button className="btn primary sm" onClick={newChat} disabled={running}>New chat</button>
         </div>
 
         <form className="rail-search" onSubmit={runSearch}>
@@ -1249,7 +1360,7 @@ export default function AgentChat() {
             <div
               key={s.id}
               className={`rail-item${s.id === sessionId ? ' active' : ''}${s.source === 'meeting' ? ' from-meeting-row' : ''}`}
-              onClick={() => { if (!running) setSessionId(s.id); }}
+              onClick={() => { if (!running) { setSessionId(s.id); openAgent(); } }}
               title={s.title || 'Untitled chat'}
             >
               <div className="rail-title">{s.title || 'Untitled chat'}</div>
@@ -1280,8 +1391,56 @@ export default function AgentChat() {
             </div>
           </div>
         )}
-        </div>
-      </aside>
+        </div>,
+        slots.chats,
+      )}
+
+      {slots.tasks && createPortal(
+          <div className="rail-pane">
+            {/*
+              * Opening a past task REPLACES the timeline with that task's
+              * durable projection. Doing that mid-turn would leave the live
+              * stream appending this turn's rows onto another task's list —
+              * two id spaces in one panel, which is exactly the mixing §11
+              * exists to prevent. So the rows are inert while a turn runs, and
+              * the reason is on screen rather than left to be discovered.
+              */}
+            <TaskHistory
+              sessionId={sessionId}
+              currentTaskId={taskId}
+              onOpen={running ? null : openTask}
+              onContinue={running ? null : (prompt) => setInput(prompt)}
+            />
+            {running && (
+              <p className="rail-note">
+                A turn is running. Past tasks open once it finishes — their timelines would otherwise
+                mix with this one’s.
+              </p>
+            )}
+          </div>
+        ,
+        slots.tasks,
+      )}
+
+      {slots.skills && createPortal(
+          <div className="rail-pane">
+            {/*
+              * §45 — a skill toggled while a turn is running does NOT change
+              * that turn. The task recorded its skill set when it opened; this
+              * changes what the NEXT task sees. The control is disabled while a
+              * turn runs so the UI cannot suggest otherwise.
+              */}
+            <SkillsPanel disabled={running} />
+            {running && (
+              <p className="rail-note">
+                A turn is running. Skill changes apply to the next task — this one keeps the set it started with.
+              </p>
+            )}
+          </div>
+        ,
+        slots.skills,
+      )}
+
 
       <div className="chat-wrap">
         {/* A chat that came from a meeting is not one somebody typed, and the
@@ -1298,108 +1457,28 @@ export default function AgentChat() {
             <Link className="btn ghost sm" to="/meetings">Open the meeting</Link>
           </div>
         )}
-        <div className="spread" style={{ marginBottom: 10 }}>
-          <div className="row">
-            {/*
-              * EXPERIENCE §12/§48/§49 — WHAT THE AGENT IS DOING, IN ONE WORD.
-              *
-              * The dot animates only while the agent is WORKING. A turn waiting
-              * for approval or for an answer is not working, and §48 is
-              * explicit that animating those is wrong — so `spin` comes from
-              * the status vocabulary rather than from `running`, and a waiting
-              * turn shows a still dot beside the name of who is being waited on.
-              */}
-            <span className={`ag-status ag-${statusLabel.tone}${statusLabel.spin ? ' ag-spin' : ''}`}>
-              <span aria-hidden="true">●</span> {statusLabel.text}
-            </span>
-            {meta && <span className="badge blue">{meta.provider} · <span className="mono">{meta.model}</span></span>}
-            {!meta && <span className="badge">provider set in Settings</span>}
-            {digestCount > 0 && (
-              <span className="badge" title="Older turns were summarised into a digest to stay inside the context budget. Artifacts and sys_ids were carried across.">
-                {digestCount} digest{digestCount === 1 ? '' : 's'}
-              </span>
-            )}
-            {/* The budget used to be a constant nobody could see was wrong — it
-                was 4% of this model's context window for a while, and the only
-                symptom was the transcript quietly compacting three times in one
-                turn. On hover, so it informs without taking up room. */}
-            {budget && (
-              <span
-                className="badge"
-                title={
-                  `Model context: ${budget.modelCtx.toLocaleString()} tokens (${budget.modelCtxSource})
-` +
-                  `Self-imposed cap: ${budget.ceiling.toLocaleString()}
-` +
-                  `Fixed overhead: ${budget.fixed.toLocaleString()} (system prompt + tool schemas)
-` +
-                  `Output headroom: ${budget.headroom.toLocaleString()}
-` +
-                  `History budget: ${budget.budget.toLocaleString()}`
-                }
-              >
-                {(budget.budget / 1000).toFixed(1)}k history budget
-              </span>
-            )}
-            {meta?.decoding?.reality && !/honoured\./.test(meta.decoding.reality) && (
-              <span className="badge amber" title={meta.decoding.reality}>non-reproducible</span>
-            )}
-            {/* PHASE 8 — the durable record for this turn, on demand. Off by
-                default: the evidence is for when you want to check, not a
-                permanent second transcript beside the conversation. */}
-            {taskId && (
-              <button
-                type="button"
-                className="btn ghost sm"
-                onClick={() => setShowEvidence((v) => !v)}
-                title="What actually ran, what was verified, who approved it, and what is still uncertain."
-              >
-                {showEvidence ? 'Hide evidence' : 'Evidence'}
-              </button>
-            )}
-          </div>
-          <div className="row">
-            <label
-              className="check"
-              title="Configuration this session changes is moved into an update set named after it, one per scope. Task data — incidents, requests — is never captured, because update sets do not carry data."
-            >
-              <input type="checkbox" checked={capture} onChange={(e) => toggleCapture(e.target.checked)} />
-              Capture changes
-            </label>
-            <label className="check" title="When off, every create/update/delete pauses for your approval — like Claude Code permissions.">
-              <input type="checkbox" checked={autoApprove} onChange={(e) => toggleAuto(e.target.checked)} />
-              Auto-approve mutations
-            </label>
-          </div>
-        </div>
 
         {showEvidence && taskId && (
           <EvidencePanel taskId={taskId} onClose={() => setShowEvidence(false)} />
         )}
 
-        {/*
-          * EXPERIENCE §4/§68 — the panels are CONTEXTUAL and sit above the
-          * transcript; the conversation stays the primary interaction.
-          *
-          * Both render nothing when there is nothing real to show — no task, no
-          * events, no plan — rather than an empty frame implying work is
-          * pending. §66: absence of progress is shown as absence.
-          */}
-        <PlanPanel steps={planSteps} progress={progress} dataflow={dataflow} />
-        <ActivityPanel
-          rows={activity}
-          taskId={taskId}
-          running={running}
-          progress={progress}
-          skills={activeSkills}
-          onOpenEvidence={() => setShowEvidence(true)}
-        />
-
         {/* The agent itself runs disconnected — it just cannot do anything
             useful to an instance, so this is a banner rather than a gate. */}
         <DisconnectedBanner />
 
-        <div className="msgs" ref={msgsRef}>
+        {/*
+          * ONE scroll container, still. TASK 5 puts React Bits' AnimatedItem
+          * around each row inside it rather than wrapping the transcript in
+          * <AnimatedList>, whose own .scroll-list would have been a second
+          * scrollbar inside this one.
+          */}
+        {/*
+          * The transcript and the activity drawer share one row. The drawer is
+          * a SIBLING, so opening it narrows .msgs instead of covering it —
+          * nothing is ever hidden behind the panel.
+          */}
+        <div className="playground-body">
+        <div className="msgs" ref={msgsRef} onScroll={onMsgsScroll}>
           {loadingSession && (
             <div className="msg">
               <div className="bubble" style={{ minWidth: 320 }}><SkeletonLines lines={3} /></div>
@@ -1407,28 +1486,21 @@ export default function AgentChat() {
             </div>
           )}
 
+          {/* The new-chat state. Same prompts, same send() behind them — only
+              the card around them is gone. */}
           {!loadingSession && messages.length === 0 && (
-            <div className="card" style={{ maxWidth: 780 }}>
-              <div className="card-title">NowHelpAssist Agent</div>
-              <p style={{ margin: '0 0 10px', fontSize: 13.5, color: 'var(--muted)' }}>
-                Talks to your bound instance with schema inspection, reference resolution, record CRUD,
-                catalog composites, flow reading, blueprint design and live authoring. Every mutation stops
-                at the amber gate until you approve it. Conversations are saved — this chat will still be
-                here after a restart, and <span className="mono">recall_memory</span> searches all of them.
-              </p>
-              <div className="chips">
-                {SAMPLES.map((s) => <button key={s} className="chip" onClick={() => send(s)}>{s}</button>)}
-              </div>
-              {!connected && (
-                <p style={{ margin: '10px 0 0', fontSize: 12.5, color: 'var(--muted)' }}>
-                  No instance is bound yet, so every one of those needs a PDI first.{' '}
-                  <Link to="/">Connect one on the Dashboard</Link>.
-                </p>
-              )}
-            </div>
+            <AgentWelcome />
           )}
 
           {messages.map((m) => {
+            /*
+              * The row is built exactly as it always was — every branch below
+              * is untouched — and then handed to AnimatedItem. Wrapping the
+              * RESULT rather than editing eleven return sites is what keeps
+              * this a presentation change: the approval cards, tool cards and
+              * their buttons are the same elements they were.
+              */
+            const row = (() => {
             if (m.kind === 'user') {
               // User bubbles stay literal on purpose: what you typed is what you
               // see, and nobody wants their asterisks eaten.
@@ -1500,48 +1572,17 @@ export default function AgentChat() {
                 </div>
               );
             }
-            if (m.kind === 'capture') {
-              // Deliberately quiet: one line, the same shape whether something
-              // was captured or not, because "nothing to capture" is an answer
-              // and not an absence.
-              const bad = m.failures?.length > 0;
-              return (
-                <div key={m.id} className="msg">
-                  <div className="tool-card">
-                    <div className="tool-head">
-                      <span className={`badge ${bad ? 'red' : m.captured ? 'green' : ''}`}>
-                        {bad ? 'capture failed' : m.captured ? 'captured' : 'not captured'}
-                      </span>
-                      {/* E6 — the badge and the message both began "not
-                          captured", so the line read "not captured / not
-                          captured — data, not configuration". One source: the
-                          badge states the verdict, the message states only the
-                          REASON. */}
-                      <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>{captureReason(m)}</span>
-                    </div>
-                    {(m.updates?.length > 0 || bad) && (
-                      <div className="tool-body" style={{ fontSize: 12.5 }}>
-                        {m.updates?.map((u) => (
-                          <div key={u.name} className="row" style={{ gap: 6 }}>
-                            <span className="badge">{u.type}</span>
-                            <span>{u.target}</span>
-                            <ScopeBadge scope={u.scope} />
-                          </div>
-                        ))}
-                        {m.failures?.map((f, i) => (
-                          <div key={i} className="error-text">{f.name || f.scope || f.stage}: {f.message}</div>
-                        ))}
-                        {m.sets?.length > 0 && (
-                          <div className="mono" style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
-                            {m.sets.map((x) => x.setName).join(' · ')} — <Link to="/transport">Transport</Link>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            }
+            /*
+              * UPDATE SET CAPTURE IS NOT CONVERSATION.
+              *
+              * Whether a change landed in an update set is a property of the
+              * run, not a thing the agent said, and as a bubble it interrupted
+              * the conversation to report on plumbing. It moved to the Update
+              * Set section at the foot of the Activity panel, which reads the
+              * very same messages — the push above is unchanged, so nothing
+              * stopped being recorded.
+              */
+            if (m.kind === 'capture') return null;
             if (m.kind === 'blocked') {
               return (
                 <div key={m.id} className="msg">
@@ -1691,43 +1732,20 @@ export default function AgentChat() {
                 </div>
               );
             }
-            if (m.kind === 'tool') {
-              // WI-6 — the glyph and the words come from ONE object.
-              //
-              // The transcript rendered "✅ Update set … was not updated": a
-              // success mark hardcoded onto a failure sentence. It cannot
-              // happen here any more, because both halves are derived from the
-              // same verification status rather than from "no exception was
-              // thrown".
-              const v = writeOutcome(m);
-              return (
-                <div key={m.id} className="tool-card">
-                  <div className="tool-head">
-                    <span className={`dot ${v.tone === 'ok' ? 'on' : ''}`} style={v.dotStyle} />
-                    <span className="name">{m.name}</span>
-                    {m.mutating && <span className="badge amber">mutation</span>}
-                    {m.impersonation && <ImpersonationChip chip={m.impersonation} />}
-                    <span className={`badge ${v.badgeClass}`} style={{ marginLeft: 'auto' }} title={v.title}>{v.label}</span>
-                  </div>
-                  {v.detail && (
-                    <div className="tool-body" style={{ paddingBottom: 0 }}>
-                      <div className={v.tone === 'bad' ? 'error-text' : ''} style={v.tone === 'warn' ? { color: 'var(--amber)', fontSize: 12.5 } : { fontSize: 12.5 }}>
-                        {v.detail}
-                      </div>
-                    </div>
-                  )}
-                  <div className="tool-body">
-                    <pre>{JSON.stringify(m.input, null, 1)}</pre>
-                    {m.output && (
-                      <>
-                        <div className="label" style={{ margin: '8px 0 4px' }}>result</div>
-                        <pre style={m.status === 'error' ? { color: 'var(--red)' } : {}}>{m.output}</pre>
-                      </>
-                    )}
-                  </div>
-                </div>
-              );
-            }
+            /*
+              * TOOL CALLS ARE NOT CONVERSATION.
+              *
+              * A tool card is execution: which tool ran, with what arguments,
+              * and what came back. It belongs to the Activity panel, which is
+              * fed by the very same frames (activity.js turns tool_use and
+              * tool_result into rows) — so nothing stopped being recorded and
+              * nothing stopped being visible. It stopped being a chat message.
+              *
+              * The message is still PUSHED and still patched by tool_result:
+              * the approval flow matches on it, and dropping it from state
+              * would break that. Only its rendering is gone.
+              */
+            if (m.kind === 'tool') return null;
             if (m.kind === 'approval') {
               return (
                 <div key={m.id} className="approval-card">
@@ -1832,35 +1850,87 @@ export default function AgentChat() {
               );
             }
             return null;
+            })();
+
+            if (!row) return null;
+            return (
+              <AnimatedItem
+                key={m.id}
+                /*
+                 * amount "some": any pixel counts. An agent answer taller than
+                 * the scroller can never satisfy a 0.5 ratio, so a numeric
+                 * threshold would leave long replies permanently hidden.
+                 *
+                 * once is deliberately NOT set. That is what makes the effect a
+                 * SCROLL animation rather than an arrival animation: a row that
+                 * leaves the scroller re-arms, so coming back to it — upward or
+                 * downward — plays the entrance again. With "some", a row only
+                 * re-arms once it is fully out of view, so nothing fades while
+                 * any part of it is still on screen and being read.
+                 *
+                 * The style overrides drop the vendor's menu affordances: .msgs
+                 * already owns the 12px gap, and a transcript is text you
+                 * select, not a row you click.
+                 */
+                amount="some"
+                className={`msg-row${m.kind === 'user' ? ' is-user' : ''}`}
+                style={{ marginBottom: 0, cursor: 'auto' }}
+              >
+                {row}
+              </AnimatedItem>
+            );
           })}
         </div>
 
-        <div className="chat-input">
-          <textarea
-            className="textarea"
-            placeholder="Tell the agent what to build or find on your instance…  (start with “remember:” to store a preference)"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-          />
-          {/* Phase 0 — Stop REPLACES Send while a turn is running, rather than
-              sitting beside a disabled button. The two are mutually exclusive
-              actions on the same turn, and one live control is easier to reach
-              in a hurry than a live one next to a dead one. */}
-          {running ? (
-            <button
-              className="btn danger"
-              onClick={stop}
-              disabled={stopping}
-              title="Stop at the next safe point. A step already running will finish and be recorded."
-            >
-              {stopping ? 'Stopping…' : 'Stop'}
-            </button>
-          ) : (
-            <button className="btn primary" onClick={() => send()} aria-busy={running} disabled={!input.trim()}>
-              Send
-            </button>
-          )}
+        <ActivityDrawer
+          open={activityOpen}
+          rows={activity}
+          taskId={taskId}
+          running={running}
+          progress={progress}
+          skills={activeSkills}
+          updateSet={latestCapture}
+          onOpenEvidence={() => setShowEvidence(true)}
+          onClose={() => setActivityOpen(false)}
+        />
+        </div>
+
+        {/*
+          * The composer is PRESENTATION, and lives in its own file for that
+          * reason. Everything it does on submit is this page's own send() —
+          * same handler, same payload, same turn. Phase 0's Send/Stop swap is
+          * preserved inside it: the two are mutually exclusive actions on one
+          * turn, and one live control beats a live one next to a dead one.
+          */}
+        <PlanPanel steps={planSteps} progress={progress} dataflow={dataflow} />
+
+        {/*
+          * The composer and the activity indicator sit on one row at the foot
+          * of the playground. The indicator is the ONLY place the agent's
+          * status is shown now — the composer's own status readout is gone, so
+          * the same state is never printed twice.
+          */}
+        <div className="composer-line">
+        <Composer
+          value={input}
+          onChange={setInput}
+          onSubmit={send}
+          onStop={stop}
+          onNewChat={newChat}
+          running={running}
+          stopping={stopping}
+          model={meta}
+          hasEvidence={Boolean(taskId)}
+          onOpenEvidence={() => setShowEvidence(true)}
+        />
+
+        <ActivityIndicator
+          rows={activity}
+          running={running}
+          status={status}
+          open={activityOpen}
+          onToggle={() => setActivityOpen((v) => !v)}
+        />
         </div>
       </div>
     </div>

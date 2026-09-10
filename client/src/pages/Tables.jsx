@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
-import { SkeletonRows, SkeletonLines, EmptyState } from '../components/states.jsx';
+import { SkeletonLines } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import { useBinding } from '../hooks/useBinding.js';
 import { classificationBadge, describeIndexes, filterTables } from '../components/tableClassification.js';
 import { CreateTableForm, AddFieldForm, ModifyFieldForm, DropFieldPanel } from '../components/TableActions.jsx';
+import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
 
 /**
  * Tables — Database Administration.
@@ -67,6 +69,23 @@ function Panel({ title, children, note = null }) {
     </div>
   );
 }
+
+/* The table list as columns. `text` is what sorting and filtering read, so a
+   classification sorts by its label and a root table sorts as "standalone"
+   rather than as an empty cell. */
+const TABLE_COLUMNS = [
+  { key: 'name', header: 'Table', width: 300, text: (t) => t.name,
+    cell: (t) => <span className="mono" style={{ fontSize: 12.5 }}>{t.name}</span> },
+  { key: 'label', header: 'Label', width: 240, text: (t) => t.label || '' },
+  { key: 'extends', header: 'Extends', width: 220, text: (t) => t.extends || 'standalone',
+    cell: (t) => (t.extends
+      ? <span className="mono" style={{ fontSize: 12 }}>{t.extends}</span>
+      : <span style={{ color: 'var(--muted)' }}>standalone</span>) },
+  { key: 'classification', header: 'Classification', width: 220,
+    text: (t) => classificationBadge(t.classification).label,
+    cell: (t) => { const b = classificationBadge(t.classification);
+      return <Badge label={b.label} tone={b.tone} title={b.title} dim={!b.checked} />; } },
+];
 
 export default function Tables() {
   const { instance, scope: boundScope } = useBinding();
@@ -235,62 +254,34 @@ export default function Tables() {
         />
       )}
 
-      <div className="grid2" style={{ alignItems: 'start' }}>
-        {/* ── list ── */}
-        <div className="card" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
-          {loadingList && !list && <SkeletonRows rows={8} cols={2} />}
-          {listErr && (
-            <EmptyState
-              icon="!"
-              title="The table list could not be read."
-              hint={`${listErr} — this is a failed read, not an empty instance.`}
-              onAction={loadList}
-              actionLabel="Try again"
-            />
-          )}
-          {!loadingList && !listErr && shown.length === 0 && (
-            <EmptyState
-              icon="·"
-              title="No tables match these filters."
-              hint="The instance was read successfully; nothing matched what you asked for."
-            />
-          )}
-          {shown.map((t) => {
-            const b = classificationBadge(t.classification);
-            return (
-              <button
-                key={t.name}
-                className={`row-item${selected === t.name ? ' active' : ''}`}
-                onClick={() => { setSelected(t.name); setTab('fields'); }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                  background: selected === t.name ? 'var(--line)' : 'transparent',
-                  border: 0, borderBottom: '1px solid var(--line)', padding: '8px 6px',
-                  textAlign: 'left', cursor: 'pointer', color: 'inherit',
-                }}
-              >
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <span className="mono" style={{ fontSize: 12.5 }}>{t.name}</span>
-                  <span style={{ display: 'block', fontSize: 11.5, color: 'var(--muted)' }}>
-                    {t.label}{t.extends ? ` · extends ${t.extends}` : ' · standalone'}
-                  </span>
-                </span>
-                <Badge label={b.label} tone={b.tone} title={b.title} dim={!b.checked} />
-              </button>
-            );
-          })}
-        </div>
+      {/* The schema list, full width. Nothing is reserved beside it — a table
+          opens in a drawer — and the list's own 70vh scroller is gone with the
+          split, because the page pages rather than scrolls inside a card. */}
+      <div className="page-full">
+        <DataTable
+          title="Tables"
+          rows={shown}
+          loading={loadingList && !list}
+          error={listErr ? `${listErr} — this is a failed read, not an empty instance.` : null}
+          getRowId={(t) => t.name}
+          activeId={selected}
+          onRowClick={(t) => { setSelected(t.name); setTab('fields'); }}
+          filterPlaceholder="Filter loaded tables…"
+          empty="No tables match these filters. The instance was read successfully; nothing matched what you asked for."
+          columns={TABLE_COLUMNS}
+        />
 
-        {/* ── detail ── */}
-        <div className="card">
-          {!selected && (
-            <EmptyState icon="·" title="Select a table" hint="Its fields, references, hierarchy, indexes and schema map are read live from the instance." />
-          )}
-
+        {/* Fields, references, hierarchy, indexes and the schema map — the same
+            tabbed workspace as before, now dismissible. */}
+        <RecordDrawer
+          open={Boolean(selected)}
+          onClose={() => setSelected(null)}
+          title={selected || 'Table'}
+          width={860}
+        >
           {selected && (
             <>
               <div className="row" style={{ alignItems: 'center', gap: 8 }}>
-                <span className="mono" style={{ fontSize: 14 }}>{selected}</span>
                 {d('table')?.scope && <ScopeBadge scope={d('table').scope} />}
                 {d('classify') && (() => {
                   const b = classificationBadge(d('classify'));
@@ -559,7 +550,7 @@ export default function Tables() {
               )}
             </>
           )}
-        </div>
+        </RecordDrawer>
       </div>
     </div>
   );
