@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import BorderGlow from './BorderGlow.jsx';
 import { toast } from './toast.js';
@@ -105,15 +105,50 @@ export default function Composer({
    * the scrollHeight of an element already sized to its content reports the
    * height it currently HAS, not the one it wants — without the reset the box
    * can only ever grow, and deleting three lines leaves the hole behind.
+   *
+   * IT REFUSES TO MEASURE AN ELEMENT THAT HAS NO LAYOUT BOX. The Agent route
+   * is mounted for the whole session and only its VISIBILITY is routed, so
+   * this component's first render usually happens inside a display:none
+   * subtree — where scrollHeight is 0. Writing that answer down left an inline
+   * `height: 0px` on the textarea that nothing recomputed when the route was
+   * finally opened: the control came up one line short, the placeholder sat
+   * clipped, and only a reload (which mounts the composer visible) fixed it.
+   * Skipping the write leaves the textarea at its own CSS height, which is the
+   * correct height for one row.
    */
-  useEffect(() => {
+  const autosize = useCallback(() => {
     const ta = taRef.current;
-    if (!ta) return;
+    // offsetParent is null for a display:none subtree — and for position:fixed,
+    // hence the second half: a real box has a height.
+    if (!ta || (!ta.offsetParent && ta.offsetHeight === 0)) return;
     ta.style.height = 'auto';
     ta.style.height = `${Math.min(ta.scrollHeight, MAX_TEXTAREA_PX)}px`;
     // Past the ceiling it scrolls internally instead of growing further.
     ta.style.overflowY = ta.scrollHeight > MAX_TEXTAREA_PX ? 'auto' : 'hidden';
-  }, [value]);
+  }, []);
+
+  useEffect(() => { autosize(); }, [value, autosize]);
+
+  /*
+   * ONE observer, on the row rather than on the textarea, so re-sizing the
+   * textarea cannot feed itself. It answers three width changes with the same
+   * measurement the keystroke path uses:
+   *
+   *   · the route becoming visible — the box goes from none to laid out, which
+   *     is a resize, so a draft restored while hidden is sized on arrival;
+   *   · the sidebar collapsing or expanding — the playground gets wider, and
+   *     text that needed two lines may now need one;
+   *   · the window resizing, for the same reason.
+   *
+   * Without it the height is only ever right for the width it was typed at.
+   */
+  useEffect(() => {
+    const row = taRef.current?.parentElement;
+    if (!row || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => autosize());
+    ro.observe(row);
+    return () => ro.disconnect();
+  }, [autosize]);
 
   // Dismissing the menu: outside click and Escape, the two a popover owes.
   useEffect(() => {

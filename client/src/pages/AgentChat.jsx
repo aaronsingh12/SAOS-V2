@@ -1265,7 +1265,7 @@ export default function AgentChat() {
             disabled={running || !(sessions?.length)}
             title="Delete every conversation. The audit trail is not affected."
           >
-            <svg className="nav-ic" viewBox="0 0 24 24" width="17" height="17" fill="none"
+            <svg className="nav-ic" data-ic="trash" viewBox="0 0 24 24" width="17" height="17" fill="none"
               stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
               aria-hidden="true">
               <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />

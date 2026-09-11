@@ -52,8 +52,13 @@ const I = {
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
 };
 
+/* data-ic names the glyph so the stylesheet can give each one a hover motion
+   that matches what it depicts — a gear turns, a clock's hands move, a flow
+   travels its connector. The paths above are untouched: the CSS reaches their
+   parts positionally, so there is one attribute here and no per-icon markup.
+   See "ICON HOVER MOTION" in experience.css. */
 const Icon = ({ name, size = 17 }) => (
-  <svg className="nav-ic" viewBox="0 0 24 24" width={size} height={size} fill="none"
+  <svg className="nav-ic" data-ic={name} viewBox="0 0 24 24" width={size} height={size} fill="none"
     stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true">{I[name]}</svg>
 );

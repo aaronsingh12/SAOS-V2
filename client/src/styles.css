@@ -109,31 +109,33 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
    never by being wrapped in it. */
 .main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
-.topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 22px; border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel) 60%, var(--ink));
+/* ── The page title ───────────────────────────────────────────────────────
+   What was here was .topbar: a full-width strip with a bottom rule, its own
+   tinted background, the instance host, the scope id and two status pills, on
+   every route. The strip is gone — this is the title alone, at the top-left of
+   the playground, with no surface of its own so the Gradient Waves run behind
+   it exactly as they do behind everything else on the page.
+
+   It sits INSIDE .content, so its space is the page's space: there is no
+   reserved band above the content and nothing to leave empty. */
+.page-title {
+  font-family: var(--font-display);
+  font-size: 19px; font-weight: 600; letter-spacing: -0.01em;
+  margin: 0 0 16px;
 }
-.topbar h1 { font-size: 15px; font-weight: 600; }
-.instance-pill {
-  font-family: var(--font-mono); font-size: 11.5px;
-  border: 1px solid var(--line); border-radius: 999px;
-  padding: 5px 12px; color: var(--muted);
-  display: inline-flex; align-items: center; gap: 8px;
-  max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+@media (max-width: 640px) { .page-title { font-size: 17px; margin-bottom: 12px; } }
+
+/* .dot and its tones stay: MeetingDock and the agent's own status readouts
+   draw them, and they were never only the bar's. The .instance-pill rules went
+   with the bar — it was their only caller. */
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.on { background: var(--verdigris); box-shadow: 0 0 6px var(--verdigris); }
-/* Header status dots. Same three tones the rest of the app already uses, so a
-   warning in the topbar reads as the same severity as a warning in a card. */
+/* Status dots. Same three tones the rest of the app already uses, so a warning
+   in one place reads as the same severity as a warning in another. */
 .dot.warn { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
 .dot.bad { background: var(--red); box-shadow: 0 0 6px var(--red); }
 .dot.busy { background: var(--blue); box-shadow: 0 0 6px var(--blue); animation: dot-pulse 1.2s ease-in-out infinite; }
 @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-.instance-pill.status-ok { color: var(--verdigris); }
-.instance-pill.status-warn { color: var(--amber); }
-.instance-pill.status-bad { color: var(--red); }
-.instance-pill.status-busy { color: var(--blue); }
 @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
 .content { padding: 22px; overflow-y: auto; flex: 1; }
 /* The Agent route only. No padding, so the playground background reaches the
@@ -289,6 +291,10 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .bubble {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 12px; padding: 11px 14px; white-space: pre-wrap; font-size: 13.5px;
+  /* A pasted URL or a sys_id must wrap rather than widen the bubble past the
+     column; `anywhere` leaves ordinary text alone. */
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .tool-card {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
@@ -328,7 +334,10 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
   border: 1px solid var(--verdigris-dim); border-radius: 6px; height: 26px; width: 26px;
   display: flex; align-items: center; justify-content: center;
 }
-.kv { display: grid; grid-template-columns: 160px 1fr; gap: 4px 12px; font-size: 12.5px; }
+.kv { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 4px 12px; font-size: 12.5px; }
+/* In a 360px drawer a 160px label column leaves 150px for the value; the
+   labels are short words, so the column gives way first. */
+@media (max-width: 640px) { .kv { grid-template-columns: 104px minmax(0, 1fr); gap: 4px 10px; } }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; word-break: break-word; }
 
@@ -555,6 +564,10 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .md li::marker { color: var(--muted); }
 
 .md a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+/* Same rule for rendered markdown: prose wraps at spaces as before, and only a
+   token with no break opportunity is broken. Code blocks keep their own
+   horizontal scroll (see .md pre). */
+.md { overflow-wrap: anywhere; min-width: 0; }
 
 .md code {
   font-family: var(--font-mono); font-size: 12px;
@@ -1518,26 +1531,34 @@ html, body { max-width: 100%; overflow-x: hidden; }
 @media (max-width: 1024px) {
   .split, .grid2, .grid3 { grid-template-columns: minmax(0, 1fr); }
   .content { padding: 16px; }
-  .topbar { padding: 10px 16px; gap: 10px; flex-wrap: wrap; }
-  .instance-pill { max-width: 240px; }
   /* The drawer would leave the transcript too narrow to read. */
   /* Panel width is clamp()ed on .act-drawer; nothing to override here. */
 }
 
 /* ── ~900px and down: the column becomes a drawer (see .sidebar.is-mobile) ─ */
 @media (max-width: 900px) {
-  /* Room for the fixed drawer button, which sits over the top-left corner. */
-  .topbar { padding-left: 60px; }
+  /* Room for the fixed drawer button, which sits over the top-left corner.
+     The bar it used to clear is gone; the title is what stands there now. */
+  .page-title { padding-left: 46px; }
   .agent-layout .chat-wrap { padding: 14px 14px 16px; }
   .welcome { padding-bottom: 2vh; }
 
   /* The activity drawer stops being a column and becomes a sheet over the
      transcript — at this width a 260px panel beside the chat leaves neither
-     usable. It is still not covering anything while closed. */
+     usable. It is still not covering anything while closed.
+
+     The sheet is positioned against .playground-body, the transcript row that
+     ends exactly where the composer line begins — not against the viewport
+     with a guessed bottom offset. It used to be fixed at 96px (88px on
+     phones), which was right for one composer height and wrong for every
+     other: once the indicator moved under the composer on phones, the sheet
+     sat on top of the textarea. Anchored to the row, it ends above the
+     composer whatever the composer's height is. */
+  .playground-body { position: relative; }
   .act-drawer.is-open { width: 0; }
   .act-drawer.is-open .act-drawer-inner {
-    position: fixed; inset: auto 10px 96px 10px;
-    width: auto; max-height: 55vh; margin-left: 0;
+    position: absolute; inset: auto 0 0 0;
+    width: auto; max-height: min(55vh, 100%); margin-left: 0;
     z-index: 30;
   }
 }
@@ -1547,9 +1568,6 @@ html, body { max-width: 100%; overflow-x: hidden; }
   .content { padding: 12px; }
   .card { padding: 12px; }
   .grid2, .grid3, .split { gap: 12px; }
-  .topbar h1 { font-size: 14px; }
-  /* The status pills wrap under the title instead of squeezing it away. */
-  .topbar .instance-pill { max-width: 100%; }
   .msg { max-width: 100%; }
   .bubble, .tool-card, .approval-card { max-width: 100%; }
   .composer-line { max-width: 100%; }
@@ -1577,7 +1595,7 @@ html, body { max-width: 100%; overflow-x: hidden; }
   .welcome-mark { display: none; }
   .welcome-headline { max-width: 100%; }
 
-  .act-drawer.is-open .act-drawer-inner { inset: auto 8px 88px 8px; max-height: 50vh; }
+  .act-drawer.is-open .act-drawer-inner { max-height: min(50vh, 100%); }
 
   /* Buttons stay tappable rather than shrinking to fit a row. */
   .btn { min-height: 34px; }
@@ -1616,6 +1634,14 @@ html, body { max-width: 100%; overflow-x: hidden; }
    have helped: both controls are interactive, so whichever won would still be
    covering the other. */
 body:has(.agent-host:not([hidden])) .dock { bottom: 104px; }
+/* On phones the indicator sits UNDER the composer, so the corner is two
+   controls tall and grows with the textarea — there is no bottom offset that
+   stays clear of it. The Agent route has nothing in its top-right corner (the
+   drawer button is top-left, and the page has no title), so the dock goes
+   there, pill first and its panel unfolding beneath it. */
 @media (max-width: 640px) {
-  body:has(.agent-host:not([hidden])) .dock { bottom: 150px; }
+  body:has(.agent-host:not([hidden])) .dock {
+    top: 12px; bottom: auto;
+    flex-direction: column-reverse;
+  }
 }
