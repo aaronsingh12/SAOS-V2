@@ -1,8 +1,5 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
-import { useHealth } from './hooks/useHealth.js';
-import { useBinding } from './hooks/useBinding.js';
-import { describeHeaderStatus, describeScope } from './components/headerStatus.js';
 import { logToServer } from './logging.js';
 import Dashboard from './pages/Dashboard.jsx';
 import AgentChat from './pages/AgentChat.jsx';
@@ -42,38 +39,21 @@ const TITLES = {
   '/settings': 'Settings',
 };
 
-function Topbar({ title }) {
-  // One poller for the whole app (D-3). This used to be the topbar's private
-  // 20s interval, while four other places answered the same question from
-  // three other sources and disagreed with it.
-  const { connected, instanceUrl, loading, serverDown } = useHealth();
-  // The scope and the sync verdict come from their own slower poller: they cost
-  // a read of the instance, and /health is the gate every page waits on.
-  const bindingSnap = useBinding();
-  const host = instanceUrl
-    ? instanceUrl.replace(/^https?:\/\//, '')
-    : (serverDown ? 'server not responding' : 'no instance bound');
-  const scope = describeScope(bindingSnap.scope);
-  const status = describeHeaderStatus(bindingSnap);
-  return (
-    <div className="topbar">
-      <h1>{title}</h1>
-      {/* Bound instance — unchanged, still the first thing read. */}
-      <span className="instance-pill" title={instanceUrl || ''}>
-        <span className={`dot ${connected ? 'on' : ''}`} />
-        {loading ? 'checking…' : host}
-      </span>
-      {/* Active scope. The NAME is the address; the app label is the tooltip. */}
-      <span className={`badge mono${scope.known ? ' blue' : ''}`} title={scope.title}>
-        {scope.text}
-      </span>
-      {/* Connection + source/instance sync, in one truthful word. */}
-      <span className={`instance-pill status-${status.tone}`} title={status.title}>
-        <span className={`dot ${status.dotClass}`} />
-        {status.label}
-      </span>
-    </div>
-  );
+/**
+ * The page title, and nothing else.
+ *
+ * What stood here was a global connection bar: the instance host, the scope
+ * id, a binding verdict and two status dots, on every route. It is gone — the
+ * same four readouts already have a home on Settings and on the Dashboard,
+ * where you go to act on them, and repeating them above every table spent a
+ * strip of the playground on a status nobody was reading.
+ *
+ * This is deliberately not a component with a surface. No bar, no border, no
+ * card: a heading at the top-left of the playground, in the app's own display
+ * face, with the page content directly beneath it.
+ */
+function PageTitle({ title }) {
+  return <h1 className="page-title">{title}</h1>;
 }
 
 /**
@@ -85,16 +65,15 @@ function Shell() {
   const { pathname } = useLocation();
   const title = TITLES[pathname] || 'NowHelpAssist';
   /*
-   * The Agent page is the one immersive route: no topbar, no content padding,
-   * so the playground background reaches every edge of the area beside the
-   * sidebar.
+   * The Agent page is the one immersive route: no page title, no content
+   * padding, so the playground background reaches every edge of the area
+   * beside the sidebar and the conversation owns the whole height.
    *
-   * The Topbar COMPONENT is untouched and still renders on all twelve other
-   * routes — this decides where it is drawn, not what it does. Its readouts
-   * come from useHealth and useBinding, which are module-level shared stores
-   * with refcounted subscribers: not mounting one subscriber here changes
-   * nothing about the binding, and AgentChat is itself a useHealth subscriber,
-   * so the health poller keeps running on this route regardless.
+   * The health and binding pollers are module-level shared stores with
+   * refcounted subscribers, so dropping the connection bar that used to
+   * subscribe here changed nothing about either: RequiresInstance gates every
+   * ServiceNow route on useHealth, AgentChat subscribes to it for the whole
+   * session, and Tables subscribes to useBinding for the scope it reads.
    */
   const immersive = pathname === '/agent';
 
@@ -125,8 +104,11 @@ function Shell() {
           * meant for a form, a table row or a button above it.
           */}
         <PlaygroundBackground />
-        {!immersive && <Topbar title={title} />}
         <div className="content" hidden={immersive}>
+          {/* Inside the content column, not above it: the playground has one
+              vertical flow again, so removing the bar returns its height to
+              the page rather than leaving an empty strip. */}
+          <PageTitle title={title} />
           {/* Keyed on the path so navigating away clears a caught error — a
               boundary that latches means one bad page bricks the session. */}
           <ErrorBoundary key={pathname} where={title}>

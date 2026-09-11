@@ -49,6 +49,11 @@ export default function DataTable({
   empty = null,
   title = null,
   toolbar = null,
+  /* The card's PRIMARY action — New incident, New item, New producer. It sits
+     on the title row, top-right, and its presence is what splits the header
+     into two bands: identity and action above, controls below. Tables without
+     one keep the single-row header they already had, so nothing else moves. */
+  action = null,
   /* Row selection is opt-in: most of these lists are "click to open", and a
      checkbox column on a list nobody bulk-acts on is a column of noise. */
   selectable = false,
@@ -62,6 +67,9 @@ export default function DataTable({
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(initialPageSize);
   const [widths, setWidths] = useState({});
+  // The checkbox column's rendered width, captured with the others on the
+  // first drag — it has no key in `widths`, so it needs its own home.
+  const checkW = useRef(38);
   const [selected, setSelected] = useState(() => new Set());
   const drag = useRef(null);
 
@@ -150,6 +158,7 @@ export default function DataTable({
     if (head && Object.keys(widths).length === 0) {
       const cells = [...head.querySelectorAll('th')];
       const offset = selectable ? 1 : 0;
+      if (selectable && cells[0]) checkW.current = Math.round(cells[0].getBoundingClientRect().width);
       const seeded = {};
       columns.forEach((c, i) => {
         const th = cells[i + offset];
@@ -161,8 +170,13 @@ export default function DataTable({
     drag.current = { key, startX: e.clientX, startW: current };
     const move = (ev) => {
       if (!drag.current) return;
-      const w = Math.max(70, drag.current.startW + (ev.clientX - drag.current.startX));
-      setWidths((cur) => ({ ...cur, [drag.current.key]: w }));
+      // Read the drag NOW, not inside the updater. React runs updaters later,
+      // in a batch — and a quick drag ends (pointerup nulls the ref) before
+      // the last pointermove's updater has run. Reading drag.current there
+      // threw mid-render and took the whole page down with it.
+      const { key, startX, startW } = drag.current;
+      const w = Math.max(70, startW + (ev.clientX - startX));
+      setWidths((cur) => ({ ...cur, [key]: w }));
     };
     const up = () => {
       drag.current = null;
@@ -188,33 +202,47 @@ export default function DataTable({
    * which is where a wide table is supposed to overflow.
    */
   const resized = Object.keys(widths).length > 0;
-  const totalWidth = columns.reduce((n, c) => n + (widths[c.key] ?? c.width ?? 150), selectable ? 38 : 0);
+  const totalWidth = columns.reduce((n, c) => n + (widths[c.key] ?? c.width ?? 150), selectable ? checkW.current : 0);
 
   const from = sorted.length === 0 ? 0 : safePage * pageSize + 1;
   const to = Math.min(sorted.length, (safePage + 1) * pageSize);
 
   return (
     <section className={`dt ${className}`.trim()}>
-      <header className="dt-top">
-        {title && <h2 className="dt-title">{title}</h2>}
-        <div className="dt-filter">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
-            strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
-          </svg>
-          <input
-            className="dt-filter-input"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder={filterPlaceholder}
-            aria-label={filterPlaceholder}
-          />
-          {filter && (
-            <button type="button" className="dt-filter-clear" onClick={() => setFilter('')}
-              aria-label="Clear filter">×</button>
-          )}
+      <header className={`dt-top${action ? ' dt-top-stacked' : ''}`}>
+        {action && (
+          <div className="dt-top-row dt-top-head">
+            {title && <h2 className="dt-title">{title}</h2>}
+            <div className="dt-action">{action}</div>
+          </div>
+        )}
+        {!action && title && <h2 className="dt-title">{title}</h2>}
+        {/* The filter and the page's own controls are one band. It is
+            display:contents in a single-row header — so those tables lay out
+            exactly as they always did — and a real flex row once the header
+            stacks, which is what keeps .dt-filter's `flex-basis: 200px` on the
+            horizontal axis. In a column container that basis is a HEIGHT, and
+            the filter came out 220px tall. */}
+        <div className="dt-top-controls">
+          <div className="dt-filter">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+            </svg>
+            <input
+              className="dt-filter-input"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={filterPlaceholder}
+              aria-label={filterPlaceholder}
+            />
+            {filter && (
+              <button type="button" className="dt-filter-clear" onClick={() => setFilter('')}
+                aria-label="Clear filter">×</button>
+            )}
+          </div>
+          {toolbar && <div className="dt-tools">{toolbar}</div>}
         </div>
-        {toolbar && <div className="dt-tools">{toolbar}</div>}
       </header>
 
       {error && <p className="error-text dt-error">{error}</p>}
@@ -223,7 +251,7 @@ export default function DataTable({
       <div className="dt-scroll">
         <table className="dt-table" style={resized ? { width: totalWidth, minWidth: totalWidth } : undefined}>
           <colgroup>
-            {selectable && <col style={{ width: 38 }} />}
+            {selectable && <col style={{ width: resized ? checkW.current : 38 }} />}
             {columns.map((c) => (
               <col key={c.key} style={{ width: widths[c.key] ?? c.width ?? undefined }} />
             ))}

@@ -39,7 +39,6 @@ const INCIDENT_COLUMNS = [
 export default function Incidents() {
   const [schema, setSchema] = useState(null);
   const [rows, setRows] = useState([]);
-  const [stats, setStats] = useState(null);
   const [filters, setFilters] = useState({ search: '', state: '', priority: '' });
   const [form, setForm] = useState(null);      // null = closed, {..EMPTY} or loaded record form
   const [editingId, setEditingId] = useState(null);
@@ -53,7 +52,6 @@ export default function Incidents() {
     try {
       const qs = new URLSearchParams({ ...filters, active: '', limit: '30' }).toString();
       setRows(await api.get(`/incidents?${qs}`));
-      api.get('/incidents/stats').then(setStats).catch(() => {});
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
@@ -143,15 +141,6 @@ export default function Incidents() {
 
   return (
     <div className="stack">
-      {stats && (
-        <div className="row">
-          <span className="badge">open {stats.open}</span>
-          <span className="badge red">P1 {stats.critical}</span>
-          <span className="badge amber">unassigned {stats.unassigned}</span>
-          <span className="badge blue">new {stats.new}</span>
-        </div>
-      )}
-
       {/*
         * The list owns the whole content column now. The right-hand panel that
         * used to sit beside it — and that read "Nothing selected" whenever it
@@ -173,12 +162,9 @@ export default function Incidents() {
           filterPlaceholder="Filter loaded incidents…"
           empty="No incidents match these filters."
           columns={INCIDENT_COLUMNS}
+          action={<button className="btn primary sm" onClick={openNew}>New incident</button>}
           toolbar={(
             <>
-              <input className="input dt-tool-input" placeholder="Search number or description…"
-                value={filters.search}
-                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-                onKeyDown={(e) => e.key === 'Enter' && load()} />
               <select className="select" style={{ width: 130 }} value={filters.state}
                 onChange={(e) => setFilters({ ...filters, state: e.target.value })}>
                 <option value="">All states</option>
@@ -189,7 +175,6 @@ export default function Incidents() {
                 <option value="">All priority</option>
                 {prioChoices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
-              <button className="btn primary sm" onClick={openNew}>New incident</button>
             </>
           )}
         />
