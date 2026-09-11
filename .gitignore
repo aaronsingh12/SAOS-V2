@@ -22,6 +22,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-
+# Local SAOS database
+SAOS_functionalities/saos/saos_dev.db
 # Local SQLite scratch databases (the SAOS dev database is one).
 *.db
