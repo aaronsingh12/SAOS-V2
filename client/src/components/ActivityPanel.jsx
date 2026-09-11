@@ -118,9 +118,29 @@ function ActivityPanel({
       </header>
       )}
 
-      {/* §26 — plan progress, from the server's own counts. Never estimated. */}
+      {/* §26 — plan progress, from the server's own counts. Never estimated.
+
+          The bar is the SAME counts, drawn. Its width is completed/total and
+          nothing else: there is no timer, no easing toward a guess and no
+          motion when the server has not moved. While a step is running the
+          bar's leading edge carries a sheen, which is the only part of this
+          that animates — and it animates because work IS in flight, not to
+          suggest that it is. */}
       {progress && progress.total > 0 && (
         <div className="ax-progress">
+          <div
+            className={`ax-bar${progress.running ? ' is-live' : ''}`}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={progress.total}
+            aria-valuenow={progress.completed}
+            aria-label={`${progress.completed} of ${progress.total} steps completed`}
+          >
+            <span
+              className="ax-bar-fill"
+              style={{ width: `${Math.round((progress.completed / progress.total) * 100)}%` }}
+            />
+          </div>
           {progress.total} step{progress.total === 1 ? '' : 's'}
           {' · '}{progress.completed} completed
           {progress.running ? <> · {progress.running} running</> : null}

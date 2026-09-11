@@ -198,7 +198,14 @@ const INVENTORY = {
    * `approve` callback from `routes/plan.js`, so `routes/` remains the only
    * place an approval is raised or bound.
    */
-  approvePlan: ['routes/plan.js x2'],
+  /*
+   * HEALTH ASSIST joins the list, and the invariant is unchanged: `routes/` is
+   * still the only place an approval is raised or bound. `health/remediate.js`
+   * does NOT import approvePlan — it receives `bindApproval` from the route,
+   * the same shape `agent/appbuild/` uses. A reader auditing "what can
+   * authorise a write" still reads `routes/` and nothing else.
+   */
+  approvePlan: ['routes/health.js x1', 'routes/plan.js x2'],
   // The pre-gate write guard. Two callers, one per agent path.
   checkBeforeGate: ['agent/orchestrator.js x1', 'agent/plan/executor.js x1'],
   // The provenance guard. Three: two in the turn loop, one in the plan executor.

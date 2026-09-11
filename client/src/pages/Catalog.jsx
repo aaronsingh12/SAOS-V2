@@ -133,7 +133,9 @@ function VariableTable({ variables, typeLabel, onDelete }) {
 function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened, onCategoriesChanged }) {
   const [items, setItems] = useState([]);
   const itemScopes = useScopeLabels(items.map((r) => val(r, 'sys_scope')));
-  const [search, setSearch] = useState('');
+  /* Still read by load(), so the request shape is unchanged; nothing writes it
+     now that the search field is gone. */
+  const [search] = useState('');
   const [selected, setSelected] = useState(null); // deep view
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: '', short_description: '', description: '', category: '', catalog: '' });
@@ -244,64 +246,65 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
 
   return (
     <div className="page-full">
-      <div className="card">
-        <div className="spread" style={{ marginBottom: 12 }}>
-          <div className="card-title" style={{ marginBottom: 0 }}>Catalog items</div>
-          <button className="btn primary sm" onClick={() => setCreating(!creating)}>{creating ? 'Cancel' : 'New item'}</button>
-        </div>
-        {creating && (
-          <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid var(--line)' }}>
-            <div className="field"><label className="label">Name</label>
-              <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
-            <div className="field"><label className="label">Short description</label>
-              <input className="input" value={draft.short_description} onChange={(e) => setDraft({ ...draft, short_description: e.target.value })} /></div>
-            <div className="grid2">
-              <div className="field">
-                <div className="spread">
-                  <label className="label">Category</label>
-                  <button className="rail-btn" type="button"
-                    onClick={() => setNewCategory(newCategory ? null : { title: '', sc_catalog: catalogs[0]?.sys_id || '' })}>
-                    {newCategory ? 'cancel' : '+ new category'}
-                  </button>
-                </div>
-                <select className="select" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })}>
-                  <option value="">—</option>
-                  {categories.map((c) => <option key={val(c, 'sys_id')} value={val(c, 'sys_id')}>{disp(c, 'title')}</option>)}
-                </select></div>
-              <div className="field"><label className="label">Catalog</label>
-                <select className="select" value={draft.catalog} onChange={(e) => setDraft({ ...draft, catalog: e.target.value })}>
-                  <option value="">—</option>
-                  {catalogs.map((c) => <option key={c.sys_id} value={c.sys_id}>{c.title}</option>)}
-                </select></div>
-            </div>
-            {newCategory && (
-              <div className="policy-card" style={{ marginBottom: 10 }}>
-                <div className="field">
-                  <label className="label">New category title</label>
-                  <input className="input" value={newCategory.title} onChange={(e) => setNewCategory({ ...newCategory, title: e.target.value })} />
-                </div>
-                <div className="field">
-                  <label className="label">In catalog</label>
-                  <select className="select" value={newCategory.sc_catalog} onChange={(e) => setNewCategory({ ...newCategory, sc_catalog: e.target.value })}>
-                    {catalogs.map((c) => <option key={c.sys_id} value={c.sys_id}>{c.title}</option>)}
-                  </select>
-                </div>
-                <button className="btn sm" onClick={createCategory} aria-busy={busy} disabled={busy || !newCategory.title}>Create category</button>
+      {/* The toolbar card that used to stand here permanently — a heading, the
+          New item button and a "Search items…" field — is gone. The heading and
+          the button are the table's own header now, and the table's filter is
+          the search. What is left is the create form, and it is only on screen
+          while you are actually creating something. */}
+      {creating && (
+        <div className="card">
+          <div className="card-title">New catalog item</div>
+          <div className="field"><label className="label">Name</label>
+            <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
+          <div className="field"><label className="label">Short description</label>
+            <input className="input" value={draft.short_description} onChange={(e) => setDraft({ ...draft, short_description: e.target.value })} /></div>
+          <div className="grid2">
+            <div className="field">
+              <div className="spread">
+                <label className="label">Category</label>
+                <button className="rail-btn" type="button"
+                  onClick={() => setNewCategory(newCategory ? null : { title: '', sc_catalog: catalogs[0]?.sys_id || '' })}>
+                  {newCategory ? 'cancel' : '+ new category'}
+                </button>
               </div>
-            )}
-            <button className="btn primary sm" onClick={createItem} aria-busy={busy} disabled={busy || !draft.name}>Create item</button>
+              <select className="select" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })}>
+                <option value="">—</option>
+                {categories.map((c) => <option key={val(c, 'sys_id')} value={val(c, 'sys_id')}>{disp(c, 'title')}</option>)}
+              </select></div>
+            <div className="field"><label className="label">Catalog</label>
+              <select className="select" value={draft.catalog} onChange={(e) => setDraft({ ...draft, catalog: e.target.value })}>
+                <option value="">—</option>
+                {catalogs.map((c) => <option key={c.sys_id} value={c.sys_id}>{c.title}</option>)}
+              </select></div>
           </div>
-        )}
-        <div className="row" style={{ marginBottom: 10 }}>
-          <input className="input" placeholder="Search items…" value={search}
-            onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
+          {newCategory && (
+            <div className="policy-card" style={{ marginBottom: 10 }}>
+              <div className="field">
+                <label className="label">New category title</label>
+                <input className="input" value={newCategory.title} onChange={(e) => setNewCategory({ ...newCategory, title: e.target.value })} />
+              </div>
+              <div className="field">
+                <label className="label">In catalog</label>
+                <select className="select" value={newCategory.sc_catalog} onChange={(e) => setNewCategory({ ...newCategory, sc_catalog: e.target.value })}>
+                  {catalogs.map((c) => <option key={c.sys_id} value={c.sys_id}>{c.title}</option>)}
+                </select>
+              </div>
+              <button className="btn sm" onClick={createCategory} aria-busy={busy} disabled={busy || !newCategory.title}>Create category</button>
+            </div>
+          )}
+          <button className="btn primary sm" onClick={createItem} aria-busy={busy} disabled={busy || !draft.name}>Create item</button>
         </div>
-      </div>
+      )}
 
       {/* The catalog list, full width, with no column reserved beside it.
           openItem() is untouched — it still fetches the deep view. */}
       <DataTable
         title="Catalog items"
+        action={(
+          <button className="btn primary sm" onClick={() => setCreating(!creating)}>
+            {creating ? 'Cancel' : 'New item'}
+          </button>
+        )}
         rows={items}
         loading={loading}
         error={error}
@@ -594,10 +597,30 @@ function GuidesTab() {
 }
 
 /* ── Record producers tab ── */
+
+/* The producers list, in the shared column vocabulary. Actions live in their
+   own unsortable column so a click on them never sorts the table. */
+const producerColumns = (onOpenItem, onRemove) => [
+  { key: 'name', header: 'Name', width: 280, text: (p) => disp(p, 'name') },
+  { key: 'table', header: 'Target table', width: 220, text: (p) => disp(p, 'table_name'),
+    cell: (p) => <span className="mono" style={{ fontSize: 11.5 }}>{disp(p, 'table_name')}</span> },
+  { key: 'active', header: 'Active', width: 110, text: (p) => (val(p, 'active') === 'true' ? 'active' : 'off'),
+    cell: (p) => <span className={`badge ${val(p, 'active') === 'true' ? 'green' : ''}`}>{val(p, 'active') === 'true' ? 'active' : 'off'}</span> },
+  { key: 'actions', header: '', width: 210, sortable: false, text: () => '',
+    cell: (p) => (
+      <div className="row" style={{ gap: 4, flexWrap: 'nowrap' }}>
+        {/* A producer IS a catalog item, so managing its variables and
+            policies is one click, not a second search. */}
+        <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); onOpenItem(val(p, 'sys_id')); }}>Variables &amp; policies</button>
+        <button className="btn danger sm" onClick={(e) => { e.stopPropagation(); onRemove(p); }} aria-label="Delete producer">✕</button>
+      </div>
+    ) },
+];
 function ProducersTab({ onOpenItem }) {
   const [producers, setProducers] = useState([]);
   const [draft, setDraft] = useState({ name: '', table: null, short_description: '', script: '' });
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
 
   const load = () => api.get('/catalog/record-producers').then(setProducers).catch((e) => setError(e.message));
@@ -626,55 +649,46 @@ function ProducersTab({ onOpenItem }) {
       });
       toast.success(`Created record producer "${disp(r, 'name')}" → ${draft.table?.id}`);
       setDraft({ name: '', table: null, short_description: '', script: '' });
+      setCreating(false);
       load();
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
 
   return (
-    <div className="split">
-      <div className="card">
-        <div className="card-title">New record producer</div>
-        <div className="field"><label className="label">Name</label>
-          <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
-        <div className="field"><label className="label">Target table</label>
-          <TableField value={draft.table} onChange={(t) => setDraft({ ...draft, table: t })} /></div>
-        <div className="field"><label className="label">Short description</label>
-          <input className="input" value={draft.short_description} onChange={(e) => setDraft({ ...draft, short_description: e.target.value })} /></div>
-        <div className="field"><label className="label">Script (maps variables → record)</label>
-          <textarea className="textarea mono" placeholder="current.short_description = producer.issue_summary;" value={draft.script} onChange={(e) => setDraft({ ...draft, script: e.target.value })} /></div>
-        <button className="btn primary sm" onClick={create} aria-busy={busy} disabled={busy || !draft.name || !draft.table}>Create producer</button>
-        {error && <p className="error-text">{error}</p>}
-      </div>
-      <div className="card">
-        <div className="card-title">Record producers</div>
-        <table className="table">
-          <thead><tr><th>Name</th><th>Target table</th><th>Active</th><th /></tr></thead>
-          <tbody>
-            {producers.map((p) => (
-              <tr key={val(p, 'sys_id')}>
-                <td>{disp(p, 'name')}</td>
-                <td className="mono">{disp(p, 'table_name')}</td>
-                <td><span className={`badge ${val(p, 'active') === 'true' ? 'green' : ''}`}>{val(p, 'active') === 'true' ? 'active' : 'off'}</span></td>
-                <td>
-                  <div className="row" style={{ gap: 4, flexWrap: 'nowrap' }}>
-                    {/* A producer IS a catalog item, so managing its variables
-                        and policies is one click, not a second search. */}
-                    <button className="btn ghost sm" onClick={() => onOpenItem(val(p, 'sys_id'))}>Variables &amp; policies</button>
-                    <button className="btn danger sm" onClick={() => remove(p)}>✕</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {producers.length === 0 && (
-          <EmptyState
-            title="No record producers yet."
-            hint="A producer is a catalog item that creates a record on a table you choose. Create one on the left."
-          />
+    <div className="page-full">
+      {/* Same shape as the Items tab: the form is a card only while you are
+          creating one, and the list is the shared table. Nothing about create,
+          delete or "Variables & policies" changed — only where they are drawn. */}
+      {creating && (
+        <div className="card">
+          <div className="card-title">New record producer</div>
+          <div className="field"><label className="label">Name</label>
+            <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
+          <div className="field"><label className="label">Target table</label>
+            <TableField value={draft.table} onChange={(t) => setDraft({ ...draft, table: t })} /></div>
+          <div className="field"><label className="label">Short description</label>
+            <input className="input" value={draft.short_description} onChange={(e) => setDraft({ ...draft, short_description: e.target.value })} /></div>
+          <div className="field"><label className="label">Script (maps variables → record)</label>
+            <textarea className="textarea mono" placeholder="current.short_description = producer.issue_summary;" value={draft.script} onChange={(e) => setDraft({ ...draft, script: e.target.value })} /></div>
+          <button className="btn primary sm" onClick={create} aria-busy={busy} disabled={busy || !draft.name || !draft.table}>Create producer</button>
+        </div>
+      )}
+
+      <DataTable
+        title="Record producers"
+        action={(
+          <button className="btn primary sm" onClick={() => setCreating(!creating)}>
+            {creating ? 'Cancel' : 'New producer'}
+          </button>
         )}
-      </div>
+        rows={producers}
+        error={error}
+        getRowId={(p) => val(p, 'sys_id')}
+        filterPlaceholder="Filter producers…"
+        empty="No record producers yet. A producer is a catalog item that creates a record on a table you choose."
+        columns={producerColumns(onOpenItem, remove)}
+      />
     </div>
   );
 }

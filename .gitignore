@@ -9,3 +9,20 @@ server/data/
 # the resolved id; the template is the tracked source of truth. Untracked so no
 # commit timing can ever capture the pin (it captured one once).
 server/fluent-workspace/now.config.json
+
+# Python — SAOS_functionalities/ and meeting-agent/ are Python, and a virtualenv
+# is a machine-local build artifact: it carries compiled wheels for one OS and
+# one interpreter. 10,047 of these were staged once, which made the 66 real
+# files in that commit unreviewable.
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# Local SAOS database
+SAOS_functionalities/saos/saos_dev.db
+# Local SQLite scratch databases (the SAOS dev database is one).
+*.db

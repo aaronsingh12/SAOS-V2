@@ -37,6 +37,7 @@ const I = {
   flows: <><circle cx="6" cy="19" r="3" /><circle cx="18" cy="5" r="3" /><path d="M9 19h4a4 4 0 0 0 4-4V9" /></>,
   sla: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
   acl: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" /></>,
+  health: <><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></>,
   tables: <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" /></>,
   meetings: <><rect x="3" y="4.5" width="18" height="17" rx="2" /><path d="M16 2.5v4M8 2.5v4M3 10h18" /></>,
   applications: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
@@ -52,8 +53,13 @@ const I = {
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
 };
 
+/* data-ic names the glyph so the stylesheet can give each one a hover motion
+   that matches what it depicts — a gear turns, a clock's hands move, a flow
+   travels its connector. The paths above are untouched: the CSS reaches their
+   parts positionally, so there is one attribute here and no per-icon markup.
+   See "ICON HOVER MOTION" in experience.css. */
 const Icon = ({ name, size = 17 }) => (
-  <svg className="nav-ic" viewBox="0 0 24 24" width={size} height={size} fill="none"
+  <svg className="nav-ic" data-ic={name} viewBox="0 0 24 24" width={size} height={size} fill="none"
     stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true">{I[name]}</svg>
 );
@@ -71,6 +77,7 @@ const AUTOMATIONS = [
   ['/flows', 'Flows', 'flows'],
   ['/sla', 'SLA', 'sla'],
   ['/access', 'ACL', 'acl'],
+  ['/health', 'Health Assist', 'health'],
   ['/tables', 'Tables', 'tables'],
   ['/meetings', 'Meetings', 'meetings'],
   ['/applications', 'Applications', 'applications'],

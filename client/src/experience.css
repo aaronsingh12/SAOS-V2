@@ -1093,7 +1093,6 @@
 .app-bg .gradient-waves-container { width: 100%; height: 100%; }
 
 /* Everything in the shell paints above the layer. Stacking, not wrapping. */
-.main > .topbar,
 .main > .content,
 .main > .agent-host { position: relative; z-index: 1; }
 
@@ -1258,9 +1257,17 @@
    The rows are laid out to fit instead of being clipped — see the collapsed
    sizing in the navigation section. */
 .sidebar.is-collapsed .nav-scroll {
-  overflow-y: hidden;
+  /* SCROLLABLE, with the bar hidden — not unscrollable. A 72px rail cannot
+     spend 10px on a scrollbar, but it also cannot drop the destinations that
+     do not fit: overflow:hidden made the last icons unreachable on a short
+     window. auto keeps the wheel, the trackpad and touch working; the two
+     rules below remove the bar itself in Firefox and in WebKit/Blink, and no
+     space is reserved for it either way. */
+  overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
 }
 .sidebar.is-collapsed .nav-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
 /* Nothing may overflow it either, so the rail stays scrollbar-free rather than
@@ -1305,22 +1312,36 @@
    There is still only ONE scroller for the conversation. */
 .agent-layout .chat-wrap { padding-left: 0; padding-right: 0; }
 .msgs { padding-left: 22px; padding-right: 12px; }
-.chat-wrap > .composer-line,
 .chat-wrap > .stage,
 .chat-wrap > .from-meeting,
 .chat-wrap > .ax { margin-left: 22px; margin-right: 22px; }
+
+/* The composer group is CENTRED in the playground, and the inset is expressed
+   as width rather than as margins. Two explicit horizontal margins on a box
+   that already had `margin: 0 auto` over-constrain it: CSS drops the right one
+   and gives the whole slack to that side, which is why a 1010px group in a
+   1150px playground sat 22px from the left and 118px from the right. Taking
+   the inset out of the WIDTH leaves both margins auto, so the group re-centres
+   itself on every playground width — including the one the sidebar changes
+   when it collapses. */
+.chat-wrap > .composer-line {
+  width: calc(100% - 44px);
+  margin-left: auto; margin-right: auto;
+}
 .playground-body > .act-drawer { margin-right: 22px; }
 
 @media (max-width: 900px) {
   .msgs { padding-left: 14px; padding-right: 8px; }
-  .chat-wrap > .composer-line,
-  .playground-body > .act-drawer { margin-left: 14px; margin-right: 14px; }
+  .chat-wrap > .composer-line { width: calc(100% - 28px); }
 }
 @media (max-width: 640px) {
   .msgs { padding-left: 10px; padding-right: 6px; }
-  .chat-wrap > .composer-line,
-  .playground-body > .act-drawer { margin-left: 10px; margin-right: 10px; }
+  .chat-wrap > .composer-line { width: calc(100% - 20px); }
 }
+/* No margin on the CLOSED drawer at any width: it is zero wide, and a margin
+   on it was the 10–14px that kept the conversation's scrollbar off the edge
+   below 900px. Below 900px the open drawer is a sheet, so it needs none either. */
+.playground-body > .act-drawer { margin-left: 0; }
 
 /* ══════════════════════════════════════════════════════════════════════════
    DATA TABLE — card frame, quiet rows, compact footer
@@ -1330,13 +1351,34 @@
    an existing NHA token, so a ServiceNow list reads as part of this app rather
    than as a widget dropped into it.
    ══════════════════════════════════════════════════════════════════════════ */
+/* ── The glass container ──────────────────────────────────────────────────
+   ONE pane around the whole list, not one per cell. The blur, the translucency
+   and the rim live on .dt and nowhere else: the rows, the header band and the
+   footer are painted ON this surface, so the Gradient Waves read as a single
+   thing moving behind a single sheet rather than behind fifty little ones.
+
+   The percentages are the readability budget. .dt keeps most of --panel so
+   body text still sits on a near-solid dark ground; only the remainder lets
+   the waves through, and the 22px blur means what comes through is colour
+   rather than shape. Nothing here is applied to .content, to the background
+   layer, or to the page title. */
 .dt {
   display: flex; flex-direction: column;
   min-width: 0;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--text) 11%, var(--line));
   border-radius: var(--radius);
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
+  backdrop-filter: blur(22px) saturate(135%);
+  box-shadow:
+    0 20px 46px -26px #000000cc,
+    inset 0 1px 0 color-mix(in srgb, var(--text) 7%, transparent);
   overflow: hidden;
+}
+/* Where the browser cannot blur a backdrop, translucency alone would just be a
+   washed-out card over moving colour — so it falls back to the opaque panel. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .dt { background: var(--panel); border-color: var(--line); }
 }
 
 .dt-top {
@@ -1356,7 +1398,7 @@
   flex: 1 1 200px; min-width: 0; max-width: 340px;
   padding: 0 9px;
   border: 1px solid var(--line); border-radius: var(--radius-sm);
-  background: var(--ink); color: var(--muted);
+  background: color-mix(in srgb, var(--ink) 55%, transparent); color: var(--muted);
 }
 .dt-filter:focus-within { border-color: var(--verdigris-dim); }
 .dt-filter-input {
@@ -1389,7 +1431,7 @@
 
 /* The header is the one row that is allowed to look different. */
 .dt-table thead th {
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--panel-2) 80%, transparent);
   border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 1;
 }
@@ -1409,15 +1451,20 @@
 .dt-table th.is-sorted .dt-th-btn { color: var(--verdigris); }
 .dt-sort { flex: none; }
 
-/* Resize handle: a wide invisible grab area over a hairline. */
+/* Resize handle: a wide invisible grab area over a hairline.
+   The whole 9px sits INSIDE its own column. It used to overhang the boundary
+   by 4px, and that overhang was never reachable: the th clips its overflow,
+   and the next th paints over anything that escapes — so the real target was
+   the 5px that stayed inside. Measured: the handle's own centre hit-tested to
+   the neighbouring header button. The hairline is drawn at the right edge so
+   it still reads as the column boundary. */
 .dt-resize {
   flex: none; width: 9px; align-self: stretch;
-  margin-right: -4px;
   cursor: col-resize;
-  background: linear-gradient(var(--line), var(--line)) center / 1px 60% no-repeat;
+  background: linear-gradient(var(--line), var(--line)) right center / 1px 60% no-repeat;
   touch-action: none;
 }
-.dt-resize:hover { background: linear-gradient(var(--verdigris), var(--verdigris)) center / 2px 100% no-repeat; }
+.dt-resize:hover { background: linear-gradient(var(--verdigris), var(--verdigris)) right center / 2px 100% no-repeat; }
 
 .dt-table tbody td {
   padding: 9px 12px;
@@ -1426,13 +1473,40 @@
 }
 .dt-table tbody tr:last-child td { border-bottom: 0; }
 .dt-click { cursor: pointer; }
-.dt-click:hover td { background: var(--panel-2); }
+.dt-click:hover td { background: color-mix(in srgb, var(--panel-2) 88%, transparent); }
 /* Selected and active are different states: selected is a checkbox, active is
    the record whose drawer is open. Both subtle, neither shouting. */
-.dt-table tbody tr.is-selected td { background: color-mix(in srgb, var(--verdigris) 8%, transparent); }
+.dt-table tbody tr.is-selected td { background: color-mix(in srgb, var(--verdigris) 12%, transparent); }
 .dt-table tbody tr.is-active td { box-shadow: inset 2px 0 0 var(--verdigris); }
-.dt-check { width: 38px; text-align: center; }
-.dt-check input { cursor: pointer; }
+/* ── The selection column ─────────────────────────────────────────────────
+   The header checkbox used to sit 12px to the left of and 4.5px above the row
+   checkboxes. Two causes, both from rules that were never meant to reach this
+   column:
+
+     · `.dt-table tbody td { padding: 9px 12px }` insets the BODY cell only, so
+       the row boxes started 12px in while the header box started at 0 — the
+       12px exactly.
+     · `.dt-table th, .dt-table td { text-align: left }` is more specific than
+       the `.dt-check { text-align: center }` that was meant to centre them, so
+       neither was ever centred; the inputs simply sat at the start of their
+       content box, on a text baseline, which is where the 4.5px came from.
+
+   Both cells are now zero-padded and the input is a block centred with auto
+   margins, so the two boxes are identical and the cell's own vertical-align
+   centres them. Selectors carry the `.dt-table` prefix so they outrank the
+   tbody padding rule without `!important`. Column width is unchanged, and the
+   row height still comes from the other cells' padding. */
+.dt-table th.dt-check,
+.dt-table td.dt-check {
+  width: 38px;
+  padding: 0;
+  text-align: center;
+}
+.dt-check input {
+  cursor: pointer;
+  display: block;
+  margin: 0 auto;
+}
 
 .dt-state {
   padding: 22px 14px; text-align: center;
@@ -1489,7 +1563,7 @@
   position: absolute; top: 0; right: 0; bottom: 0;
   /* Comfortable on a desktop, the whole width on a phone, never wider than the
      viewport — so it cannot be the thing that makes the page scroll sideways. */
-  width: min(var(--rd-w, 520px), 100vw);
+  width: min(var(--rd-w, 520px), 100%);
   display: flex; flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--line);
@@ -1521,13 +1595,19 @@
 }
 .rd-close:hover { background: var(--panel-2); color: var(--text); }
 
-.rd-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px 18px 22px; }
+.rd-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px 18px 22px;
+  /* A sys_id, a URL or a script name has no break opportunity; on a phone one
+     of them made the Flows drawer scroll sideways. `anywhere` only acts when
+     a word would otherwise overflow, so ordinary prose is untouched. */
+  overflow-wrap: anywhere;
+}
 /* The detail markup came out of a .card, which drew its own frame. Inside the
    drawer the panel IS the frame, so the inner one is dropped. */
 .rd-body > .card { border: 0; background: none; padding: 0; margin: 0; }
 
 @media (max-width: 640px) {
-  .rd-panel { width: 100vw; }
+  .rd-panel { width: 100%; }
   .rd-head { padding: 12px 10px 10px 14px; }
   .rd-body { padding: 12px 14px 18px; }
 }
@@ -1558,3 +1638,419 @@
   background-clip: padding-box;
 }
 .scroll-list::-webkit-scrollbar-track { background: transparent; }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE TABLE HEADER'S TWO BANDS
+
+   A card that has a primary action splits its header: identity and action on
+   top, controls underneath. Tables without an `action` prop render the single
+   row they always did, so this changes nothing for the others.
+   ══════════════════════════════════════════════════════════════════════════ */
+.dt-top-stacked { flex-direction: column; align-items: stretch; gap: 10px; }
+.dt-top-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dt-top-head { justify-content: space-between; }
+.dt-top-stacked .dt-title { flex: 1 1 auto; min-width: 0; }
+.dt-action { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+/* The filter and the controls share the second band and wrap together rather
+   than either being pushed out of the card. */
+/* One band holding the filter and the page's controls. display:contents in a
+   single-row header leaves those tables byte-identical; stacked, it becomes a
+   real flex row so .dt-filter's flex-basis stays a WIDTH. */
+.dt-top-controls { display: contents; }
+.dt-top-stacked .dt-top-controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0;
+}
+.dt-top-stacked .dt-tools { margin-left: auto; }
+@media (max-width: 640px) {
+  /* The single-row header sends its filter to the end on a phone (order: 3 in
+     the DataTable block above) so the page's own controls come first. A stacked
+     header has already given those controls their own band, so the filter keeps
+     the position it has on every other width — first, then the controls. */
+  .dt-top-stacked .dt-filter { flex-basis: 100%; order: 0; }
+  .dt-top-stacked .dt-tools { margin-left: 0; width: 100%; }
+  .dt-top-stacked .dt-tools > * { flex: 1 1 auto; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ACTIVITY AS A STEP SEQUENCE
+
+   The reference is a multi-step loader: a column of steps on a rail, the done
+   ones settled, the one in flight lit, the rest waiting. Built here out of the
+   rows ActivityPanel already renders — no new component, no library, and not
+   one invented step. Every node below is an event the backend emitted, and its
+   state is that event's own status.
+
+   WHAT ANIMATES, AND WHY. Only the RUNNING node and the progress bar's leading
+   edge. A completed step is finished and sits still; a queued step has not
+   started and sits still. Motion here means work is in flight — it is a
+   readout, not decoration.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* The rail. .ax-row already carried a status-coloured left border; it becomes
+   the connector between nodes, and the node sits on top of it. */
+.ax-list { position: relative; }
+.ax-row { position: relative; padding-left: 2px; }
+.ax-row-btn { align-items: center; gap: 9px; padding-top: 5px; padding-bottom: 5px; }
+
+/* The node. Same glyph as before — it is still the textual signal — inside a
+   ring, so the column reads as a sequence rather than as a list of marks. */
+.ax-mark {
+  position: relative;
+  flex: 0 0 15px; width: 15px; height: 15px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel);
+  font-size: 9px; line-height: 1;
+  transition: border-color 180ms, background 180ms, color 180ms;
+}
+/* The connector, drawn from each node down to the next. The last row has no
+   next node, so it does not draw one. */
+.ax-row::before {
+  content: '';
+  position: absolute; left: 9px; top: 20px; bottom: -2px;
+  width: 1px;
+  background: var(--line);
+}
+.ax-row:last-child::before { display: none; }
+
+.ax-row.ax-completed .ax-mark { border-color: var(--verdigris-dim); background: color-mix(in srgb, var(--verdigris) 16%, var(--panel)); }
+.ax-row.ax-completed::before { background: var(--verdigris-dim); }
+.ax-row.ax-failed .ax-mark    { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, var(--panel)); }
+.ax-row.ax-blocked .ax-mark   { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, var(--panel)); }
+.ax-row.ax-cancelled .ax-mark { opacity: 0.55; }
+.ax-row.ax-queued .ax-mark    { border-style: dashed; color: var(--muted); }
+
+/* The step in flight: a lit node with one halo breathing around it, and the
+   row's own text brought up to full strength. One thing moves, not four. */
+.ax-row.ax-running .ax-mark {
+  border-color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 18%, var(--panel));
+  animation: ax-node 1.6s ease-in-out infinite;
+}
+@keyframes ax-node {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--blue) 45%, transparent); }
+  55%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 0%, transparent); }
+}
+.ax-row.ax-running .ax-what { color: var(--text); }
+.ax-row.ax-running { background: color-mix(in srgb, var(--blue) 6%, transparent); }
+/* The connector BELOW a running step is the part not yet travelled. */
+.ax-row.ax-running::before { background: linear-gradient(var(--blue), var(--line)); }
+
+/* ── The progress bar ─────────────────────────────────────────────────────
+   Width is completed/total, straight from the server's counts. The sheen only
+   exists while something is running, and it travels the FILLED part only. */
+.ax-progress { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ax-bar {
+  flex: 1 1 120px; min-width: 90px; max-width: 220px;
+  height: 4px; border-radius: 999px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.ax-bar-fill {
+  display: block; height: 100%;
+  border-radius: inherit;
+  background: var(--verdigris);
+  transition: width 420ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.ax-bar.is-live .ax-bar-fill {
+  background: linear-gradient(90deg,
+    var(--verdigris) 0%,
+    color-mix(in srgb, var(--verdigris) 55%, #fff) 50%,
+    var(--verdigris) 100%);
+  background-size: 200% 100%;
+  animation: ax-sheen 1.4s linear infinite;
+}
+@keyframes ax-sheen { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SPECULAR CONTROLS — the Activity indicator and the capture pill
+
+   The reference is a specular button: a narrow band of light that crosses the
+   surface when you approach it, as though the control had a sheen. Written
+   here as one pseudo-element per control.
+
+   · It is CLIPPED by the control's own radius and takes no space, so it cannot
+     shift layout or add overflow — the element it lives in is already
+     position: relative and the sweep is absolutely placed inside it.
+   · It runs on hover and focus only, once per approach, and it is
+     pointer-events: none, so it can never take the click.
+   · The sweep is white at very low alpha, which on these dark translucent
+     surfaces reads as light rather than as a colour.
+   ══════════════════════════════════════════════════════════════════════════ */
+.act-dot,
+.dock-pill {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.act-dot::after,
+.dock-pill::after {
+  content: '';
+  position: absolute; inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    #ffffff1f 48%,
+    #ffffff38 50%,
+    #ffffff1f 52%,
+    transparent 65%);
+  background-size: 250% 100%;
+  background-position: 140% 0;
+  transition: opacity 160ms ease;
+}
+.act-dot:hover::after,
+.act-dot:focus-visible::after,
+.dock-pill:hover::after,
+.dock-pill:focus-visible::after {
+  opacity: 1;
+  animation: specular-sweep 720ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+@keyframes specular-sweep {
+  from { background-position: 140% 0; }
+  to   { background-position: -40% 0; }
+}
+/* A thin lit rim on approach, which is what makes the sweep read as a surface
+   catching light rather than as a shape sliding past underneath. */
+.act-dot::before,
+.dock-pill::before {
+  content: '';
+  position: absolute; inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 #ffffff00;
+  transition: box-shadow 220ms ease;
+}
+.act-dot:hover::before,
+.dock-pill:hover::before { box-shadow: inset 0 1px 0 #ffffff26; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Mirrors the hover selectors. A bare `.act-dot::after` is one class and
+     loses to `.act-dot:hover::after`, which is two — measured: the sweep still
+     ran under reduced motion. The global `* { animation: none !important }` in
+     styles.css does not reach these, because `*` does not match a pseudo-
+     element. Same specificity, declared later, so these win. */
+  .act-dot::after,
+  .dock-pill::after,
+  .act-dot:hover::after,
+  .act-dot:focus-visible::after,
+  .dock-pill:hover::after,
+  .dock-pill:focus-visible::after { animation: none; opacity: 0; }
+  .act-dot:hover::before,
+  .dock-pill:hover::before { box-shadow: none; }
+  .ax-row.ax-running .ax-mark { animation: none; }
+  .ax-bar.is-live .ax-bar-fill { animation: none; background: var(--verdigris); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ICON HOVER MOTION
+
+   Every glyph in the navigation is the same component — one <svg class="nav-ic"
+   data-ic="…"> holding the paths declared in Sidebar.jsx. Nothing here adds a
+   class to those paths or replaces an icon: the parts are reached positionally
+   (:nth-child), so this whole section is stylesheet-only and each icon draws
+   exactly what it drew before.
+
+   IT LOOPS FOR AS LONG AS YOU HOVER. Each motion is a keyframe cycle that
+   begins and ends at the icon's rest pose and runs `infinite`, so a box keeps
+   opening and closing and a clock keeps turning for as long as the pointer is
+   there — not once on arrival.
+
+   AND IT RETURNS SMOOTHLY. On mouse-out the animation is simply removed, which
+   snaps the computed transform back to the base value; the `transition` on the
+   base rule below catches that change and eases it instead. That is why every
+   animated part carries both a transition AND an animation.
+
+   THE REST OF THE RULES
+   · The TRIGGER is the row, not the 17px glyph — hovering anywhere on a nav
+     item moves its icon, and :focus-visible does the same for the keyboard.
+   · Motion is TRANSFORM and OPACITY only, so nothing reflows and no click
+     target moves. The <svg> keeps its layout box throughout.
+   · Small amplitudes and unhurried cycles: a gear turns once every four
+     seconds, a flap opens eight degrees.
+   · transform-box: fill-box makes a child transform about its own geometry
+     rather than the viewBox origin — without it every rotation below would
+     swing the part across the icon instead of turning in place.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.nav-ic[data-ic] {
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.nav-ic[data-ic] > * {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1), opacity 260ms ease;
+}
+/* The shared lift, held for the duration of the hover. The chevron and the
+   panel mark are excluded: both already own their transform (the section
+   twist, and the collapsed logo cross-fade), and a second one would fight. */
+.nav-item:hover > .nav-ic[data-ic]:not([data-ic='chevron']):not([data-ic='panel']),
+.nav-item:focus-visible > .nav-ic[data-ic]:not([data-ic='chevron']):not([data-ic='panel']),
+.nav-user:hover .nav-ic[data-ic] {
+  transform: scale(1.07);
+}
+
+/* ── The cycles. Each starts and ends at rest. ───────────────────────────── */
+@keyframes ic-flap    { 0%, 100% { transform: none; } 50% { transform: translateY(-1.7px) rotate(-9deg); } }
+@keyframes ic-turn    { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes ic-pulse   { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.26); opacity: 0.7; } }
+@keyframes ic-travel  { from { stroke-dashoffset: 26; } to { stroke-dashoffset: 0; } }
+@keyframes ic-blink   { 0%, 82%, 100% { transform: scaleY(1); } 90% { transform: scaleY(0.2); } }
+@keyframes ic-nudge   { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(1.5px); } }
+@keyframes ic-riseA   { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.5px); } }
+@keyframes ic-riseB   { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(1.2px); } }
+@keyframes ic-bob     { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-1.4px) scale(1.05); } }
+@keyframes ic-node    { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.22); } }
+@keyframes ic-tile    { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.84); opacity: 0.7; } }
+@keyframes ic-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+
+/* Catalog — the box opens its flap and closes it again, over and over.
+   Child 1 is the flap edge. */
+.nav-item:hover > [data-ic='catalog'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='catalog'] > :nth-child(1) { animation: ic-flap 1.5s ease-in-out infinite; }
+
+/* SLA — the hands go round the dial. Child 2 is the hand pair, and its origin
+   is the spindle at 12,12 in viewBox units, so fill-box is overridden here. */
+[data-ic='sla'] > :nth-child(2) { transform-box: view-box; transform-origin: 12px 12px; }
+.nav-item:hover > [data-ic='sla'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='sla'] > :nth-child(2) { animation: ic-turn 3s linear infinite; }
+
+/* Incidents — the warning mark keeps pulsing. Child 1 is the bar and its dot. */
+.nav-item:hover > [data-ic='incidents'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='incidents'] > :nth-child(1) { animation: ic-pulse 1.3s ease-in-out infinite; }
+
+/* Flows — something travels the connector, again and again, and each node
+   answers as it passes. Child 3 is the connector; the dash pattern exists only
+   while it runs, so the line is solid at rest. */
+.nav-item:hover > [data-ic='flows'] > :nth-child(3),
+.nav-item:focus-visible > [data-ic='flows'] > :nth-child(3) {
+  stroke-dasharray: 13 13;
+  animation: ic-travel 1.4s linear infinite;
+}
+.nav-item:hover > [data-ic='flows'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='flows'] > :nth-child(1) { animation: ic-node 1.4s ease-in-out infinite; }
+.nav-item:hover > [data-ic='flows'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='flows'] > :nth-child(2) { animation: ic-node 1.4s ease-in-out infinite 0.7s; }
+
+/* Tables — the stack keeps settling: the top plate lifts as the middle band
+   drops, which is the motion of rows being written. */
+.nav-item:hover > [data-ic='tables'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='tables'] > :nth-child(1) { animation: ic-riseA 1.6s ease-in-out infinite; }
+.nav-item:hover > [data-ic='tables'] > :nth-child(3),
+.nav-item:focus-visible > [data-ic='tables'] > :nth-child(3) { animation: ic-riseB 1.6s ease-in-out infinite; }
+
+/* Agent — the screen blinks at a natural interval. Child 2 carries both eyes
+   plus the stand, so the squash is anchored to the top. */
+[data-ic='agent'] > :nth-child(2) { transform-origin: center top; }
+.nav-item:hover > [data-ic='agent'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='agent'] > :nth-child(2) { animation: ic-blink 2.6s ease-in-out infinite; }
+
+/* Settings — the gear turns, slowly and without stopping; the hub stays put. */
+[data-ic='settings'] > :nth-child(2) { transform-box: view-box; transform-origin: 11px 11px; }
+.nav-item:hover > [data-ic='settings'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='settings'] > :nth-child(2) { animation: ic-turn 4s linear infinite; }
+
+/* Meetings — the binding and header line lift and settle, like sheets turning. */
+.nav-item:hover > [data-ic='meetings'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='meetings'] > :nth-child(2) { animation: ic-riseA 1.7s ease-in-out infinite; }
+
+/* Applications — the four tiles pulse in sequence, so the grid reads as a set
+   of parts rather than one shape. */
+.nav-item:hover > [data-ic='applications'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='applications'] > :nth-child(1) { animation: ic-tile 1.8s ease-in-out infinite; }
+.nav-item:hover > [data-ic='applications'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='applications'] > :nth-child(2) { animation: ic-tile 1.8s ease-in-out infinite 0.15s; }
+.nav-item:hover > [data-ic='applications'] > :nth-child(4),
+.nav-item:focus-visible > [data-ic='applications'] > :nth-child(4) { animation: ic-tile 1.8s ease-in-out infinite 0.3s; }
+.nav-item:hover > [data-ic='applications'] > :nth-child(3),
+.nav-item:focus-visible > [data-ic='applications'] > :nth-child(3) { animation: ic-tile 1.8s ease-in-out infinite 0.45s; }
+
+/* Transport — the truck keeps rolling and its wheels keep turning under it. */
+.nav-item:hover > [data-ic='transport'] > :nth-child(1),
+.nav-item:hover > [data-ic='transport'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='transport'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='transport'] > :nth-child(2) { animation: ic-nudge 1.2s ease-in-out infinite; }
+.nav-item:hover > [data-ic='transport'] > :nth-child(3),
+.nav-item:focus-visible > [data-ic='transport'] > :nth-child(3) { animation: ic-nudge 1.2s ease-in-out infinite 0.08s; }
+.nav-item:hover > [data-ic='transport'] > :nth-child(4),
+.nav-item:focus-visible > [data-ic='transport'] > :nth-child(4) { animation: ic-nudge 1.2s ease-in-out infinite 0.08s; }
+
+/* Audit — the written lines keep shifting, as if the log kept gaining one. */
+.nav-item:hover > [data-ic='audit'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='audit'] > :nth-child(2) { animation: ic-riseA 1.6s ease-in-out infinite; }
+
+/* Chats — the bubble keeps rising, the way messages keep arriving. */
+.nav-item:hover > [data-ic='chats'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='chats'] > :nth-child(1) { animation: ic-bob 1.5s ease-in-out infinite; }
+
+/* ACL — the shield's tick pulses, which is the check being made. Child 2. */
+.nav-item:hover > [data-ic='acl'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='acl'] > :nth-child(2) { animation: ic-pulse 1.6s ease-in-out infinite; }
+
+/* Dashboard — one path, so the panels breathe as a set. */
+.nav-item:hover > [data-ic='dashboard'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='dashboard'] > :nth-child(1) { animation: ic-breathe 1.8s ease-in-out infinite; }
+
+/* Skills — the small spark keeps twinkling beside the large one. Child 2. */
+.nav-item:hover > [data-ic='skills'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='skills'] > :nth-child(2) { animation: ic-pulse 1.4s ease-in-out infinite; }
+
+/* Tasks — the three ticks land one after another. Children 2, 3, 4. */
+.nav-item:hover > [data-ic='tasks'] > :nth-child(2),
+.nav-item:focus-visible > [data-ic='tasks'] > :nth-child(2) { animation: ic-node 1.8s ease-in-out infinite; }
+.nav-item:hover > [data-ic='tasks'] > :nth-child(3),
+.nav-item:focus-visible > [data-ic='tasks'] > :nth-child(3) { animation: ic-node 1.8s ease-in-out infinite 0.2s; }
+.nav-item:hover > [data-ic='tasks'] > :nth-child(4),
+.nav-item:focus-visible > [data-ic='tasks'] > :nth-child(4) { animation: ic-node 1.8s ease-in-out infinite 0.4s; }
+
+/* Delete Chats — the lid keeps tipping. Child 1 is the lid and handle. This
+   icon is written inline in AgentChat rather than coming from the Icon
+   component, so it carries the same data-ic by hand. */
+.nav-item:hover > [data-ic='trash'] > :nth-child(1),
+.nav-item:focus-visible > [data-ic='trash'] > :nth-child(1) { animation: ic-flap 1.4s ease-in-out infinite; }
+
+/* User — the head keeps lifting off the shoulders a little. */
+.nav-user:hover [data-ic='user'] > :nth-child(1) { animation: ic-riseA 1.7s ease-in-out infinite; }
+
+/* The mark. Expanded it is a plain <img>, so the treatment is the lightest
+   thing that still reads as a response; collapsed it lives inside
+   .nav-mark-toggle, which already cross-fades it into the panel icon, and that
+   interaction is left exactly as it was. */
+.nav-brand > .logomark { transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1), opacity 260ms ease; }
+.nav-brand:hover > .logomark { animation: ic-breathe 2.2s ease-in-out infinite; opacity: 0.94; }
+
+/* Reduced motion: no cycle AND no end state, so an icon simply does not move.
+   The selectors MIRROR the hover rules rather than simplifying them — measured:
+   a shorter `.nav-item:hover > .nav-ic[data-ic]` lost to the
+   `:not([data-ic='chevron']):not([data-ic='panel'])` version above, because two
+   extra attribute selectors outrank it, and the lift still applied. Same
+   specificity, declared later, so these win. */
+@media (prefers-reduced-motion: reduce) {
+  .nav-ic[data-ic],
+  .nav-ic[data-ic] > *,
+  .nav-item:hover > .nav-ic[data-ic]:not([data-ic='chevron']):not([data-ic='panel']),
+  .nav-item:focus-visible > .nav-ic[data-ic]:not([data-ic='chevron']):not([data-ic='panel']),
+  .nav-item:hover > .nav-ic[data-ic] > *,
+  .nav-item:focus-visible > .nav-ic[data-ic] > *,
+  .nav-item:hover > .nav-ic[data-ic] > :nth-child(1),
+  .nav-item:hover > .nav-ic[data-ic] > :nth-child(2),
+  .nav-item:hover > .nav-ic[data-ic] > :nth-child(3),
+  .nav-item:hover > .nav-ic[data-ic] > :nth-child(4),
+  .nav-item:focus-visible > .nav-ic[data-ic] > :nth-child(1),
+  .nav-item:focus-visible > .nav-ic[data-ic] > :nth-child(2),
+  .nav-item:focus-visible > .nav-ic[data-ic] > :nth-child(3),
+  .nav-item:focus-visible > .nav-ic[data-ic] > :nth-child(4),
+  .nav-user:hover .nav-ic[data-ic],
+  .nav-user:hover .nav-ic[data-ic] > *,
+  .nav-user:hover .nav-ic[data-ic] > :nth-child(1),
+  .nav-brand:hover > .logomark {
+    transform: none;
+    animation: none;
+    stroke-dasharray: none;
+  }
+}

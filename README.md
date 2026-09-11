@@ -2,7 +2,7 @@
 
 Connect a ServiceNow PDI and build on it two ways: through clean module UIs, or by telling an AI agent what you want and approving each change it proposes. Bring your own model — Anthropic, OpenAI, or fully-local Ollama. No Now Assist SKUs required.
 
-**Scope (this build):** PDI connection · Incident Management (full CRUD) · Catalog Management (items, all variable types with choices, inline variable editing and reordering, **catalog UI policies**, variable sets, order guides, record producers) · Flow Designer (full read, executions, activate, **live authoring of real flows and subflows via the ServiceNow SDK**, AI blueprint design + classic fallback) · **SLA definitions** (read, create, and semantic verification of the breach clock) · **Access control** (ACL report, two-role diff, plain-language explanation — read-only) · **Audit** (everything the agent and the module pages did to the instance, with sys_ids, approvals and CSV export) · deep reference-field/table handling everywhere · agentic chat with a human approval gate on every mutation, and markdown-rendered replies.
+**Scope (this build):** PDI connection · Incident Management (full CRUD) · Catalog Management (items, all variable types with choices, inline variable editing and reordering, **catalog UI policies**, variable sets, order guides, record producers) · Flow Designer (full read, executions, activate, **live authoring of real flows and subflows via the ServiceNow SDK**, AI blueprint design + classic fallback) · **SLA definitions** (read, create, and semantic verification of the breach clock) · **Access control** (ACL report, two-role diff, plain-language explanation — read-only) · **Health Assist** (read-only estate health: 15 allow-listed tables, a deterministic rule pack over ten domains, and coverage reported beside every finding) · **Audit** (everything the agent and the module pages did to the instance, with sys_ids, approvals and CSV export) · deep reference-field/table handling everywhere · agentic chat with a human approval gate on every mutation, and markdown-rendered replies.
 
 ---
 
@@ -177,6 +177,125 @@ An ACL reader and explainer. Deliberately **no authoring** — an ACL is the one
 - **Explain in plain language** — the structured report through your configured model, read-only, labelled AI-generated at the API boundary and again in the UI.
 
 Two honesty properties do most of the work here. An empty result is never rendered as an answer: the report carries a `visibility` of `full` / `empty` / `restricted` / `error`, because `sys_security_acl` is itself ACL-protected and *"you cannot see the rules"* and *"there are no rules"* look identical in an empty table. And the diff states, above the grid, that it compares what the rules **say** rather than what a role can do — the platform evaluates every matching ACL at each level, and a field ACL, condition or script can deny what a table-level row appears to allow.
+
+### Health Assist
+
+Estate health over the connected instance. Reads 15 allow-listed tables, runs a
+deterministic rule pack across ten domains — CMDB quality, relationship
+integrity, CSDM completeness, customisation, integration, performance, upgrade,
+security hygiene, MID servers, event binding — and reports findings carrying the
+records each one was derived from.
+
+It is **read-only by construction**. There is no authoring tool, the router does
+not import the ServiceNow client, and the rule pack imports nothing at all —
+each asserted by a test rather than left as a promise. A finding carries a
+recommendation written for a person to act on.
+
+The part that does the real work is **coverage**. Every table comes back with an
+account of how completely it was read, and three things follow from it:
+
+- **Absence rules only run on complete coverage.** "This CI has no
+  relationships" is a claim about everything that was *not* found, so on a
+  partial read the rule does not run — and says so by name, with the reason.
+  Partial extraction plus an absence rule is how *"we could not read the table"*
+  becomes *"your CMDB is broken"*.
+- **The quality score is withheld** unless `cmdb_ci` and `cmdb_rel_ci` were both
+  read completely. A partial relationship read inflates orphan findings and
+  would score our own access rather than the estate, so the page prints the
+  reason instead of a number.
+- **A table absent on this instance and one this account may not read are
+  different problems**, and the coverage chip says which.
+
+Measured live on dev424910: 300 of 2,784 CIs read → `limited`, score withheld
+with its reason attached, and `business_criticality` reported as a missing field
+because `sysparm_fields` drops unknown names without complaint (trap #4). None
+of those is an error — all three are the report.
+
+Plain-language summaries are optional and strictly downstream: the model sees
+only opaque fingerprints, rules, severities and counts, and a reply naming an id
+that was never sent is discarded **whole**, because a model that fabricated one
+entry has shown it is not keying off the input. Its failure never removes a
+deterministic finding.
+
+#### The scorecard, and the two ways out of a finding
+
+The overview leads with a **scorecard** — the CMDB quality score as a plain
+number with a plain-English verdict, or a blank and the reason it was withheld —
+then bifurcates the findings two ways, both clickable as filters:
+
+- **How serious is it?** Critical · Major · Moderate · Low, as bars. Severity is
+  a status scale, so each bar carries its word, its glyph and its count; identity
+  never rests on colour alone.
+- **Which area?** The ten domains, sorted, in one colour. Colouring each bar by
+  its own size would double-encode bar length as hue.
+
+Coverage sits above the findings, never below them, and the findings table is
+the charts' table-view twin — every value in a bar is also readable as text.
+
+Opening a finding replaces the list with a two-pane view:
+
+**Left — the problem.** What the rule observed and why it matters, the tables it
+read with the exact fields, the blast radius (labelled as topology reachability,
+not proven propagation), and the raw evidence rows with their sys_ids.
+
+**Right — the fix.** Two lanes: **Generate remediation plan**, and **Fix it
+myself** (numbered manual steps for that rule, ending with how to confirm it
+worked). Above both, a time comparison labelled **"Estimated, not measured"**
+with its basis attached — manual effort scales with record count because
+somebody opens each record; agent effort is broadly fixed because one turn
+covers the batch. Nothing here was timed.
+
+#### Remediation: propose → review → approve → execute → validate
+
+**Generate remediation plan** changes nothing. The AI reads the affected
+records, works out what it would set, and opens the proposal in the same
+`RecordDrawer` that Incidents, Catalog, Flows, SLA, Tables and Transport already
+use for editing — a seventh caller, not a seventh editor. It is headed
+**"Proposed changes — not yet applied"** until you say otherwise.
+
+Inside, you get the summary, the exact change list — record, field, current
+value beside proposed value — the reasoning, the impact (records, table, field,
+risks, whether it is reversible) and how it will be checked afterwards. You can
+**edit any value**, **remove individual changes**, and add a note. Reference
+fields use the app's own picker, so a sys_id is never typed by hand.
+
+Then: **Approve and apply**, or **Reject** (with an optional reason; nothing is
+changed and the finding is preserved).
+
+**Approval is the boundary — not the kind of finding.** The AI proposes for
+anything, including the findings whose remedy is a judgement call; what it must
+do there is *say so*, state the assumption and carry its confidence. On
+dev424910, asked to fill an empty `owned_by`, it inferred **David Loo** from the
+record's `managed_by`, the name was resolved to a real sys_id through the app's
+own reference lookup, and it arrived at confidence 0.8 with the assumption
+printed beside it. You can accept it, pick someone else, or reject it.
+
+Three things make *"the agent executed what you approved"* true rather than
+hoped for:
+
+- **Editing invalidates the approval.** The proposal is content-hashed; approval
+  sends the hash you were looking at. Measured live: editing a value moved the
+  hash, and approving with the stale one was refused — *"Nothing ran — review
+  the current version and approve that."*
+- **It reuses the existing plan pipeline.** The approved list becomes a plan
+  that walks the same states, the same fingerprint binding (re-checked before
+  *every* step), the same executor and the same read-back as any other write. No
+  second gate, no second audit trail. Nothing under `health/` can write to the
+  instance at all — a test asserts it.
+- **The model cannot widen the scope.** It may not choose the table or the
+  field; a reply naming a record that was never sent is discarded whole; and a
+  name matching several records stays blank with the candidates offered rather
+  than picking the first.
+
+Afterwards you get the result **per record** — applied or not, with the
+read-back verdict — and a validation pass that re-reads each record and compares
+it against the approved value. Two of five landing is reported as **partially
+completed**, never as applied. The whole trail is kept: the AI's original draft,
+your edits, exactly what you approved, when, what ran, and what the instance
+holds now.
+
+*Today it is an estate and CMDB checker. `health/tables.js` and the domain list
+in `health/rules.js` are the two places it grows into a whole-platform one.*
 
 #### Capability matrix
 
@@ -397,6 +516,13 @@ Modeled on Claude Code / opencode:
 /api/sla         meta · validate (dry run) · list · create · :id (GET · PATCH · DELETE)
                  verify (POST, SSE)
 /api/access      acl/:table · diff/:table?a=&b= · explain (POST)
+/api/health     meta · runs (POST, SSE — read-only estate check) · runs (GET)
+                runs/latest · runs/:id · runs/:id/findings
+                runs/:id/findings/:fingerprint (+evidence, +remediation)
+                runs/:id/findings/:fingerprint/prompt (the agent draft)
+                runs/:id/findings/:fingerprint/proposal (POST — propose, writes nothing)
+                proposals/:id (GET · PATCH edit) · proposals/:id/reject
+                proposals/:id/approve (POST, SSE — the only path to a write) · runs/:id (DELETE)
 /api/audit       (GET, filters: session · mutating) · runs/:id · export.csv
 /api/agent       info · chat (SSE) · approve
                  sessions (GET list · POST new) · sessions/:id (GET · PATCH rename · DELETE)

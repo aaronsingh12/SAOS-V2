@@ -110,7 +110,16 @@ test('B5 — there is exactly ONE cancellation mechanism', () => {
    * aborts → the gate resolves `cancelled`. Same mechanism, third route; no
    * registry, no in-flight map, nothing aborted mid-tool.
    */
-  assert.deepEqual(controllers.sort(), ['routes/agent.js', 'routes/flows.js', 'routes/plan.js'],
+  /*
+   * `routes/health.js` joins the list on the same terms flows.js did. Applying
+   * an approved remediation is a streamed, long-running write, and a page that
+   * goes away mid-execution must stop it the way the other three do: the
+   * client's own fetch abort -> the server sees `close` -> the controller
+   * aborts -> the executor stops at the next step boundary. Same mechanism,
+   * fourth route; still no registry, no in-flight map, nothing aborted
+   * mid-tool.
+   */
+  assert.deepEqual(controllers.sort(), ['routes/agent.js', 'routes/flows.js', 'routes/health.js', 'routes/plan.js'],
     `an AbortController appeared outside the three streaming handlers: ${controllers.join(', ')}`);
   for (const f of sources()) {
     const b = body(f);

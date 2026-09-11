@@ -327,6 +327,45 @@ export default function AgentChat() {
     return () => { cancelled = true; };
   }, [sessionId]);
 
+  /*
+   * A DRAFT HANDED OVER BY HEALTH ASSIST.
+   *
+   * `?health=<runId>:<fingerprint>` says which finding to work on. The prompt
+   * itself is FETCHED rather than carried in the URL — for the same reason the
+   * meeting brief is, plus one of its own: the draft names up to 25 sys_ids and
+   * a URL is the wrong place for them.
+   *
+   * PLACED, NEVER SENT. Health Assist reads the instance and cannot write to
+   * it; handing the agent a prompt must not become a way around that. The user
+   * reads the draft, edits it, and sends it — and any mutation it leads to
+   * still stops at the approval gate like every other one.
+   *
+   * The param is cleared once consumed, so a refresh does not re-place a draft
+   * over something the user has since typed.
+   */
+  useEffect(() => {
+    const ref = params.get('health');
+    if (!ref) return undefined;
+    const [runId, fingerprint] = ref.split(':');
+    if (!runId || !fingerprint) return undefined;
+    let cancelled = false;
+    api.get(`/health/runs/${runId}/findings/${fingerprint}/prompt`)
+      .then((draft) => {
+        if (cancelled || !draft?.text) return;
+        setInput((cur) => cur || draft.text);
+        setOrigin({ kind: 'health', ref: fingerprint, label: draft.label });
+      })
+      .catch(() => { /* the run may have been deleted; the chat still stands */ })
+      .finally(() => {
+        if (cancelled) return;
+        const next = new URLSearchParams(params);
+        next.delete('health');
+        setParams(next, { replace: true });
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.get('health')]);
+
   const refreshSessions = useCallback(async () => {
     try { setSessions(await api.get('/agent/sessions')); }
     catch { setSessions([]); /* the rail is not load-bearing, but it must settle */ }
@@ -1265,7 +1304,7 @@ export default function AgentChat() {
             disabled={running || !(sessions?.length)}
             title="Delete every conversation. The audit trail is not affected."
           >
-            <svg className="nav-ic" viewBox="0 0 24 24" width="17" height="17" fill="none"
+            <svg className="nav-ic" data-ic="trash" viewBox="0 0 24 24" width="17" height="17" fill="none"
               stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
               aria-hidden="true">
               <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
@@ -1455,6 +1494,21 @@ export default function AgentChat() {
               Requirements came from the transcript, not from me.
             </span>
             <Link className="btn ghost sm" to="/meetings">Open the meeting</Link>
+          </div>
+        )}
+
+        {/* Same banner, same reason: at the moment you approve a write, it has
+            to still say where this work came from. A health finding is a READ
+            of the instance — it proposes, and nothing about arriving from it
+            changes what the gate asks. */}
+        {origin?.kind === 'health' && (
+          <div className="from-meeting" style={{ marginBottom: 10 }}>
+            <span className="mark">● from health assist</span>
+            <span className="what">
+              Working on <b>{origin.label || 'a health finding'}</b>.
+              The finding came from a deterministic rule over a read of the instance — every write it leads to is still yours to approve.
+            </span>
+            <Link className="btn ghost sm" to="/health">Open Health Assist</Link>
           </div>
         )}
 

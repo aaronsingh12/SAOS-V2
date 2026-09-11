@@ -978,10 +978,32 @@ test('A3 — the executor still has exactly one call to executeTool', () => {
   assert.match(body, /runStep\(\{[\s\S]{0,200}?dataflow,/);
 });
 
-test('A4 — no migration was added: user_version is still 23', () => {
-  assert.equal(getDb().prepare('PRAGMA user_version').get().user_version, 23);
+test('A4 — Phase 12 added no migration: dataflow rides on the existing tables', () => {
+  /*
+   * THE GUARANTEE, restated against what it was always about.
+   *
+   * This asserted "no migration 24 exists", because 24 was the number Phase 12's
+   * migration would have taken. Health Assist has since appended a real 24 for
+   * its own runs, so the old spelling now fails for a reason that has nothing to
+   * do with dataflow — and deleting it would drop a guarantee that still holds.
+   *
+   * So it is re-pointed at the claim itself: `$ref` resolution is carried on the
+   * Phase 1 task tables, and no migration anywhere was added FOR IT. The head is
+   * still pinned, so a stray migration 25 fails this the way 24 used to.
+   */
+  assert.equal(getDb().prepare('PRAGMA user_version').get().user_version, 25);
+
   const dbSrc = read('memory/db.js');
-  assert.ok(!/\/\/ 24 —/.test(dbSrc), 'a migration 24 appeared');
+  assert.match(dbSrc, /\/\/ 24 — HEALTH ASSIST/, 'migration 24 is no longer the Health Assist one');
+  assert.match(dbSrc, /\/\/ 25 — HEALTH ASSIST REMEDIATION/, 'migration 25 is no longer the remediation one');
+  assert.ok(!/\/\/ 26 —/.test(dbSrc), 'a migration 26 appeared');
+
+  // And nothing in the schema knows what a dataflow or a $ref is.
+  const tables = getDb().prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
+  assert.equal(
+    tables.some((t) => /dataflow|ref_resol|step_ref/i.test(t)), false,
+    'a dataflow table was created — $ref must resolve from the declared outputs on the existing step rows',
+  );
 });
 
 test('A5 — prompts.js was NOT modified by Phase 12 (the one later change is recorded)', async () => {

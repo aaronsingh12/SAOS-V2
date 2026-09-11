@@ -233,7 +233,7 @@ test('§62 the database is unchanged', async () => {
   _setDbForTests(migrate(new DatabaseSync(
     path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'p16db-')), 'd.db'),
   )));
-  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 23);
+  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 25);
   const db = fs.readFileSync(new URL('../src/memory/db.js', import.meta.url), 'utf8');
   assert.ok(!/CREATE TABLE[^;]*lint/i.test(db), 'Phase 16 added a lint table');
 });

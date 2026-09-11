@@ -510,7 +510,7 @@ test('§4/§60.10 no second executor, verifier, approval or evidence projection 
 
 test('§58 no new database table, and the schema version is unchanged', async () => {
   const { getDb } = await import('../src/memory/db.js');
-  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 23);
+  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 25);
   const db = fs.readFileSync(new URL('../src/memory/db.js', import.meta.url), 'utf8');
   assert.ok(!/CREATE TABLE[^;]*(flow_context|diagnos|timeline|audit_cache)/i.test(db),
     'Phase 15 added a table');
