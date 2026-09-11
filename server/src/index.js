@@ -18,6 +18,7 @@ import { transportRouter } from './routes/transport.js';
 import { logsRouter } from './routes/logs.js';
 import { knowledgeRouter } from './routes/knowledge.js';
 import { skillsRouter } from './routes/skills.js';
+import { healthRouter } from './routes/health.js';
 import { log, requestLogger, banner } from './logging.js';
 import { SnowError } from './servicenow/client.js';
 import { getDb } from './memory/db.js';
@@ -66,6 +67,10 @@ app.use('/api/knowledge', knowledgeRouter);
  * could run one (§29, §31, §75).
  */
 app.use('/api/skills', skillsRouter);
+
+// Health Assist. Read-only estate analysis: extraction through the one client,
+// deterministic rules, and a manifest that says what it could not see.
+app.use('/api/health', healthRouter);
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {

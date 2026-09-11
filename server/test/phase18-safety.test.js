@@ -446,7 +446,7 @@ test('T4 — each of the three exists exactly once in src/, and none of them und
  * T5 — NO NEW MIGRATION
  * ================================================================== */
 
-test('T5 — the database is unchanged: user_version is still 23 and no table knows about diffs', async () => {
+test('T5 — the database is unchanged: user_version is still 25 and no table knows about diffs', async () => {
   /*
    * The technique Phase 16 and Phase 17 used: build a database from the REAL
    * migration list and ask it what version it reached. `user_version` is set to
@@ -463,7 +463,7 @@ test('T5 — the database is unchanged: user_version is still 23 and no table kn
   _setDbForTests(migrate(new DatabaseSync(
     path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'p18db-')), 'd.db'),
   )));
-  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 23);
+  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 25);
 
   const db = fs.readFileSync(new URL('../src/memory/db.js', import.meta.url), 'utf8');
   assert.ok(!/\bbaseline\b/i.test(db), 'a migration mentions a baseline');

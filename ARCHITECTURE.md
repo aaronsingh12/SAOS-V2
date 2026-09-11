@@ -22,6 +22,7 @@ Five kinds of work, all against a real instance:
 | **Review** | "Is this flow safe?" / "What changed?" | deterministic rules over a published flow; semantic diff between two authoritative states |
 | **Prove** | "Does this flow actually work?" | build a disposable fixture, trigger it, assert on effects the flow itself produced, clean up |
 | **Build** | "Build an equipment request app" | design a dependency graph, validate it against the instance, refuse what the environment cannot build, build the rest, verify it |
+| **Assess** | "Is this instance healthy?" | read an allow-listed slice of the estate, run deterministic rules over it, and report findings *beside an account of what could not be read* |
 
 The through-line is the last column. Every one of them ends in **evidence**, not
 in an assertion — and where evidence cannot be obtained, the system says so
@@ -111,13 +112,15 @@ nowforge/
 │   │   ├── config/store.js       settings.json — connection · llm · agent ·
 │   │   │                         dba · rag · skills
 │   │   ├── memory/               THE STORAGE LAYER (15 modules) — §7
+│   │   ├── health/               Health Assist: allow-list · extract · PURE
+│   │   │                         rule pack · manifest · store · remediation (§16)
 │   │   ├── knowledge/            documentation corpus, ingestion, precedence
 │   │   ├── servicenow/           40+ modules — the ONLY code that talks to the
 │   │   │                         instance (§6)
 │   │   ├── agent/                the kernel and the domains (§5)
 │   │   ├── meetings/             meeting capture → understanding → build plan
-│   │   └── routes/               16 routers; SSE over POST
-│   ├── test/                     139 files, 2,884 tests — offline, no instance
+│   │   └── routes/               17 routers; SSE over POST
+│   ├── test/                     151 files, 3,013 tests — offline, no instance
 │   ├── scripts/                  33 real-PDI validations and model evaluations
 │   ├── fluent-workspace/         ServiceNow SDK app, scope x_2002152_nwforge
 │   │   ├── src/fluent/flows/     managed sources — anything here SHIPS
@@ -334,7 +337,7 @@ failing the first chat turn with something unrecognisable. **A shipped migration
 is never edited.** `user_version` is the only thing that decides what has run,
 so an edit would silently skip on every existing file.
 
-**Current schema version: 23.**
+**Current schema version: 25.**
 
 | # | Adds |
 |---|---|
@@ -354,6 +357,8 @@ so an edit would silently skip on every existing file.
 | 21 | **agent_tasks / agent_task_steps** — the durable task substrate |
 | 22 | the durable **plan**, carried on the Phase 1 tables (no new table) |
 | 23 | `task_id` on mutation_ledger and tool_events — exact correlation |
+| 24 | health_runs / health_findings — Health Assist's estate checks |
+| 25 | health_proposals — the remediation trail: draft, edits, approval, result |
 
 ### 7.1 Why the audit trail is separate from the transcript
 
@@ -576,7 +581,7 @@ request.
 
 ## 11. Routes
 
-16 routers under `/api`. Streaming routes use **SSE over POST**, because the
+17 routers under `/api`. Streaming routes use **SSE over POST**, because the
 request carries a body.
 
 | Router | Owns |
@@ -586,6 +591,7 @@ request carries a body.
 | `plan` | plan creation/execution (SSE) + the domain entry points: `/diagnose`, `/lint`, `/test`, `/change`, `/knowledge`, `/build`; and the read models `/:taskId`, `/:taskId/evidence`, `/:taskId/activity`, `/history/:sessionId` |
 | `skills` | the skill registry — list, install, enable/disable, remove |
 | `incidents` `catalog` `flows` `sla` `access` `applications` `dba` | the module consoles (the Tables page is served by `dba`) |
+| `health` | Health Assist — estate health runs, their manifests and findings (read-only) |
 | `transport` | capture state, sweep, update-set export |
 | `audit` | the merged timeline, sys_id harvest, CSV export |
 | `knowledge` | corpus ingestion and status |
@@ -622,7 +628,7 @@ Four layers, and the distinction between them is load-bearing.
 
 | Layer | What it proves | What it cannot |
 |---|---|---|
-| **Offline suite** — 139 files, 2,884 tests, `npm test` | contracts, vocabularies, state machines, the import graph, every guard | that ServiceNow behaves as expected |
+| **Offline suite** — 151 files, 3,013 tests, `npm test` | contracts, vocabularies, state machines, the import graph, every guard | that ServiceNow behaves as expected |
 | **Real PDI scripts** — `scripts/*-pdi.mjs` | the live instance actually does this | that it generalises beyond one instance |
 | **Real model evaluations** — `scripts/*-model-eval.mjs` | the real model, on real requests, does not defeat the guards | that another model would behave the same |
 | **Client contract tests** | every field a panel reads exists; every value the server emits is one the panel recognises | live browser rendering |
@@ -693,7 +699,178 @@ cases SQL cannot express (SQLite has no `ADD COLUMN IF NOT EXISTS`).
 
 ---
 
-## 16. The things that must stay true
+## 16. `health/` — Health Assist
+
+Estate health: read an allow-listed slice of the instance, run a deterministic
+rule pack over it, and report findings. Ported from SAOS, a separate Python
+service, and folded in rather than run beside NowForge — a sidecar would have
+meant a second path that talks to the instance, a second credential store and a
+second model config, which is three violations of §16 for a feature that is one
+page.
+
+```
+health/
+├── tables.js     the extraction ALLOW-LIST. 15 tables, each with its own field
+│                 list. An unknown table is refused, not skipped
+├── extract.js    pagination + COVERAGE, through servicenow/client.js only
+├── rules.js      the rule pack. PURE — no socket, no database, no model
+├── index.js      extract → rules → manifest
+├── explain.js    optional plain-language pass; may never add a finding
+├── store.js      health_runs / health_findings, scoped per instance
+└── digest.js     the manifest's input hash
+```
+
+### 16.1 Coverage is the whole design
+
+A rule that fires on the ABSENCE of something — "this CI has no relationships",
+"this service has no offering" — is only sound if the extraction that found
+nothing was complete. Partial extraction plus an absence rule is how *"we could
+not read the table"* becomes *"your CMDB is broken"*.
+
+So every table comes back with a coverage descriptor, and three things follow
+from it:
+
+| rule | what it prevents |
+|---|---|
+| absence rules require `complete` | an ACL hiding half of `cmdb_rel_ci` turning every CI into an orphan |
+| a rule that did not run is listed in `skipped[]` with its reason | a silent rule and a clean rule looking identical |
+| the quality score is **withheld** unless `cmdb_ci` *and* `cmdb_rel_ci` are complete | a number that is sometimes about the estate and sometimes about our access |
+
+Measured live on dev424910: reading 300 of 2,784 CIs produced
+`status: "limited"`, a withheld score carrying its own reason, and — because
+`sysparm_fields` drops unknown names without complaint (trap #4) —
+`missing_fields: ["business_criticality"]`, a field that does not exist on that
+instance. None of those is an error; all three are the report.
+
+### 16.2 Detection reads; only an approved plan writes
+
+Nothing in `health/` writes to the instance. Detection is entirely a read, and
+remediation (§16.3) changes that only in the sense that an **approved** plan is
+handed to the ordinary executor — the module itself still has no write path.
+
+Two seams reach the platform, both reads: `extract.js` for the health check and
+`instance-read.js` for a field's current value and its re-read afterwards.
+Everything else is asserted rather than promised — the router never imports the
+table client, no module under `health/` calls `table.create`, `table.update` or
+`table.remove`, and the rule pack imports nothing at all.
+
+That split is the point. A change that went out from here directly would land
+without the approval gate, without the read-back and without the audit trail;
+routing every one through the plan executor is what guarantees all three.
+
+The model is strictly downstream of the rules. It receives derived facts — an
+opaque fingerprint, the rule, the domain, the severity, a record count — and
+returns prose keyed by those ids. A reply naming an id that was never sent is
+discarded **whole**, because a model that fabricated one entry has shown it is
+not keying off the input. Its failure leaves every deterministic finding intact.
+
+### 16.3 Remediation — propose, review, approve, execute, validate
+
+The AI may propose a fix for **any** finding. Nothing reaches the instance until
+a human has read that proposal, edited whatever they disagree with, and
+explicitly approved *that version*. **Approval is the boundary — not the kind of
+finding.**
+
+```
+finding ─► propose ─► review / edit ─► APPROVE ─► plan ─► execute ─► validate
+           (AI)       (RecordDrawer)   (human)    (existing pipeline)
+```
+
+An earlier shape refused to propose at all for findings whose remedy is a
+judgement call, reasoning that a system which picks an owner invents an
+accountable party. That reasoning was about the *write*, and it was being
+applied one step too early — it stopped the AI from even suggesting. What
+survives from it is the part that was load-bearing: a proposal for a judgement
+call must **say** it is one, state the assumption it rests on, and carry its
+confidence. A confident-looking value with no stated basis is the failure to
+avoid; the suggestion itself is not.
+
+**Nothing under `health/` writes.** The two seams that reach the instance —
+`extract.js` and `instance-read.js` — are reads, and a test asserts that no
+module here calls `table.create`, `table.update` or `table.remove`. Every change
+goes through the ordinary plan executor, which is what puts the gate, the
+read-back and the audit trail on it.
+
+#### What makes "the agent executed what you approved" true
+
+Two content hashes, checked at different moments, plus one structural rule:
+
+| guard | when | what it refuses |
+|---|---|---|
+| the **proposal** fingerprint | before a plan is built | an approval given for a version the user has since edited |
+| the **plan** fingerprint (`approvePlan`) | before the first step, re-checked before every step | a plan that moved between approval and execution |
+| `awaiting_approval → executing` | the state machine | any route into execution that skipped approval |
+
+The proposal hash covers exactly the executable material — target, field, value —
+so re-rendering a proposal does not invalidate an approval while changing a
+value does. Measured live: editing a value moved the hash, and approving with
+the stale one was refused with *"Nothing ran — review the current version"*.
+
+**The approval is bound in `routes/health.js`, not in the domain module.**
+`routes/` is the only place this system raises or binds an approval, so someone
+auditing "what can authorise a write" can read the routers and stop. An earlier
+version passed `approvePlan` in as a callback; that was *worse* than calling it
+directly, because the call then lived in the domain module under an alias where
+neither the approval inventory nor a reader of the router could see it.
+Splitting `prepareRemediation` from `runRemediation` puts the binding where both
+can — and the closed inventory in the approval-audit suite is what caught it.
+
+**No second approval card.** The plan route raises one because its plan came
+from a sentence the human has not seen. Here they have just read the exact
+change list and pressed Approve and apply — that *is* the approval, with
+`user_click` provenance. Re-prompting would train people to click through the
+gate. A global auto-approve preference is deliberately **not** threaded through
+either: a session-wide setting must not widen what one specific approval covered.
+
+#### What the model may and may not do
+
+- it may propose a value for the field **the rule names** — never a field or a
+  table of its own choosing;
+- it may **not** introduce a record: every `sys_id` is checked against the
+  finding's own targets, and one that was never sent discards the **whole**
+  reply, because a model that fabricated one target is not keying off the input;
+- a name it proposes for a reference field is resolved through the app's own
+  `referenceLookup`. One match becomes the value; **several or none stays blank**
+  with the candidates offered, because picking the first is the invention this
+  path exists to avoid.
+
+Measured on dev424910: asked to fill `owned_by`, the model found the answer in
+`managed_by` and proposed *nothing* — it knew a reference field holds a sys_id
+and it had a name. Feeding it the record's neighbouring fields and resolving the
+name afterwards turned that into `owned_by = 5137153c…` shown as **David Loo**,
+confidence 0.8, assumption *"inferred from the managed_by field"*. Honest and
+blank became honest and useful.
+
+#### Failure is reported per record, never rounded up
+
+The result is derived from the durable step rows, which carry the read-back
+verdict — so a `2xx` that stored nothing reads `no-op`, not success. A run where
+two of five records landed is `partial`, and calling it applied is the single
+most expensive lie this module could tell. Validation then re-reads each record
+and compares against the **approved** value, not merely "is it non-empty", and
+says in the payload that it is a targeted re-check rather than a fresh health
+run.
+
+### 16.4 The charts
+
+Severity is a **status scale**, not a set of categories, so it wears reserved
+status tones and every mark carries its word, its glyph and its number —
+identity never rests on hue, which is what keeps Critical and Major apart for a
+colourblind reader when both sit at the red end. The tones were validated
+against this theme's panel rather than eyeballed: all four clear 3:1 contrast,
+and the closest adjacent pair separates at ΔE 8.1 under deuteranopia, inside the
+band that is legal *with* the secondary encoding the glyph and direct label
+supply.
+
+Three deliberate restraints: the score is a **hero number**, not a gauge — one
+value does not need a second encoding; domain bars use **one** colour, because
+colouring each bar by its own size would double-encode length as hue; and the
+findings table is the charts' **table-view twin**, so every value in a bar is
+also readable as text.
+
+---
+
+## 17. The things that must stay true
 
 If a change would break one of these, it is the wrong change:
 
@@ -701,7 +878,7 @@ If a change would break one of these, it is the wrong change:
    builder, **one** cancellation path, **one** redactor.
 2. Nothing outside `servicenow/` talks to the instance.
 3. The Experience layer reads; it never executes, approves or verifies.
-4. A shipped migration is never edited; the schema is at **23**.
+4. A shipped migration is never edited; the schema is at **25**.
 5. `prompts.js` is frozen.
 6. An unclassified tool is a test failure, not a silent exclusion.
 7. No component of the UI has success-shaped vocabulary of its own — "verified"

@@ -1075,6 +1075,130 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_tool_events_task     ON tool_events(task_id);
     `);
   },
+
+  // 24 — HEALTH ASSIST: estate health runs and their findings.
+  //
+  // Ported from the SAOS service, which kept these in PostgreSQL behind its own
+  // ORM. They live here instead because a second database would mean a second
+  // migration story, a second backup story and a second answer to "what did
+  // this tool see" — and the whole point of folding SAOS in was to stop having
+  // two of everything.
+  //
+  // TWO TABLES, not one. The manifest is per-run and is read whole; findings
+  // are per-row and are filtered, sorted and paged. Keeping the findings inside
+  // the manifest JSON would mean loading every finding to render a count.
+  //
+  // `instance_key` is on the RUN, and every read filters by it. A sys_id is
+  // instance-local, so a finding from one PDI rendered under another names
+  // records that do not exist there — the same reason `scopeIds` are cached per
+  // instance rather than globally. Switching instances hides old runs; it never
+  // reinterprets them.
+  //
+  // NO foreign key to `sessions`. A health run is a record of what was read off
+  // the instance, in the same family as `tool_events` and `mutation_ledger`,
+  // and migration 14 established that deleting a conversation must not delete
+  // the record of what was done. Nothing here is written by a chat turn, so
+  // there is no cascade to remove — the absence is the invariant.
+  `
+  CREATE TABLE IF NOT EXISTS health_runs (
+    id             TEXT PRIMARY KEY,
+    instance_key   TEXT NOT NULL,
+    instance_url   TEXT,
+    status         TEXT NOT NULL,          -- running | completed | partial | failed
+    started_at     TEXT NOT NULL,
+    completed_at   TEXT,
+    cutoff         TEXT,
+    manifest_json  TEXT,                   -- coverage, skipped rules, metrics, llm
+    error          TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS health_findings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES health_runs(id) ON DELETE CASCADE,
+    fingerprint     TEXT NOT NULL,
+    rule_id         TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    domain          TEXT NOT NULL,
+    source_table    TEXT NOT NULL,
+    severity        TEXT NOT NULL,
+    priority        TEXT NOT NULL,
+    priority_score  REAL NOT NULL,
+    confidence      REAL NOT NULL,
+    title           TEXT NOT NULL,
+    description     TEXT,
+    recommendation  TEXT,
+    ai_summary      TEXT,
+    target_ids      TEXT,                  -- JSON array
+    evidence_json   TEXT,                  -- JSON array of evidence rows
+    impact_json     TEXT                   -- reachability, with its interpretation
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_health_runs_instance ON health_runs(instance_key, started_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_health_findings_run  ON health_findings(run_id, priority_score DESC);
+  CREATE INDEX IF NOT EXISTS idx_health_findings_rule ON health_findings(run_id, rule_id);
+  `,
+
+  // 25 — HEALTH ASSIST REMEDIATION: the proposal, and everything that happened to it.
+  //
+  // ONE ROW PER REMEDIATION ATTEMPT, carrying its whole history rather than its
+  // current state. The six questions this table has to answer are:
+  //
+  //   what did the check find?        finding_fingerprint -> health_findings
+  //   what did the AI recommend?      draft_json          (never overwritten)
+  //   what did the user change?       edited_json         (null until they edit)
+  //   what exactly did they approve?  approved_fingerprint + approved_plan_json
+  //   what actually ran?              task_id -> agent_tasks, execution_json
+  //   did it really work?             validation_json
+  //
+  // `draft_json` IS NEVER UPDATED. A user edit writes `edited_json` beside it,
+  // so "what did the AI originally propose" stays answerable after the fact —
+  // which is the whole point of recording a proposal separately from a plan.
+  //
+  // `task_id` is the join to the ordinary plan machinery. Execution does not
+  // happen here: the approved proposal becomes a plan on `agent_tasks`, passes
+  // through the same state machine, gate and executor as every other write, and
+  // this row keeps the pointer. No second executor, no second audit trail.
+  //
+  // NO foreign key to health_findings. A proposal is a record of what a person
+  // authorised against the instance, and deleting a health run must not delete
+  // the evidence that somebody approved a change — the same reasoning that took
+  // tool_events out of the sessions cascade in migration 14.
+  `
+  CREATE TABLE IF NOT EXISTS health_proposals (
+    id                   TEXT PRIMARY KEY,
+    run_id               TEXT NOT NULL,
+    finding_fingerprint  TEXT NOT NULL,
+    rule_id              TEXT NOT NULL,
+    instance_key         TEXT NOT NULL,
+
+    -- draft | edited | approved | executing | applied | partial | failed | rejected
+    status               TEXT NOT NULL,
+
+    draft_json           TEXT NOT NULL,   -- the AI's original proposal, never rewritten
+    edited_json          TEXT,            -- the user's version, when they changed something
+    approved_plan_json   TEXT,            -- exactly what was authorised
+
+    proposal_fingerprint TEXT,            -- hash of the executable changes, as approved
+    plan_fingerprint     TEXT,            -- the plan layer's own hash of the same thing
+    task_id              TEXT,            -- -> agent_tasks: where it actually ran
+
+    created_at           TEXT NOT NULL,
+    edited_at            TEXT,
+    decided_at           TEXT,
+    decision             TEXT,            -- approved | rejected
+    decided_source       TEXT,            -- user_click, always: nothing else may decide
+    reject_reason        TEXT,
+
+    execution_json       TEXT,            -- per-record: before, after, verdict
+    validation_json      TEXT,            -- did the finding actually clear?
+    error                TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_health_proposals_finding
+    ON health_proposals(run_id, finding_fingerprint, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_health_proposals_instance
+    ON health_proposals(instance_key, created_at DESC);
+  `,
 ];
 
 /**

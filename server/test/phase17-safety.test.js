@@ -269,7 +269,7 @@ test('T6 — buildEvidence is defined exactly once, and agent/test/ writes no SQ
  * T7 — NO NEW MIGRATION
  * ================================================================== */
 
-test('T7 — the database is unchanged: user_version is still 23 and no table knows about tests', async () => {
+test('T7 — the database is unchanged: user_version is still 25 and no table knows about tests', async () => {
   /*
    * The same technique Phase 16 used: build a database from the REAL migration
    * list and ask it what version it reached. `user_version` is set to the index
@@ -283,7 +283,7 @@ test('T7 — the database is unchanged: user_version is still 23 and no table kn
   _setDbForTests(migrate(new DatabaseSync(
     path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'p17db-')), 'd.db'),
   )));
-  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 23);
+  assert.equal(Object.values(getDb().prepare('PRAGMA user_version').get())[0], 25);
 
   const db = fs.readFileSync(new URL('../src/memory/db.js', import.meta.url), 'utf8');
   assert.ok(!/nowtest/i.test(db), 'a migration mentions NowTest');

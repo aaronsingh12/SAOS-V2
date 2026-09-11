@@ -1619,3 +1619,277 @@ body:has(.agent-host:not([hidden])) .dock { bottom: 104px; }
 @media (max-width: 640px) {
   body:has(.agent-host:not([hidden])) .dock { bottom: 150px; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   HEALTH ASSIST
+   ══════════════════════════════════════════════════════════════════════════
+
+   SEVERITY IS A STATUS SCALE, not a set of categories, so these four tones are
+   RESERVED: they mean how bad something is and are never reused as series
+   colours. Every mark that wears one also carries its word, its glyph and its
+   number, so identity never rests on hue — which is what keeps Critical and
+   Major apart for a colourblind reader even though both sit at the red end.
+
+   Validated against this theme's panel (#151a21): all four clear 3:1 contrast,
+   and the closest adjacent pair separates at ΔE 8.1 under deuteranopia — inside
+   the band that is legal WITH secondary encoding, which the glyph, the label
+   and the direct-labelled value supply.
+
+   Domain bars deliberately use ONE colour. Colouring each bar by its own size
+   would double-encode bar length as hue and spend the only free channel on
+   information the chart already shows.                                        */
+:root {
+  --hs-critical: #e4645c;
+  --hs-major:    #e0a458;
+  --hs-moderate: #6ca5da;
+  --hs-low:      #8b93a1;
+  --hs-series:   var(--verdigris);
+}
+
+.hs-mt { margin-top: 10px; }
+.hs-muted { color: var(--muted); }
+.hs-lead { color: var(--muted); margin: 0 0 12px; }
+.hs-fine { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 10px 0 0; }
+.hs-sub {
+  font-family: var(--font-display); font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  margin: 18px 0 8px;
+}
+
+/* Tone fills. One place, so a tone cannot drift between a bar and a tag. */
+.tone-critical { --hs-tone: var(--hs-critical); }
+.tone-major    { --hs-tone: var(--hs-major); }
+.tone-moderate { --hs-tone: var(--hs-moderate); }
+.tone-low      { --hs-tone: var(--hs-low); }
+.tone-info     { --hs-tone: var(--muted); }
+.tone-series   { --hs-tone: var(--hs-series); }
+.tone-ok       { --hs-tone: var(--verdigris); }
+.tone-warn     { --hs-tone: var(--amber); }
+.tone-bad      { --hs-tone: var(--red); }
+.tone-idle     { --hs-tone: var(--muted); }
+
+/* ── Scorecard. The score is a hero number, so it gets size and nothing else:
+      no ring, no gauge, no second encoding of one value. ─────────────────── */
+.hs-scorecard { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; }
+.hs-score-block { text-align: center; min-width: 168px; }
+.hs-score {
+  font-family: var(--font-display); font-weight: 700; font-size: 68px;
+  line-height: 1; color: var(--hs-tone, var(--text));
+  /* Proportional figures: tabular digits make a large standalone number look
+     loose, and nothing is aligning under it. */
+  font-variant-numeric: proportional-nums;
+}
+.hs-score-pct { font-size: 26px; font-weight: 600; opacity: .55; margin-left: 2px; }
+.hs-score-none { color: var(--muted); }
+.hs-score-word {
+  font-family: var(--font-display); font-size: 15px; font-weight: 600;
+  color: var(--hs-tone, var(--muted)); margin-top: 4px;
+}
+.hs-score-cap { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.hs-score-side { flex: 1; min-width: 260px; }
+.hs-facts { display: flex; gap: 26px; flex-wrap: wrap; }
+.hs-facts div { display: flex; flex-direction: column; }
+.hs-facts b { font-family: var(--font-display); font-size: 21px; font-weight: 700; }
+.hs-facts span { color: var(--muted); font-size: 12px; }
+
+/* ── Bars. Thin marks, a 4px rounded data-end, a 2px surface gap between the
+      fill and its track, and the value direct-labelled at the end. ───────── */
+.hs-bars { display: flex; flex-direction: column; gap: 2px; }
+.hs-bar {
+  display: grid; grid-template-columns: 148px 1fr 56px; align-items: center; gap: 12px;
+  width: 100%; background: none; border: 0; color: var(--text);
+  padding: 7px 8px; border-radius: var(--radius-sm); text-align: left;
+  font: inherit; min-height: 34px;
+}
+.hs-bar.is-clickable { cursor: pointer; }
+.hs-bar.is-clickable:hover { background: var(--panel-2); }
+.hs-bar.is-active { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--hs-tone, var(--verdigris)); }
+.hs-bar-name { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.hs-glyph { color: var(--hs-tone, var(--muted)); font-size: 11px; }
+.hs-bar-track {
+  height: 10px; background: var(--line-soft); border-radius: 999px;
+  overflow: hidden; padding: 0;
+}
+.hs-bar-fill {
+  display: block; height: 100%; background: var(--hs-tone, var(--verdigris));
+  border-radius: 0 4px 4px 0;
+}
+.hs-bar-value {
+  font-family: var(--font-mono); font-size: 12px; text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ── Severity tag. Colour + glyph + word, always all three. ──────────────── */
+.hs-sev-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--hs-tone, var(--muted));
+  border: 1px solid var(--hs-tone, var(--line)); border-radius: 999px;
+  padding: 3px 11px; white-space: nowrap;
+}
+.hs-sev-tag.sm { font-size: 11px; padding: 2px 9px; }
+
+/* ── Coverage chips ─────────────────────────────────────────────────────── */
+.hs-cov { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.hs-cov-chip {
+  display: inline-flex; align-items: baseline; gap: 7px;
+  border: 1px solid var(--line); border-left: 3px solid var(--hs-tone, var(--muted));
+  border-radius: var(--radius-sm); padding: 5px 11px; background: var(--panel-2);
+}
+.hs-cov-chip b { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+.hs-cov-chip span { font-size: 12px; color: var(--hs-tone, var(--muted)); }
+.hs-cov-chip em { font-family: var(--font-mono); font-size: 11px; color: var(--muted); font-style: normal; }
+
+/* ── Detail view ────────────────────────────────────────────────────────── */
+.hs-back { align-self: flex-start; }
+.hs-detail-head .hs-detail-title { font-size: 21px; margin: 10px 0 4px; line-height: 1.3; }
+.hs-detail-sub { color: var(--muted); margin: 0 0 10px; }
+.hs-detail-meta { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.hs-detail-meta code { font-family: var(--font-mono); color: var(--text); }
+
+/* Two panes, stacking to one column on a narrow screen. */
+.hs-split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .hs-split { grid-template-columns: 1fr; } }
+.hs-pane { min-width: 0; }
+.hs-pane-title {
+  font-family: var(--font-display); font-size: 15px; font-weight: 600;
+  padding-bottom: 10px; margin-bottom: 14px; border-bottom: 1px solid var(--line);
+}
+
+.hs-callout {
+  background: var(--panel-2); border-left: 3px solid var(--verdigris-dim);
+  border-radius: var(--radius-sm); padding: 11px 13px; margin: 14px 0; font-size: 13px;
+}
+.hs-callout em { color: var(--muted); font-style: italic; }
+
+.hs-decision {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--line); border-left: 3px solid var(--hs-tone, var(--muted));
+  border-radius: var(--radius-sm); padding: 11px 13px; margin-bottom: 16px; font-size: 13px;
+}
+.hs-decision span { color: var(--muted); }
+
+/* ── Time comparison. Two bars on ONE scale — the manual bar is the 100%
+      reference and the agent bar is drawn against it, so the comparison is a
+      ratio a reader can see rather than two independent axes. ───────────── */
+.hs-time { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 13px; margin-bottom: 16px; }
+.hs-time-row { display: grid; grid-template-columns: 108px 1fr 64px; align-items: center; gap: 11px; margin-bottom: 7px; }
+.hs-time-label { font-size: 12px; color: var(--muted); }
+.hs-time-bar { height: 10px; background: var(--line-soft); border-radius: 999px; overflow: hidden; }
+.hs-time-val {
+  font-family: var(--font-mono); font-size: 12px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── The two solution lanes ─────────────────────────────────────────────── */
+.hs-lanes { display: flex; gap: 2px; background: var(--line-soft); padding: 2px; border-radius: var(--radius-sm); }
+.hs-lane {
+  flex: 1; background: none; border: 0; color: var(--muted); font: inherit; font-size: 13px;
+  padding: 8px 12px; border-radius: var(--radius-sm); cursor: pointer; min-height: 34px;
+}
+.hs-lane:hover { color: var(--text); }
+.hs-lane.is-on { background: var(--panel); color: var(--text); font-weight: 600; }
+.hs-lane-body { padding-top: 14px; font-size: 13px; }
+.hs-cta { width: 100%; margin-top: 14px; }
+
+.hs-peek { margin-top: 12px; }
+.hs-peek summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.hs-peek summary:hover { color: var(--text); }
+.hs-pre {
+  background: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 11px; font-family: var(--font-mono); font-size: 11px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; margin-top: 8px;
+}
+
+.hs-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 13px; }
+.hs-steps li { display: grid; grid-template-columns: 24px 1fr; gap: 11px; align-items: start; line-height: 1.6; }
+.hs-step-n {
+  font-family: var(--font-mono); font-size: 11px; color: var(--verdigris);
+  border: 1px solid var(--verdigris-dim); border-radius: 6px;
+  height: 22px; width: 22px; display: flex; align-items: center; justify-content: center;
+}
+.hs-steps code {
+  font-family: var(--font-mono); font-size: 12px; background: var(--panel-2);
+  padding: 1px 5px; border-radius: 4px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   REMEDIATION REVIEW (inside RecordDrawer)
+
+   The state banner is the first thing in the drawer and the loudest thing in
+   it, because a reviewer skimming this needs to know which of three worlds
+   they are in — proposed, executing, or done — before they read a value.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.rm-state {
+  display: flex; flex-direction: column; gap: 3px;
+  border: 1px solid var(--hs-tone, var(--line));
+  border-left: 3px solid var(--hs-tone, var(--muted));
+  border-radius: var(--radius-sm); padding: 10px 13px; margin-bottom: 16px;
+}
+.rm-state b { color: var(--hs-tone, var(--text)); font-size: 13px; }
+.rm-state span { color: var(--muted); font-size: 12px; }
+
+.rm-sec {
+  font-family: var(--font-display); font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  margin: 20px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft);
+}
+.rm-lead { font-size: 13px; line-height: 1.6; margin: 0 0 6px; }
+.rm-fine { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 12px 0 0; }
+.rm-note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
+
+.rm-judge {
+  display: flex; flex-direction: column; gap: 3px;
+  background: var(--panel-2); border-left: 3px solid var(--amber);
+  border-radius: var(--radius-sm); padding: 10px 13px; margin: 12px 0; font-size: 12px;
+}
+.rm-judge span { color: var(--muted); }
+
+/* ── The change list — the editable part ─────────────────────────────────── */
+.rm-changes { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.rm-change {
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 11px 13px; background: var(--panel-2);
+}
+/* A removed change stays visible and readable — it is a decision, not a
+   disappearance — but it clearly is not going to happen. */
+.rm-change.is-removed { opacity: .5; }
+.rm-change.is-removed .rm-vals { text-decoration: line-through; }
+.rm-change-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.rm-target { font-size: 12px; color: var(--text); }
+
+.rm-field-name { font-size: 11px; color: var(--muted); display: block; margin-bottom: 6px; }
+.rm-vals { display: grid; grid-template-columns: 1fr 18px 1.4fr; gap: 8px; align-items: end; }
+@media (max-width: 560px) {
+  .rm-vals { grid-template-columns: 1fr; }
+  .rm-arrow { display: none; }
+}
+.rm-val-cap { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 3px; }
+.rm-val { display: block; font-size: 12px; padding: 6px 0; }
+.rm-val em { color: var(--muted); }
+.rm-arrow { color: var(--muted); padding-bottom: 8px; text-align: center; }
+
+.rm-assume { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 9px 0 0; }
+.rm-assume b { color: var(--text); }
+.rm-conf { font-family: var(--font-mono); font-size: 11px; }
+
+.rm-result { font-size: 12px; margin: 9px 0 0; color: var(--hs-tone, var(--muted)); }
+
+/* ── Impact ─────────────────────────────────────────────────────────────── */
+.rm-impact { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 8px; }
+.rm-impact div { display: flex; flex-direction: column; }
+.rm-impact b { font-family: var(--font-display); font-size: 15px; font-weight: 700; }
+.rm-impact span { color: var(--muted); font-size: 11px; }
+.rm-bad { color: var(--red); }
+.rm-risks { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+.rm-verdict { font-size: 13px; font-weight: 600; color: var(--hs-tone, var(--text)); margin: 0 0 4px; }
+.rm-note-input { width: 100%; resize: vertical; }
+
+/* ── Actions. The primary is Approve; nothing else competes with it. ─────── */
+.rm-actions {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.rm-actions .input { flex: 1; min-width: 180px; }

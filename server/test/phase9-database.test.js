@@ -49,7 +49,7 @@ const { createTask, startTask, completeTask } = await import('../src/memory/task
 const P = await import('../src/agent/plan/index.js');
 
 const DB_SRC = fs.readFileSync(new URL('../src/memory/db.js', import.meta.url), 'utf8');
-const HEAD_VERSION = 23;
+const HEAD_VERSION = 25;
 
 /** The migration bodies only, with comments stripped. */
 const MIGRATION_BODY = (() => {
@@ -86,7 +86,7 @@ function columnsOf(db) {
  * A. THE HISTORY
  * ================================================================== */
 
-test('D1 — the head is 23 and a fresh database reaches it', () => {
+test('D1 — the head is 25 and a fresh database reaches it', () => {
   const db = migrate(new DatabaseSync(freshFile()));
   try {
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, HEAD_VERSION);
@@ -170,9 +170,10 @@ test('D5 — a FAILED migration leaves the database exactly as it was', () => {
   } finally { db.close(); }
 });
 
-test('D6 — migration 23 IS replay-safe, because Phase 8 made it so', () => {
-  // The one migration written after the replay hazard was understood. It guards
-  // its own ALTERs, so re-running it is harmless.
+test('D6 — migrations 23 and 24 ARE replay-safe, because Phase 8 made it so', () => {
+  // The migrations written after the replay hazard was understood. 23 guards its
+  // own ALTERs and 24 is CREATE TABLE IF NOT EXISTS, so re-running both is
+  // harmless. Rewinding to 22 replays them together.
   const file = freshFile();
   const db = migrate(new DatabaseSync(file));
   try {
@@ -180,7 +181,7 @@ test('D6 — migration 23 IS replay-safe, because Phase 8 made it so', () => {
     db.exec('PRAGMA user_version = 22');
     migrate(db);   // must not throw
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, HEAD_VERSION);
-    assert.deepEqual(schemaOf(db), before, 'replaying migration 23 changed the schema');
+    assert.deepEqual(schemaOf(db), before, 'replaying migrations 23-24 changed the schema');
   } finally { db.close(); }
 });
 

@@ -11,6 +11,7 @@ import Catalog from './pages/Catalog.jsx';
 import Flows from './pages/Flows.jsx';
 import Sla from './pages/Sla.jsx';
 import Access from './pages/Access.jsx';
+import HealthAssist from './pages/HealthAssist.jsx';
 import TablesPage from './pages/Tables.jsx';
 import Meetings from './pages/Meetings.jsx';
 import Applications from './pages/Applications.jsx';
@@ -147,6 +148,7 @@ function Shell() {
               <Route path="/flows" element={<RequiresInstance what="Flow Designer"><Flows /></RequiresInstance>} />
               <Route path="/sla" element={<RequiresInstance what="SLA definitions"><Sla /></RequiresInstance>} />
               <Route path="/access" element={<RequiresInstance what="Access control"><Access /></RequiresInstance>} />
+              <Route path="/health" element={<RequiresInstance what="Health Assist"><HealthAssist /></RequiresInstance>} />
               <Route path="/tables" element={<RequiresInstance what="Database administration"><TablesPage /></RequiresInstance>} />
               {/* Deliberately NOT gated. Capturing a meeting and reviewing what
                   was said needs no ServiceNow instance at all — only BUILDING
