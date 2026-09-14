@@ -1199,6 +1199,51 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_health_proposals_instance
     ON health_proposals(instance_key, created_at DESC);
   `,
+
+  // 26 — FINDING LIFECYCLE: acknowledged, muted, accepted.
+  //
+  // THE PROBLEM THIS SOLVES. Without it, every run re-reports every finding
+  // for ever. A team looks at 900 findings, decides 400 of them are known and
+  // accepted, and has no way to say so — so the next run shows 900 again, and
+  // within about three runs nobody opens the page. A health checker that cannot
+  // be told "we know, and we have accepted it" is a health checker that gets
+  // ignored, which is a worse outcome than a few false positives.
+  //
+  // KEYED ON THE FINGERPRINT, NOT THE RUN. That is the whole design. A
+  // fingerprint is sha256 over rule + table + the sorted sys_ids, so it is
+  // stable for the same problem on the same records across runs, and DIFFERENT
+  // the moment the affected set changes. Muting "these four CIs have no owner"
+  // therefore carries forward, and cannot silently suppress a fifth CI that
+  // goes ownerless next week — that is a different fingerprint and comes back
+  // as new.
+  //
+  // A STATE IS NEVER A DELETION. Muted findings are still produced, still
+  // stored and still counted; the state changes how they are PRESENTED and
+  // nothing else. Every state carries a reason and a timestamp, because
+  // "somebody accepted this risk" is only useful if you can find out who and
+  // why — and `expires_at` exists so a snooze is a decision with an end rather
+  // than a permanent blind spot.
+  //
+  // No foreign key to health_findings: the state outlives the run that first
+  // produced it, which is the entire point.
+  `
+  CREATE TABLE IF NOT EXISTS health_finding_state (
+    instance_key   TEXT NOT NULL,
+    fingerprint    TEXT NOT NULL,
+    rule_id        TEXT NOT NULL,
+    state          TEXT NOT NULL,      -- open | acknowledged | muted | accepted
+    reason         TEXT,
+    expires_at     TEXT,               -- a snooze ends; a permanent state does not
+    decided_at     TEXT NOT NULL,
+    decided_source TEXT NOT NULL,      -- user_click, always
+    first_seen     TEXT,
+    last_seen      TEXT,
+    PRIMARY KEY (instance_key, fingerprint)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_health_finding_state_rule
+    ON health_finding_state(instance_key, rule_id);
+  `,
 ];
 
 /**

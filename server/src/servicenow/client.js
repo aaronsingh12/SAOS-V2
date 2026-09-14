@@ -143,14 +143,45 @@ export function diagnoseFailure({ status, statusText, detail = '', message = nul
 
   if (status === 401 || status === 403) {
     const who = username || '(no username set)';
+
+    /*
+     * THE ADVICE HAS TO FIT THE INSTANCE IT IS TALKING TO.
+     *
+     * This used to tell every rejected login to "wake the PDI at
+     * developer.servicenow.com". On a corporate or demo instance — the kind
+     * with a real name rather than `devNNNNNN` — that is not just unhelpful,
+     * it sends the reader somewhere the instance does not exist, and it buries
+     * the causes that actually apply there.
+     *
+     * A PDI is `devNNNNNN.service-now.com`. Anything else is somebody's real
+     * sub-production instance, where MFA and a missing REST role are the
+     * common causes and hibernation is not a thing that happens.
+     */
+    const isPdi = /^dev\d+\./i.test(String(host));
+
     const causes = [
-      'the password is wrong, or has extra characters that came along with a paste',
-      'the PDI is hibernating — wake it at developer.servicenow.com, then retry',
-      `the user "${who}" lacks REST access on this instance`,
+      'the password is wrong, or picked up whitespace from a paste',
+      ...(isPdi
+        ? ['the PDI is hibernating — wake it at developer.servicenow.com, then retry']
+        : [
+          /* Measured on a real demo instance: the platform answers a wrong
+             password, an MFA-required user and a missing REST role with the
+             same 401 and the same "Required to provide Auth information", so
+             none of these can be ruled out from here. */
+          `"${who}" has multi-factor authentication enabled — basic auth over REST cannot satisfy it, so this needs an integration user or OAuth`,
+          'this instance requires SSO and the account has no local password set',
+        ]),
+      `the user "${who}" lacks REST access (the \`snc_platform_rest_api_access\` role)`,
+      'repeated failed attempts have locked the account',
     ];
+
     return {
-      status, kind: 'credentials',
-      message: `${host} rejected the credentials for "${who}" (${status}). Most likely: ${causes.join('; ')}.`,
+      status,
+      kind: 'credentials',
+      isPdi,
+      message: `${host} rejected the credentials for "${who}" (${status}). `
+             + `The platform answers all of these the same way, so none can be ruled out from here: ${causes.join('; ')}. `
+             + `Signing in as "${who}" at https://${host}/login.do is the quickest way to tell a wrong password from the rest.`,
     };
   }
 

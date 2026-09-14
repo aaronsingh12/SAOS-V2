@@ -365,6 +365,504 @@ export const REMEDIATION = Object.freeze({
     verify: 'The alert shows a CI, and new events from the same source bind automatically.',
     effort: MIN(10, 5, 'About 10 minutes per alert investigated alone. These cluster hard by source: one event rule usually explains all of them.'),
   },
+
+  /* ══ ITOM ═══════════════════════════════════════════════════════════════
+   *
+   * A note that applies to most of this section: ITOM findings are frequently
+   * OPERATIONAL rather than data problems. Restarting a MID service, opening a
+   * firewall port or running a Discovery schedule are not things a REST write
+   * can do, and `decision: 'human'` with no entry in FIX_FIELD is how that is
+   * said honestly — the proposal then carries steps rather than a field editor.
+   * Pretending otherwise would produce a Fix button that cannot work.
+   * ═══════════════════════════════════════════════════════════════════════ */
+
+  'DISC-NEVER-RAN': {
+    headline: 'Discovery has never run on this instance',
+    problem:
+      'The Discovery status table was read completely and is empty: no schedule has ever executed. '
+      + 'Every CI in the CMDB therefore came from an import, a manual entry or an integration — and nothing is refreshing any of it.',
+    why: 'A CMDB nobody is refreshing is a snapshot that started going stale the day it was loaded. Every CMDB rule above will keep reporting it as healthy, because the records are well-formed. They are just no longer true.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Decide first whether Discovery is meant to be in use here. On a sandbox or a data-only instance the honest answer is often no, and then this finding is closed rather than fixed.',
+      'If it is meant to run, the prerequisites go in order and each blocks the next: a **MID server**, then **credentials**, then a **schedule**. Check them in that order — a schedule with no working MID fails in a way that looks like a Discovery problem.',
+      'Confirm the MID: **MID Server → Servers**, status Up and Validated.',
+      'Confirm credentials: **Discovery → Credentials**, at least one active credential per platform you intend to scan.',
+      'Create the schedule under **Discovery → Discovery Schedules**, give it an IP range you own, and run it ONCE manually before putting it on a timer.',
+      'Read the run afterwards under **Discovery → Status**. A first run that completes with device errors is normal and tells you which credentials are missing.',
+    ],
+    verify: 'A row appears in Discovery Status with state Completed, and CIs it touched show a recent Last discovered.',
+    effort: MIN(120, 20, 'About two hours to stand Discovery up from nothing, most of it network and credential work outside ServiceNow. The agent can confirm the prerequisites and report which are missing in one turn.'),
+  },
+
+  'DISC-FAILED': {
+    headline: 'A Discovery run ended in error',
+    problem:
+      'The run finished with an error or cancelled state. Whatever it was scanning was not discovered, so those CIs '
+      + 'are missing or stale — and the CMDB gives no sign of it, because the absent records simply are not there.',
+    why: 'Failed Discovery runs are invisible downstream. Nothing turns red; the CMDB just quietly stops covering part of the estate.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open the run under **Discovery → Status** and read its **Discovery Log** before re-running anything. A run that failed on credentials or a firewall fails again identically.',
+      'Group the errors by device. One cause usually explains most of them — an expired credential, a blocked port, a MID that lost its network route.',
+      'If the MID is implicated, check it is Up and Validated and that it can reach the range on the required ports.',
+      'Fix the cause, then re-run the schedule manually and watch it complete.',
+      'If the range is simply no longer in use, narrow or retire the schedule rather than leaving it failing — a schedule that always fails trains people to ignore this table.',
+    ],
+    verify: 'A fresh manual run of the same schedule reaches Completed, and the device count is what you expect for that range.',
+    effort: MIN(30, 10, 'About 30 minutes per failed run, dominated by reading logs. Failures cluster, so the second one is usually much faster than the first.'),
+  },
+
+  'DISC-STALE': {
+    headline: 'A Discovery schedule has not completed recently',
+    problem:
+      'The most recent completion of this run is older than the staleness window. Either the schedule stopped, or it is '
+      + 'running and never finishing. Both look the same from the CMDB: CIs that stop being refreshed.',
+    why: 'A schedule that stops silently is the commonest way a healthy-looking CMDB goes out of date, because nothing anywhere reports it.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open the schedule under **Discovery → Discovery Schedules** and check whether it is still **Active** and what its next run time is.',
+      'Check the MID server it uses. A MID that went down takes every schedule bound to it with it.',
+      'Look for runs that STARTED and never completed — a hung run blocks the next one on some configurations.',
+      'Run it manually once and time it. A schedule that now takes longer than its own interval will never look finished.',
+      'If the range it covers is retired, retire the schedule too rather than leaving it stale.',
+    ],
+    verify: 'The schedule shows a recent Completed run, and its next scheduled time is in the future.',
+    effort: MIN(20, 8, 'About 20 minutes per schedule. Several stale schedules usually share one dead MID, which is far faster to find than to work through them individually.'),
+  },
+
+  'DISC-DEVICE-ISSUE': {
+    headline: 'Discovery reached a device but recorded issues against it',
+    problem:
+      'The device answered, but the scan logged issues — so the CI it produced may be missing attributes, relationships '
+      + 'or software. The count shown is the platform\'s own assessment, not this rule\'s.',
+    why: 'A partially discovered CI is worse than an absent one: it looks populated, so nobody checks it, and every report treats it as complete.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open the record under **Discovery → Device History** and read the issue list. The platform names each one.',
+      'Classify before fixing: credential failures, permission gaps and unreachable ports are three different problems with three different owners.',
+      'Credential and permission issues are fixed once and clear every device that shares them — do those first.',
+      'Re-run Discovery against just that device (**Discovery → Quick Discovery**) to confirm, rather than waiting for the schedule.',
+      'Compare the CI afterwards with one that discovered cleanly; the difference is what the issue was costing you.',
+    ],
+    verify: 'A Quick Discovery of the device completes with zero issues, and the CI gains the attributes it was missing.',
+    effort: MIN(15, 6, 'About 15 minutes per device investigated alone — but these cluster hard by credential and by subnet, so the pattern is usually worth finding first.'),
+  },
+
+  'DISC-LOG-ERROR': {
+    headline: 'Discovery wrote an error to its log',
+    problem:
+      'An error-level entry from Discovery itself. The message in the evidence is the platform\'s own text, reproduced '
+      + 'verbatim — this rule does not interpret it.',
+    why: 'Discovery log errors are where the real cause of a failed or partial scan is written down, and nothing surfaces them unless somebody goes looking.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Read the full message under **Discovery → Discovery Log**, filtered to the same source and time.',
+      'Find the run it belongs to and check whether that run completed anyway — an error during a completed run is a partial result, not a failure.',
+      'Errors naming a pattern or probe are a Discovery configuration problem; errors naming a host are usually network or credentials.',
+      'Fix the cause and re-run; the log is the only place that confirms it stopped recurring.',
+    ],
+    verify: 'A subsequent run produces no error-level entries from the same source.',
+    effort: MIN(15, 6, 'About 15 minutes per distinct error. Log errors repeat heavily, so the count of rows overstates the amount of work.'),
+  },
+
+  'CRED-NONE': {
+    headline: 'No Discovery credentials are configured',
+    problem:
+      'The credentials table was read completely and is empty. Discovery can reach a device and cannot authenticate to '
+      + 'it, so it records only what an unauthenticated scan reveals — typically an IP, a name and almost nothing else.',
+    why: 'This is the cause behind a whole class of CMDB findings that look like data-quality problems. Every "CI has no attributes" downstream of it is really this.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Work out which platforms are in scope — Windows, Linux/SSH, SNMP, VMware, cloud — because each needs its own credential type.',
+      'Get service accounts created through your normal identity process. Discovery needs read-level access, not administrator; asking for more than that is what gets the request refused.',
+      'Add each under **Discovery → Credentials**, set **Applies to** so a credential is only tried where it belongs, and set **Order** so the most specific is tried first.',
+      'Test each one with **Test credential** against a known host before running a schedule.',
+      'Never share one credential across platforms. A single over-broad account is both a security finding and a debugging problem later.',
+    ],
+    verify: 'Test credential succeeds for each platform, and a Discovery run produces CIs with full attributes rather than bare IPs.',
+    effort: MIN(90, 15, 'About 90 minutes, mostly waiting on service accounts from the identity team. The ServiceNow side of it is quick.'),
+  },
+
+  'CRED-INACTIVE': {
+    headline: 'A Discovery credential is switched off',
+    problem:
+      'The credential exists but is inactive, so Discovery will not try it. If anything in the estate needed it, those '
+      + 'devices are now being scanned unauthenticated or failing outright.',
+    why: 'A credential disabled during an incident and never re-enabled is one of the commonest reasons a Discovery that used to work quietly stopped.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open it under **Discovery → Credentials** and check **Applies to** — that tells you what stopped working when it was switched off.',
+      'Find out why it is off. A rotated or expired password is a different fix from a deliberate decommission.',
+      'If the account is still valid, re-activate and press **Test credential** immediately — re-enabling a credential whose password expired just moves the failure.',
+      'If the account is gone, replace it rather than re-enabling: a credential that fails is worse than one that is absent, because Discovery keeps retrying it.',
+    ],
+    verify: 'Test credential succeeds, and the next Discovery run against its range produces fully populated CIs.',
+    effort: MIN(10, 4, 'About 10 minutes, assuming the underlying account is still good. Re-activating is one field; confirming the password still works is the real step.'),
+  },
+
+  'CRED-ALL-INACTIVE': {
+    headline: 'Every Discovery credential is switched off',
+    problem:
+      'All credentials on the instance are inactive. Discovery cannot authenticate to anything, so every scan it runs '
+      + 'from now on produces bare, attribute-less CIs.',
+    why: 'This is almost never deliberate. It is usually a bulk change, a failed migration, or a security action that was never reversed.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Check the update history on a couple of them — **Discovery → Credentials**, open one, and look at when and by whom `active` was last set. One change that touched all of them points at the cause.',
+      'Do NOT simply re-enable them all. If they were disabled for a security reason, re-enabling is the wrong move and somebody needs to say so first.',
+      'Once cleared, re-activate the credentials that should be live and **Test credential** on each.',
+      'Then re-run one Discovery schedule manually and confirm the CIs come back populated.',
+    ],
+    verify: 'The credentials that should be live are active and test successfully, and a manual Discovery run produces attribute-rich CIs.',
+    effort: MIN(12, 5, 'About 12 minutes per credential once the decision to re-enable has been taken. Establishing that it is safe to re-enable is the part that takes real time.'),
+  },
+
+  'MID-NONE': {
+    headline: 'No MID server is configured',
+    problem:
+      'The MID server table was read completely and is empty. Discovery, Service Mapping, Orchestration and every '
+      + 'integration configured to use a MID cannot run at all — not slowly, not partially. At all.',
+    why: 'This is upstream of every other ITOM finding. Fixing anything else while this is true produces no visible improvement.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Decide whether ITOM is meant to be in use. A PDI or a data-only instance legitimately has no MID, and then this is closed rather than fixed.',
+      'If it is, provision a host that can reach both the instance (443 outbound) and the estate you intend to discover. Sizing guidance is in the MID server documentation for your release.',
+      'Create the MID user in ServiceNow with the `mid_server` role — not admin.',
+      'Install the MID from **MID Server → Downloads**, configure it with the instance URL and that user, and start the service.',
+      'Validate it in **MID Server → Servers**. Up but Not Validated is not working — it must be both.',
+    ],
+    verify: 'The MID shows Up and Validated, and its capabilities populate automatically within a few minutes.',
+    effort: MIN(180, 25, 'About three hours to provision, install and validate a first MID, nearly all of it host and network work. The agent can confirm what exists and what is missing, but it cannot install anything.'),
+  },
+
+  'MID-NOT-VALIDATED': {
+    headline: 'A MID server is up but not validated',
+    problem:
+      'The MID reports a status other than Down, and the instance has not validated it. An unvalidated MID does not pick '
+      + 'up work — but its status reads as healthy, which is why this is easy to miss.',
+    why: 'This is the MID failure mode that hides. The dashboard looks fine and nothing runs.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open it under **MID Server → Servers** and press **Validate**. Many are a one-click fix after a restart.',
+      'If validation fails, read the MID log on its host (`agent/logs/agent0.log.0`) — the reason is written there and nowhere else.',
+      'The three usual causes: the MID user lost the `mid_server` role, the instance certificate changed and the MID does not trust it, or the MID version is too old for the instance after an upgrade.',
+      'A version mismatch after a platform upgrade is the most common of the three. Upgrade the MID to match the instance release.',
+      'Re-validate and confirm capabilities populate — a validated MID with no capabilities has not really finished.',
+    ],
+    verify: 'Status reads Up AND Validated, and capability records appear for it.',
+    effort: MIN(25, 8, 'About 25 minutes. A click if it is transient; longer if the MID needs upgrading to match the instance.'),
+  },
+
+  'MID-NO-CAPABILITY': {
+    headline: 'A MID server has no capabilities',
+    problem:
+      'No capability record references this MID in the complete capability extract. Capabilities are how the instance '
+      + 'decides which MID can do which work, so one with none is never selected for anything.',
+    why: 'A MID that is Up, Validated and capability-less looks healthy in every list and does no work.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Check validation first — capabilities normally populate automatically once a MID validates, so a MID with none usually never finished validating.',
+      'Open it under **MID Server → Servers** and look at the **Capabilities** related list, then at **Supported Applications**.',
+      'If it validated cleanly and still has none, restart the MID service: capability detection runs at startup.',
+      'If it is meant to be restricted to specific work, capabilities can be set explicitly — but then they should be present and deliberate, not absent.',
+    ],
+    verify: 'Capability records exist for the MID, and it starts appearing as a selectable MID for the work it should do.',
+    effort: MIN(20, 8, 'About 20 minutes. Usually resolves with the validation problem that caused it rather than separately.'),
+  },
+
+  'MID-ISSUE': {
+    headline: 'An open issue is recorded against a MID server',
+    problem:
+      'The platform raised an issue against this MID and it has not been resolved. MID issues are the instance\'s own '
+      + 'account of what is wrong with it — this rule surfaces them rather than interpreting them.',
+    why: 'MID issues are recorded whether or not anybody looks. An unresolved one usually explains a Discovery or integration failure somewhere else in this report.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open the issue under **MID Server → Issues** and read its description and severity.',
+      'Correlate it with the MID\'s own log on the host for the same time window.',
+      'Fix the cause. Common ones: the MID ran out of disk or heap, lost its route to the instance, or hit an expired certificate.',
+      'Resolve the issue record once the cause is fixed — leaving resolved problems open makes this table useless for the next reader.',
+    ],
+    verify: 'The issue is resolved, the MID is Up and Validated, and the ECC queue for that agent is draining.',
+    effort: MIN(25, 8, 'About 25 minutes per issue. Access to the MID host is usually required, and that is often the slow part.'),
+  },
+
+  'SM-NOT-IN-USE': {
+    headline: 'Discovered services exist, and none is mapped to any CI',
+    problem:
+      'The service-to-CI association table was read completely and is empty while discovered services do exist. '
+      + 'Nothing connects those services to the infrastructure that delivers them.',
+    why: 'An unmapped service is a name in a list. Impact analysis walks nothing from it, change risk sees nothing under it, and an outage on its infrastructure shows no service impact at all.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Confirm whether Service Mapping is licensed and expected on this instance. If it is not, these services need their CIs associated another way, and that is a CSDM decision rather than an ITOM one.',
+      'If it is licensed, check whether any mapping has ever run: **Service Mapping → Discovered Services**.',
+      'Map one service end to end first, by entry point, and confirm it produces sensible associations before doing more. A bad pattern applied to fifty services is fifty wrong maps.',
+      'Service Mapping depends on Discovery and on credentials, so both of those findings above are prerequisites, not alternatives.',
+    ],
+    verify: 'At least one service shows CI associations, and its dependency map renders something recognisable to the people who run it.',
+    effort: MIN(240, 30, 'Four hours or more for a first service mapped properly; it is a design exercise, not a configuration change. Deciding Service Mapping is not in scope here takes about 10 minutes.'),
+  },
+
+  'SM-UNMAPPED': {
+    headline: 'A discovered service is not mapped to any CI',
+    problem:
+      'No association in the complete service-to-CI extract references this service. Other services on this instance '
+      + 'ARE mapped, so this is a gap in coverage rather than Service Mapping being unused.',
+    why: 'Because the other services are mapped, this one looks equivalent to them in every list — and is invisible to every downstream calculation.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open it under **Service Mapping → Discovered Services** and check whether a mapping ever ran and what it returned.',
+      'Confirm the entry point is correct. A wrong or missing entry point is the usual reason one service fails to map while its neighbours succeed.',
+      'Check credentials for the hosts it runs on — mapping fails silently without them, exactly as Discovery does.',
+      'Re-run the mapping for that service and review the result before accepting it.',
+      'If it genuinely has no infrastructure in this CMDB, say so on the record rather than leaving it looking unmapped.',
+    ],
+    verify: 'The service shows CI associations and its map matches what its owners expect.',
+    effort: MIN(45, 12, 'About 45 minutes per service. Entry-point and credential problems dominate, and both recur across services.'),
+  },
+
+  'OUTAGE-OPEN': {
+    headline: 'An outage has been open for more than a day with no end recorded',
+    problem:
+      'The outage has a start and no end. Either it is still running, or it ended and nobody closed the record. '
+      + 'This rule cannot tell which — but availability reporting counts it as ongoing either way.',
+    why: 'Every availability figure for that CI is wrong until the record is closed, and the longer it stays open the more of the reporting period it silently consumes.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Check whether the CI is actually down right now. If it is, this is a live outage and belongs in your incident process rather than a health report.',
+      'If it is back, find when it recovered — the related incident, a monitoring alert, or the first successful Discovery afterwards all date it.',
+      'Set **End** on the outage record to that time. Guessing a convenient round number is how availability figures become fiction.',
+      'If the outage was recorded in error, remove it rather than closing it with a fabricated end.',
+      'If these accumulate, the process that opens outages is not closing them — fix that rather than the individual records.',
+    ],
+    verify: 'The outage has an end time, and the availability figure for that CI matches what its owners believe happened.',
+    effort: MIN(12, 5, 'About 12 minutes per outage, most of it establishing the real recovery time from another system.'),
+  },
+
+  /* ══ ITSM ═══════════════════════════════════════════════════════════════
+   *
+   * Unlike most of ITOM, several of these ARE a single field — an assignment
+   * group, a CI link — and appear in FIX_FIELD so the proposal can offer a
+   * value. The ones about time (stale, overdue, aged P1) are not: "nobody has
+   * touched this for 40 days" is fixed by a person doing the work, and a write
+   * that merely bumped `sys_updated_on` would hide the finding without fixing
+   * anything.
+   * ═══════════════════════════════════════════════════════════════════════ */
+
+  'ITSM-INC-UNASSIGNED': {
+    headline: 'An open incident is not assigned to any group',
+    problem:
+      'The incident is active and its assignment group is empty, so it sits in no queue. Nobody is notified and '
+      + 'nothing in the platform will pick it up — it waits until someone happens to find it.',
+    why: 'Unassigned incidents are the commonest reason an SLA breaches with nobody ever having looked at the ticket.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Open the incident and read the short description, category and affected CI or service.',
+      'Route it to the group that owns that CI or service — the CI\'s **Support group** is usually the right answer.',
+      'Set **Assignment group** and save. The group\'s queue, notifications and SLA clock start from here.',
+      'If several incidents arrive unassigned from the same channel, fix the **Assignment Rules** or the integration that creates them instead of routing each by hand.',
+    ],
+    verify: 'The incident shows an assignment group and appears in that group\'s queue; re-run the check and it drops out.',
+    effort: MIN(3, 2, 'About 3 minutes per incident once you know the owning group. The agent can propose the group from the CI and category; a human confirms.'),
+  },
+
+  'ITSM-INC-P1-AGED': {
+    headline: 'A priority 1 incident has been open for more than a day',
+    problem:
+      'A P1 is meant to be a major outage worked continuously. One open for days is either a genuinely long outage, '
+      + 'or a record that was never resolved after service came back — and every P1 report counts it as ongoing.',
+    why: 'An unresolved P1 distorts major-incident metrics and keeps escalation paths and bridge calls pointed at something that may be over.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Contact the assignment group or major incident manager and ask directly whether service is still affected.',
+      'If it is still live, confirm the major incident process is running — communications, bridge, updates on the record.',
+      'If service is restored, resolve the incident with the real restoration time and a resolution note.',
+      'If the priority was set wrongly, correct impact and urgency rather than priority itself — priority is calculated from them (trap #5).',
+      'Raise a problem record if the cause is not yet understood.',
+    ],
+    verify: 'The incident is either resolved with a real restoration time, or visibly being worked with recent updates.',
+    effort: MIN(10, 4, 'About 10 minutes per P1, almost all of it getting a straight answer from the people working it.'),
+  },
+
+  'ITSM-INC-STALE': {
+    headline: 'An open incident has not been touched in weeks',
+    problem:
+      'The incident is active and has had no update for longer than the review window. It may be waiting on the '
+      + 'caller, blocked on a vendor, or simply forgotten — from the record alone those look the same.',
+    why: 'Stale open incidents inflate the backlog, hide the real workload and keep their SLAs quietly breaching.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Ask the assignee what is actually happening with it.',
+      'If it is waiting on the caller or a third party, set it **On Hold** with the right reason so it stops looking abandoned and the SLA pauses correctly.',
+      'If it is fixed, resolve it with a note.',
+      'If nobody owns it any more, reassign it rather than leaving it parked on someone who has moved on.',
+    ],
+    verify: 'The incident has a fresh update, a hold reason, or a resolution.',
+    effort: MIN(5, 3, 'About 5 minutes per incident. These cluster by assignee, so one conversation often clears several.'),
+  },
+
+  'ITSM-INC-NO-CI': {
+    headline: 'An open incident is not linked to any CI or service',
+    problem:
+      'Neither a configuration item nor a business service is set. The incident cannot feed impact analysis, problem '
+      + 'trending or CI health, and nobody looking at the CI will see that it is failing.',
+    why: 'Incidents without CIs are why the CMDB cannot answer "which of our systems break most" — the evidence exists and is not connected.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Read the incident description and identify the affected system.',
+      'Set **Configuration item** to that CI, or **Service** if the CI is not known.',
+      'If the CI does not exist in the CMDB, that is itself worth raising — the incident is evidence of a gap.',
+      'When many incidents arrive without a CI, make the field mandatory on the intake form or map it in the integration that creates them.',
+    ],
+    verify: 'The incident shows a CI or service, and appears in that CI\'s related incidents.',
+    effort: MIN(3, 2, 'About 3 minutes per incident. The agent can propose the CI from the description; confirming it is the human part.'),
+  },
+
+  'ITSM-INC-REOPENED': {
+    headline: 'An incident keeps being reopened',
+    problem:
+      'The incident has been reopened at least twice. That almost always means it was resolved before the underlying '
+      + 'cause was fixed — the symptom went away, and came back.',
+    why: 'Repeat reopens are the clearest signal in ITSM data that a problem record is missing.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Read the work notes across each resolution and reopen — look for the fix that did not hold.',
+      'If the cause is not understood, raise a **Problem** and relate this incident to it.',
+      'If there is a known workaround, record it as a known error so the next reopen is resolved faster.',
+      'Check whether the resolution code was accurate; "resolved by caller" on a recurring fault hides the pattern.',
+    ],
+    verify: 'The incident is linked to a problem, or its latest resolution addresses the root cause.',
+    effort: MIN(15, 6, 'About 15 minutes per incident to read the history and decide on a problem record.'),
+  },
+
+  'ITSM-CHG-STALE': {
+    headline: 'An open change has not been touched in weeks',
+    problem:
+      'The change is active and has had no update for longer than the review window. Open changes block the change '
+      + 'calendar, appear in conflict checks and make the schedule look busier than it is.',
+    why: 'A calendar full of abandoned changes is how real conflicts get missed.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Ask the change owner whether it is still planned.',
+      'If it is, update the planned dates so the calendar is accurate.',
+      'If it is not, **Cancel** it with a reason rather than leaving it open.',
+      'If it was implemented and never closed, close it with the real outcome.',
+    ],
+    verify: 'The change has current dates, or is cancelled or closed.',
+    effort: MIN(5, 3, 'About 5 minutes per change, mostly reaching the owner.'),
+  },
+
+  'ITSM-CHG-NO-CI': {
+    headline: 'An open change names no configuration item',
+    problem:
+      'The change does not reference a CI, so conflict detection and impact analysis have nothing to check it '
+      + 'against. It can be approved without anyone seeing which services depend on what it touches.',
+    why: 'Risk assessment without a CI is a guess; this is how a "low risk" change takes down a service nobody connected to it.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Identify the system the change actually modifies.',
+      'Set **Configuration item** on the change, and add further CIs in **Affected CIs** if it touches more than one.',
+      'Re-run the risk and conflict assessment now that it has something to assess.',
+      'If changes routinely arrive without CIs, make the field mandatory before the Assess state.',
+    ],
+    verify: 'The change names its CI and its impacted services list is populated.',
+    effort: MIN(5, 3, 'About 5 minutes per change. The agent can propose the CI from the description; the change owner confirms.'),
+  },
+
+  'ITSM-CHG-OVERDUE': {
+    headline: 'A change is past its planned end and still open',
+    problem:
+      'The planned end date has passed and the change is still active. Either implementation overran, or it finished '
+      + 'and nobody closed the record.',
+    why: 'An overdue open change makes the change calendar lie, and its outcome — successful or not — is never recorded.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Ask the implementer what happened.',
+      'If it was implemented, move it to Review and close it with the real close code — **successful**, **successful with issues** or **unsuccessful**.',
+      'If it overran and is still in progress, update the planned end date so the calendar is true.',
+      'If it did not happen, cancel it with a reason.',
+    ],
+    verify: 'The change is closed with an outcome, or its planned end reflects reality.',
+    effort: MIN(6, 3, 'About 6 minutes per change.'),
+  },
+
+  'ITSM-CHG-FAILED': {
+    headline: 'A change was closed as unsuccessful',
+    problem:
+      'The change failed inside the review window. That is not a data problem — it is an outcome that needs a review, '
+      + 'and a CI that may have been left in an unknown state.',
+    why: 'Unreviewed failed changes repeat. The review is where the next failure is prevented.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Check a post-implementation review exists and records what went wrong.',
+      'Confirm the CI was backed out or left in a known, documented state.',
+      'If the same CI or change model fails repeatedly, raise it at CAB rather than approving the next one the same way.',
+      'Raise a problem if the cause is not understood.',
+    ],
+    verify: 'The change has a review recorded and the affected CI is in a documented state.',
+    effort: MIN(20, 8, 'About 20 minutes per failed change for a proper review.'),
+  },
+
+  'ITSM-PRB-UNASSIGNED': {
+    headline: 'An open problem has no owning group',
+    problem:
+      'The problem is active and nobody owns the investigation, so the root cause is not being worked and the '
+      + 'incidents it explains keep arriving.',
+    why: 'A known problem nobody owns is a known cause nobody is fixing.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Identify the group that owns the affected service or CI.',
+      'Set **Assignment group** and name a problem owner.',
+      'Agree a first action — root cause analysis, or a known error with a workaround.',
+    ],
+    verify: 'The problem has an assignment group and a recent work note.',
+    effort: MIN(4, 2, 'About 4 minutes per problem.'),
+  },
+
+  'ITSM-PRB-STALE': {
+    headline: 'An open problem has not been touched in weeks',
+    problem:
+      'The problem is active with no recent update. Its related incidents keep looking unexplained, and nobody can '
+      + 'tell whether the investigation stalled or quietly finished.',
+    why: 'Stalled problems are where recurring incidents go to be forgotten.',
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      'Ask the problem owner for status.',
+      'If the cause is known and a workaround exists, record it as a **Known Error** so incident resolvers can use it.',
+      'If the fix is in progress, link the change that will deliver it.',
+      'If it will not be fixed, close it with the reason and accepted risk rather than leaving it open.',
+    ],
+    verify: 'The problem has a fresh update, a known error, a linked change, or a documented closure.',
+    effort: MIN(8, 4, 'About 8 minutes per problem.'),
+  },
 });
 
 /** A finding with no catalogue entry still gets an honest, generic answer. */

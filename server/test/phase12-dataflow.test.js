@@ -991,12 +991,13 @@ test('A4 — Phase 12 added no migration: dataflow rides on the existing tables'
    * Phase 1 task tables, and no migration anywhere was added FOR IT. The head is
    * still pinned, so a stray migration 25 fails this the way 24 used to.
    */
-  assert.equal(getDb().prepare('PRAGMA user_version').get().user_version, 25);
+  assert.equal(getDb().prepare('PRAGMA user_version').get().user_version, 26);
 
   const dbSrc = read('memory/db.js');
   assert.match(dbSrc, /\/\/ 24 — HEALTH ASSIST/, 'migration 24 is no longer the Health Assist one');
   assert.match(dbSrc, /\/\/ 25 — HEALTH ASSIST REMEDIATION/, 'migration 25 is no longer the remediation one');
-  assert.ok(!/\/\/ 26 —/.test(dbSrc), 'a migration 26 appeared');
+  assert.match(dbSrc, /\/\/ 26 — FINDING LIFECYCLE/, 'migration 26 is no longer the lifecycle one');
+  assert.ok(!/\/\/ 27 —/.test(dbSrc), 'a migration 27 appeared');
 
   // And nothing in the schema knows what a dataflow or a $ref is.
   const tables = getDb().prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);

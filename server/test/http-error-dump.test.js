@@ -208,3 +208,51 @@ test('the empty-completion path is untouched — it still names itself f4', asyn
     }
   );
 });
+
+/* ────────────────────────────────────────────────────────────────────────
+ * REGRESSION — the 401 advice has to fit the instance it is talking to.
+ *
+ * Measured live: connecting `techsnitchpvtltddemo2.service-now.com` (a real
+ * corporate demo instance) produced a 401 whose advice was "the PDI is
+ * hibernating — wake it at developer.servicenow.com". That instance is not a
+ * PDI, does not hibernate, and does not exist on developer.servicenow.com, so
+ * the one actionable line sent the reader somewhere useless and buried the
+ * causes that do apply there.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+test('a 401 on a NON-PDI host does not offer PDI hibernation advice', async () => {
+  const { diagnoseFailure } = await import('../src/servicenow/client.js');
+  const d = diagnoseFailure({
+    status: 401, host: 'techsnitchpvtltddemo2.service-now.com',
+    username: 'navin.chanchal', detail: 'Required to provide Auth information',
+  });
+  assert.equal(d.isPdi, false);
+  assert.equal(/hibernat/i.test(d.message), false, 'a corporate instance was told to wake a PDI');
+  assert.equal(/developer\.servicenow\.com/.test(d.message), false);
+  // And it names the causes that actually apply to a real sub-prod instance.
+  assert.match(d.message, /multi-factor/i);
+  assert.match(d.message, /snc_platform_rest_api_access/);
+  assert.match(d.message, /locked/i);
+});
+
+test('a 401 on a PDI host keeps the hibernation advice, which is right there', async () => {
+  const { diagnoseFailure } = await import('../src/servicenow/client.js');
+  const d = diagnoseFailure({
+    status: 401, host: 'dev424910.service-now.com', username: 'admin', detail: 'x',
+  });
+  assert.equal(d.isPdi, true);
+  assert.match(d.message, /hibernating/i);
+  assert.match(d.message, /developer\.servicenow\.com/);
+});
+
+test('the 401 says the platform cannot distinguish these causes, rather than picking one', async () => {
+  /*
+   * A wrong password, an MFA-required user and a missing REST role all answer
+   * 401 with the same body — verified against a live instance. Naming one as
+   * "most likely" would be a guess presented as a diagnosis.
+   */
+  const { diagnoseFailure } = await import('../src/servicenow/client.js');
+  const d = diagnoseFailure({ status: 401, host: 'x.service-now.com', username: 'u', detail: 'y' });
+  assert.match(d.message, /answers all of these the same way, so none can be ruled out/);
+  assert.match(d.message, /login\.do is the quickest way/);
+});

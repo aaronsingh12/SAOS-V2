@@ -1,5 +1,6 @@
 import { table, SnowError } from '../servicenow/client.js';
 import { TABLES } from './tables.js';
+import { pageAll } from '../servicenow/dba-metadata.js';
 
 /**
  * Extraction — rows off the instance, plus an honest account of what was missed.
@@ -61,15 +62,36 @@ export function isFatal(code, spec) {
   return Boolean(spec?.required) || ['unauthorized', 'not_configured'].includes(code);
 }
 
-function coverageOf(tableName, records, pages, reportedTotal, missingFields, status, cutoff) {
+/**
+ * A coverage descriptor.
+ *
+ * `rows_complete` and `status` answer DIFFERENT questions, and conflating them
+ * was a real defect. Measured on techsnitchpvtltddemo2: `cmdb_ci` read 3,412 of
+ * 3,412 rows, but `business_criticality` does not exist on that instance, so the
+ * table was `limited` — and the CMDB score, which needs every CI ROW and has no
+ * use for that field, was withheld. Any instance missing any one field in a
+ * spec would have lost its score for ever.
+ *
+ *   rows_complete — every row the platform counts was read
+ *   missing_fields — which requested fields the API did not return
+ *   status        — `complete` only when both hold; `limited` otherwise
+ *
+ * A rule that needs the whole row SET keys off `rows_complete`. A rule that
+ * needs a particular FIELD checks `missing_fields` as well. `status` stays the
+ * strictest summary for display.
+ */
+function coverageOf(tableName, records, pages, reportedTotal, missingFields, status, cutoff, extra = {}) {
   return {
     table: tableName,
     status,
+    rows_complete: extra.rowsComplete ?? status === 'complete',
+    completeness_basis: extra.basis ?? null,
     records: records.length,
     reported_total: reportedTotal,
     pages,
     missing_fields: [...missingFields].sort(),
     cutoff,
+    filter: extra.filterLabel ?? null,
     scope: 'Records visible to the connected account; ACL and domain restrictions may hide records',
   };
 }
@@ -89,6 +111,15 @@ export async function fetchTable(tableName, { cutoff, limit = MAX_PER_TABLE, pag
   }
 
   /*
+   * A spec may narrow the slice — ITSM tables read active records plus recent
+   * ones rather than every incident since the instance was built. The SAME
+   * condition goes into the count, or `records < reported_total` would be true
+   * on every run and the table would never be complete.
+   */
+  const narrowing = typeof spec.filter === 'function' ? spec.filter(cutoff) : (spec.filter || '');
+  const where = `sys_updated_on<=${cutoff}${narrowing ? `^${narrowing}` : ''}`;
+
+  /*
    * The reported total comes from the Aggregate API, and a failure to get one
    * is NOT a failure to extract: some tables answer 403 to stats while
    * answering the Table API fine. `null` then means "unknown", and completeness
@@ -96,94 +127,105 @@ export async function fetchTable(tableName, { cutoff, limit = MAX_PER_TABLE, pag
    */
   let reportedTotal = null;
   try {
-    reportedTotal = await client.count(tableName, `sys_updated_on<=${cutoff}`);
+    reportedTotal = await client.count(tableName, where);
   } catch { /* unknown total; handled below */ }
 
   const records = [];
   const seen = new Set();
   const missingFields = new Set();
-  let offset = 0;
-  let pages = 0;
 
   /*
-   * An explicit page budget, and the loop is bounded BY it rather than by
-   * reasoning about the exits.
+   * A KEYSET WALK, not offset paging — the same walk the DBA module uses.
    *
-   * Every exit below is reachable in normal operation, so a `for (;;)` would
-   * terminate — but "it terminates if you trace it" is exactly the argument
-   * that stops being true after someone edits one of the conditions. The budget
-   * is the number of pages it would take to reach `limit`, plus one to observe
-   * the end; exhausting it means the platform is not advancing the way paging
-   * assumes, and the correct answer to that is to REFUSE rather than to return
-   * a partial result that looks complete.
+   * Two failures, both measured on techsnitchpvtltddemo2, pushed it here:
+   *
+   *  1. A short page is not the end. ServiceNow drops ACL-hidden rows from
+   *     INSIDE a page, so `sys_script` stopped at 998 of 14,059 when the pager
+   *     read "fewer than 500" as "no more". The DBA module had already hit the
+   *     same thing as its finding C-1; only an EMPTY page ends this walk.
+   *  2. Offsets move under concurrent writes. Paging on by offset exposed that
+   *     `sys_script` (14,059 → 14,250 in two days) and `sysauto` are written
+   *     while they are read: one insert ahead of the current offset shifts every
+   *     later row, the same sys_id lands on two pages, and the whole table was
+   *     thrown away. Paging by `sys_id > watermark` cannot shift — each page
+   *     starts after the last row actually seen, whatever changed elsewhere.
+   *
+   * The walk is bounded by `limit` rows. A table it cannot finish is reported
+   * as `truncated`, never as complete.
    */
-  const maxPages = Math.ceil(limit / pageSize) + 1;
+  const walk = await pageAll({
+    pageSize,
+    max: limit,
+    knownTotal: async () => reportedTotal,
+    fetchPage: async ({ after, limit: size }) => {
+      const rows = await client.query(tableName, {
+        query: `${where}${after ? `^sys_id>${after}` : ''}^ORDERBYsys_id`,
+        fields: spec.fields.join(','),
+        limit: size,
+        offset: 0,
+        display: 'false',
+      });
+      for (const row of rows) {
+        /*
+         * `sysparm_fields` DROPS names the table does not have, with no error
+         * (trap #4). So the difference between what was asked for and what came
+         * back is recorded per table — a rule needing a field that was never
+         * returned is then skipped loudly instead of reading undefined.
+         */
+        for (const field of spec.fields) if (!(field in row)) missingFields.add(field);
 
-  for (; pages <= maxPages; ) {
-    const size = Math.min(pageSize, limit - records.length);
-    if (size <= 0) {
-      return { records, coverage: coverageOf(tableName, records, pages, reportedTotal, missingFields, 'truncated', cutoff) };
-    }
-
-    const rows = await client.query(tableName, {
-      query: `sys_updated_on<=${cutoff}^ORDERBYsys_id`,
-      fields: spec.fields.join(','),
-      limit: size,
-      offset,
-      display: 'false',
-    });
-    pages += 1;
-
-    for (const row of rows) {
-      /*
-       * `sysparm_fields` DROPS names the table does not have, with no error
-       * (trap #4). So the difference between what was asked for and what came
-       * back is recorded per table — a rule needing a field that was never
-       * returned is then skipped loudly instead of reading undefined.
-       */
-      for (const field of spec.fields) if (!(field in row)) missingFields.add(field);
-
-      const sid = row.sys_id;
-      if (typeof sid !== 'string' || !sid) {
-        throw Object.assign(
-          new Error(`${tableName}: a row came back with no sys_id. A field ACL is hiding identity, so nothing from this table can be addressed.`),
-          { status: 502 },
-        );
+        const sid = row.sys_id;
+        if (typeof sid !== 'string' || !sid) {
+          throw Object.assign(
+            new Error(`${tableName}: a row came back with no sys_id. A field ACL is hiding identity, so nothing from this table can be addressed.`),
+            { status: 502 },
+          );
+        }
+        /*
+         * Under a keyset walk a repeat is not concurrency any more — every page
+         * starts strictly after the last sys_id seen. A repeat means the
+         * instance ignored the `sys_id >` condition, and the walk would page the
+         * same rows until its limit. That is refused rather than stored.
+         */
+        if (seen.has(sid)) {
+          throw Object.assign(
+            new Error(`${tableName}: the same sys_id appeared on two pages even though each page starts after the last row read, so the instance is not honouring the paging condition and this read cannot be bounded.`),
+            { status: 502 },
+          );
+        }
+        seen.add(sid);
       }
-      if (seen.has(sid)) {
-        throw Object.assign(
-          new Error(`${tableName}: the same sys_id appeared on two pages. Rows are being written while the extract runs, so this snapshot would double-count — retry.`),
-          { status: 503 },
-        );
-      }
-      seen.add(sid);
-      records.push(row);
-    }
+      return rows;
+    },
+  });
+  records.push(...walk.rows);
 
-    const done = rows.length < size
-      || (reportedTotal != null && records.length >= reportedTotal)
-      || records.length >= limit;
-    if (done) {
-      /*
-       * `complete` is the strongest claim this module makes and the absence
-       * rules key off it, so it is withheld whenever anything was dropped: a
-       * field the API did not return, or fewer rows than the platform's own
-       * count. Degrading to `limited` costs a few rules; claiming `complete`
-       * wrongly costs the user a page of invented findings.
-       */
-      const short = reportedTotal != null && records.length < reportedTotal;
-      const status = missingFields.size || short ? 'limited' : 'complete';
-      return { records, coverage: coverageOf(tableName, records, pages, reportedTotal, missingFields, status, cutoff) };
-    }
-    offset += size;
+  if (walk.terminator === 'ceiling' && !walk.exhausted) {
+    return {
+      records,
+      coverage: coverageOf(tableName, records, walk.pages, reportedTotal, missingFields, 'truncated', cutoff,
+        { rowsComplete: false, basis: 'limit', filterLabel: spec.filterLabel }),
+    };
   }
 
-  throw Object.assign(
-    new Error(`${tableName}: the pagination budget of ${maxPages} pages was exhausted without reaching the end. `
-      + 'Refusing to return a result this read cannot bound — it would look complete and would not be.'),
-    { status: 503 },
-  );
+  /*
+   * `complete` is the strongest claim this module makes, so it needs both
+   * halves: every counted row, and every requested field. The row half is
+   * published separately as `rows_complete`, because the scores and the
+   * absence rules need only that half.
+   */
+  const rowsComplete = reportedTotal != null ? records.length >= reportedTotal : walk.exhausted;
+  const status = rowsComplete && !missingFields.size ? 'complete' : 'limited';
+  return {
+    records,
+    coverage: coverageOf(tableName, records, walk.pages, reportedTotal, missingFields, status, cutoff, {
+      rowsComplete,
+      basis: reportedTotal != null ? 'reported_total' : 'empty_page',
+      filterLabel: spec.filterLabel,
+    }),
+  };
 }
+
 
 /**
  * Read every requested table.
@@ -193,12 +235,22 @@ export async function fetchTable(tableName, { cutoff, limit = MAX_PER_TABLE, pag
  * table failing ends the run, because every downstream number would be a
  * fraction of an estate nobody could see.
  */
-export async function extractEstate(tableNames, { cutoff, onProgress, limit, client } = {}) {
+export async function extractEstate(tableNames, { cutoff, onProgress, limit, client, signal = null } = {}) {
   const estate = {};
   const coverage = {};
   const stamp = cutoff || new Date().toISOString().replace('T', ' ').slice(0, 19);
 
   for (let i = 0; i < tableNames.length; i++) {
+    /*
+     * Cancellation is observed BETWEEN tables, never mid-table.
+     *
+     * A table half-read would be recorded with whatever coverage it happened to
+     * reach, which is a snapshot nobody asked for. Stopping on a clean boundary
+     * means the partial estate is still an honest description of the tables it
+     * did finish.
+     */
+    if (signal?.aborted) throw Object.assign(new Error('Stopped.'), { name: 'AbortError' });
+
     const name = tableNames[i];
     const spec = TABLES[name];
     await onProgress?.({ table: name, index: i, total: tableNames.length });
@@ -211,6 +263,7 @@ export async function extractEstate(tableNames, { cutoff, onProgress, limit, cli
       coverage[name] = {
         table: name,
         status: code,
+        rows_complete: false,
         records: null,
         reported_total: null,
         pages: 0,

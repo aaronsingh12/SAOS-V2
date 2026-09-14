@@ -2,7 +2,7 @@
 
 Connect a ServiceNow PDI and build on it two ways: through clean module UIs, or by telling an AI agent what you want and approving each change it proposes. Bring your own model — Anthropic, OpenAI, or fully-local Ollama. No Now Assist SKUs required.
 
-**Scope (this build):** PDI connection · Incident Management (full CRUD) · Catalog Management (items, all variable types with choices, inline variable editing and reordering, **catalog UI policies**, variable sets, order guides, record producers) · Flow Designer (full read, executions, activate, **live authoring of real flows and subflows via the ServiceNow SDK**, AI blueprint design + classic fallback) · **SLA definitions** (read, create, and semantic verification of the breach clock) · **Access control** (ACL report, two-role diff, plain-language explanation — read-only) · **Health Assist** (read-only estate health: 15 allow-listed tables, a deterministic rule pack over ten domains, and coverage reported beside every finding) · **Audit** (everything the agent and the module pages did to the instance, with sys_ids, approvals and CSV export) · deep reference-field/table handling everywhere · agentic chat with a human approval gate on every mutation, and markdown-rendered replies.
+**Scope (this build):** PDI connection · Incident Management (full CRUD) · Catalog Management (items, all variable types with choices, inline variable editing and reordering, **catalog UI policies**, variable sets, order guides, record producers) · Flow Designer (full read, executions, activate, **live authoring of real flows and subflows via the ServiceNow SDK**, AI blueprint design + classic fallback) · **SLA definitions** (read, create, and semantic verification of the breach clock) · **Access control** (ACL report, two-role diff, plain-language explanation — read-only) · **Health Assist** (CMDB, ITOM and ITSM estate health behind one switch: 25 allow-listed tables, a deterministic rule pack over seventeen domains, a score per area, coverage reported beside every finding, and AI remediation that proposes but cannot apply without your approval) · **Audit** (everything the agent and the module pages did to the instance, with sys_ids, approvals and CSV export) · deep reference-field/table handling everywhere · agentic chat with a human approval gate on every mutation, and markdown-rendered replies.
 
 ---
 
@@ -180,16 +180,19 @@ Two honesty properties do most of the work here. An empty result is never render
 
 ### Health Assist
 
-Estate health over the connected instance. Reads 15 allow-listed tables, runs a
-deterministic rule pack across ten domains — CMDB quality, relationship
+Estate health over the connected instance. Reads 25 allow-listed tables, runs a
+deterministic rule pack across seventeen domains — CMDB quality, relationship
 integrity, CSDM completeness, customisation, integration, performance, upgrade,
-security hygiene, MID servers, event binding — and reports findings carrying the
-records each one was derived from.
+security hygiene, MID servers, event binding, **Discovery, credentials, service
+mapping and availability** — and reports findings carrying the records each one
+was derived from.
 
-It is **read-only by construction**. There is no authoring tool, the router does
-not import the ServiceNow client, and the rule pack imports nothing at all —
-each asserted by a test rather than left as a promise. A finding carries a
-recommendation written for a person to act on.
+**Detection is read-only by construction.** The router does not import the
+ServiceNow client, nothing under `health/` calls a write method, and the rule
+pack imports nothing at all — each asserted by a test rather than left as a
+promise. Remediation does change the instance, but only ever through the
+ordinary plan executor after you approve it, so the gate, the read-back and the
+audit trail are the same ones every other write in this app goes through.
 
 The part that does the real work is **coverage**. Every table comes back with an
 account of how completely it was read, and three things follow from it:
@@ -216,6 +219,42 @@ only opaque fingerprints, rules, severities and counts, and a reply naming an id
 that was never sent is discarded **whole**, because a model that fabricated one
 entry has shown it is not keying off the input. Its failure never removes a
 deterministic finding.
+
+#### One switch: All · CMDB · ITOM · ITSM · Platform
+
+A switch at the top scopes the whole page — scorecard, severity bars, areas,
+coverage, findings and export — and lives in the URL, so `/health?scope=itom`
+opens straight onto ITOM and survives a refresh. Each button shows its finding
+count before you click.
+
+Each area is **scored its own way**, because one formula would produce numbers
+that look comparable and are not:
+
+- **CMDB** — the share of CIs no CMDB rule objected to.
+- **ITSM** — the share of open or recent incidents, changes and problems with no
+  ITSM finding, and the score says which slice it covers.
+- **ITOM** — the share of capability checks that pass: a MID server exists and is
+  healthy, Discovery has run cleanly, credentials are usable, services are
+  mapped, the ECC queue drains, outages get closed. A check whose table could not
+  be read is shown as *not counted* — never as a pass.
+- **Platform** — no score, and it says why: role assignments and integrations
+  have no shared denominator, so a percentage would just reflect table sizes.
+
+The All view shows one tile per area side by side and never averages them.
+
+**ITSM is new.** The incident, change and problem tables were always read, but no
+rule looked at them — so ITSM produced nothing, which is not the same as healthy.
+Eleven rules now cover unassigned, aged-P1, stale, CI-less and reopened incidents;
+stale, CI-less, overdue and failed changes; and unassigned or stale problems.
+Routing and CI-linking can be fixed through an approved proposal; the time-based
+ones deliberately cannot, because a write that only bumped the update time would
+hide the finding without anyone doing the work.
+
+Three defects found against a real instance and fixed along the way: a score
+withheld because an unrelated optional column did not exist; *"1000 things
+found"* when 12,194 had been — every count on the page came from the stored
+slice; and extraction stopping early whenever an ACL removed a row from inside a
+page.
 
 #### The scorecard, and the two ways out of a finding
 
@@ -260,7 +299,10 @@ risks, whether it is reversible) and how it will be checked afterwards. You can
 fields use the app's own picker, so a sys_id is never typed by hand.
 
 Then: **Approve and apply**, or **Reject** (with an optional reason; nothing is
-changed and the finding is preserved).
+changed and the finding is preserved). Approve and apply first re-reads every
+record it will touch from the instance, then asks you to confirm each write on
+the same approval card the agent workspace uses — showing the exact table,
+record and data — before sending it.
 
 **Approval is the boundary — not the kind of finding.** The AI proposes for
 anything, including the findings whose remedy is a judgement call; what it must
@@ -294,8 +336,77 @@ completed**, never as applied. The whole trail is kept: the AI's original draft,
 your edits, exactly what you approved, when, what ran, and what the instance
 holds now.
 
-*Today it is an estate and CMDB checker. `health/tables.js` and the domain list
-in `health/rules.js` are the two places it grows into a whole-platform one.*
+#### ITOM: is anything keeping the CMDB true?
+
+The CMDB rules ask *is this record right?* The ITOM rules ask *is anything
+refreshing it?* A perfect CMDB that no Discovery is maintaining is a snapshot
+going stale — and every CMDB rule keeps reporting it as healthy, because the
+records are well-formed. They are just no longer accurate.
+
+Four more domains — **Discovery**, **Credentials**, **Service Mapping**,
+**Availability** — beside the existing MID Server, Event Management and
+Performance ones, over ten more tables. Every table was probed against a real
+instance before being added: a spec for a table that is not there reports
+`unavailable` for ever and teaches people to ignore the coverage strip.
+
+**Absence is the point here.** The two most valuable things this can say about
+an ITOM estate are *"Discovery has never run"* and *"there is no MID server"*,
+and both are claims about what was **not** found — so both require complete
+coverage, and a table that could not be read produces a *skip with its reason*,
+never a finding. Getting that backwards would tell somebody their Discovery is
+dead because their account lacks a role.
+
+An estate-wide finding also takes the **maximum** impact, not the minimum:
+before that fix, "there is no MID server" scored beneath a single CI with a
+blank owner, because it names no records. Nothing being there affects
+everything downstream of it.
+
+Measured live on dev424910: `MID-NONE` and `DISC-NEVER-RAN` both surfaced at
+**P1**, while `em_alert` — Event Management is not installed — reported
+`unavailable` and produced no findings at all.
+
+Most ITOM remediation is **operational**: restarting a MID service, opening a
+port, running a schedule. A REST write cannot do any of it, so those rules carry
+manual steps and deliberately offer no Fix button. The three that genuinely are
+a field write do — and "this credential is switched off" fills its own value in
+without asking a model, because there is exactly one sensible answer.
+
+#### Living with it: acknowledge, mute, accept
+
+Without this, every run re-reports every finding for ever. A team reviews 900,
+decides 400 are known, and has no way to say so — so the next run shows 900
+again, and within about three runs nobody opens the page.
+
+- **Acknowledged** — seen and on someone's list. Still counted as outstanding.
+- **Muted** — known and deliberately quiet. Needs a reason.
+- **Accepted risk** — a decision not to fix. Needs a reason.
+
+**Muting is presentation, never deletion.** A muted finding is still detected,
+still stored, still in every count above, and one click from visible — a health
+tool that could make findings disappear would be a tool for hiding problems. A
+reason is required for the two states that amount to a decision, so the next
+person can tell an accepted risk from an unexplained silence.
+
+State is keyed on the finding's **fingerprint**, so muting *"these four CIs have
+no owner"* carries across runs and cannot silence a fifth CI that goes ownerless
+next week — that is a different fingerprint and arrives as new. A snooze with an
+end date re-opens itself when it expires.
+
+#### Also built in, because production needs it
+
+- **One run at a time.** Two concurrent checks leave whichever finished last as
+  "latest", so the page would show one run's coverage beside the other's
+  findings. A run abandoned by a server crash expires after 30 minutes, so one
+  crash cannot disable the feature permanently.
+- **Stop.** Cancellation is observed between tables, never mid-table, so the
+  partial estate stays an honest description of what finished. Nothing is left
+  half-done, because a health check only reads.
+- **Score over time**, with runs whose score was withheld drawn as a **gap**
+  rather than dropped or zeroed — a line joined across incomplete coverage would
+  assert a continuity the data does not have.
+- **CSV export** honouring the on-screen filters, with the lifecycle state and
+  reason on every row, and cells escaped against the spreadsheet-formula
+  problem (trap #38).
 
 #### Capability matrix
 
@@ -522,7 +633,9 @@ Modeled on Claude Code / opencode:
                 runs/:id/findings/:fingerprint/prompt (the agent draft)
                 runs/:id/findings/:fingerprint/proposal (POST — propose, writes nothing)
                 proposals/:id (GET · PATCH edit) · proposals/:id/reject
-                proposals/:id/approve (POST, SSE — the only path to a write) · runs/:id (DELETE)
+                proposals/:id/approve (POST, SSE — the only path to a write)
+                findings/:fingerprint/state (PATCH · DELETE) · states · trend
+                runs/:id/export.csv · runs/:id (DELETE)
 /api/audit       (GET, filters: session · mutating) · runs/:id · export.csv
 /api/agent       info · chat (SSE) · approve
                  sessions (GET list · POST new) · sessions/:id (GET · PATCH rename · DELETE)

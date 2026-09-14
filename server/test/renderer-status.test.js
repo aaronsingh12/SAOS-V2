@@ -16,7 +16,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { writeOutcome, captureReason, approvalProvenance } from '../../client/src/components/writeOutcome.js';
-import { APPROVAL_RESOLVED, APPROVAL_SOURCES, executeTool } from '../src/agent/orchestrator.js';
+
+/*
+ * SETTINGS ARE PINNED, because this file exercises `executeTool` and that
+ * consults them.
+ *
+ * Without this the suite read the developer's own `server/data/settings.json`,
+ * so "does an auto-approved mutation run" depended on which instance happened
+ * to be connected and whether `agent.liveHosts` named it. Found by switching
+ * instances: the test went red on a change that touched nothing it covers, and
+ * the guard it tripped was working perfectly.
+ *
+ * That is trap #15 — a test that branches on the environment silently changes
+ * meaning. The import is dynamic so the pin lands before the orchestrator reads
+ * anything.
+ */
+const { _setSettingsForTests } = await import('../src/config/store.js');
+_setSettingsForTests({
+  connection: {
+    instanceUrl: 'https://dev000000.service-now.com',
+    authType: 'basic', username: 'admin', password: 'x',
+  },
+  llm: { provider: 'ollama', model: '', baseUrl: '' },
+  /* The host is named here on purpose: unattended writes are only permitted
+     against one somebody listed deliberately, and this suite asserts that an
+     auto-approved mutation DOES run. */
+  agent: { autoApprove: false, liveHosts: ['dev000000.service-now.com'] },
+});
+
+const { APPROVAL_RESOLVED, APPROVAL_SOURCES, executeTool } = await import('../src/agent/orchestrator.js');
 
 const NOOP = {
   status: 'no-op', summary: 'no-op: the platform discarded this write — application unchanged',

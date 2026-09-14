@@ -35,6 +35,22 @@ export const AGENTS = Object.freeze({
   security_agent: ['SECURITY', 'Access hygiene'],
   mid_server_agent: ['MID_SERVER', 'MID server health'],
   event_management_agent: ['EVENT_MANAGEMENT', 'Alert binding'],
+  /* ── ITOM ─────────────────────────────────────────────────────────────
+   * Discovery, Service Mapping, credentials and availability. Separate
+   * domains rather than folded into CMDB, because the question they answer
+   * is different: CMDB rules ask "is this record right?", these ask "is the
+   * machinery that MAINTAINS the records running at all?" A perfect CMDB
+   * that no Discovery is refreshing is a snapshot going stale. */
+  discovery_agent: ['DISCOVERY', 'Discovery health'],
+  credential_agent: ['CREDENTIALS', 'Discovery credentials'],
+  service_mapping_agent: ['SERVICE_MAPPING', 'Service mapping coverage'],
+  availability_agent: ['AVAILABILITY', 'Outages and availability'],
+  /* ── ITSM ─────────────────────────────────────────────────────────────
+   * The work that runs ON the CMDB: is it assigned, moving, linked to the
+   * CIs it affects, and closed when it is done? */
+  incident_agent: ['INCIDENT', 'Incident hygiene'],
+  change_agent: ['CHANGE', 'Change hygiene'],
+  problem_agent: ['PROBLEM', 'Problem hygiene'],
 });
 
 const SEVERITY_RANK = Object.freeze({ CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 });
@@ -85,6 +101,32 @@ export function parseDate(value) {
 
 const DAY_MS = 86_400_000;
 
+/**
+ * Was this table read completely enough for a rule that needs `fields`?
+ *
+ * THE ONE PLACE THIS QUESTION IS ANSWERED. It used to be `status === 'complete'`
+ * repeated at every gate, which asked for BOTH every row and every requested
+ * field. Measured on techsnitchpvtltddemo2: `cmdb_ci` read 3,412 of 3,412 rows
+ * but `business_criticality` is not a column there, so every absence rule and
+ * the CMDB score refused to run over a field none of them used.
+ *
+ * Two halves, asked separately:
+ *   - the ROW set must be complete (`rows_complete`, or a legacy `complete`
+ *     status from a run recorded before the field existed);
+ *   - only the fields THIS rule reads must be present. A rule that keys off
+ *     `agent` really cannot run when `agent` was dropped — on the same instance
+ *     `ecc_agent_capability.agent` was hidden, and treating that as "no MID has
+ *     a capability" would have been an invented finding.
+ */
+export function isComplete(coverage, tableName, fields = []) {
+  const c = coverage?.[tableName];
+  if (!c) return false;
+  const rowsOk = c.rows_complete === true || (c.rows_complete === undefined && c.status === 'complete');
+  if (!rowsOk) return false;
+  const missing = new Set(c.missing_fields || []);
+  return fields.every((f) => !missing.has(f));
+}
+
 export class EstateRules {
   /**
    * @param {Record<string, object[]>} estate   table → extracted rows
@@ -98,6 +140,11 @@ export class EstateRules {
     this.findings = [];
     this.skipped = [];
     this.now = now;
+  }
+
+  /** See `isComplete` — the one place the completeness question is answered. */
+  complete(tableName, fields = []) {
+    return isComplete(this.coverage, tableName, fields);
   }
 
   /**
@@ -114,7 +161,7 @@ export class EstateRules {
       this.skipped.push({ rule, table: tableName, reason: c.status || 'not_requested' });
       return [];
     }
-    if (complete && c.status !== 'complete') {
+    if (complete && !this.complete(tableName, fields)) {
       this.skipped.push({ rule, table: tableName, reason: 'Complete visible-table coverage required' });
       return [];
     }
@@ -137,6 +184,17 @@ export class EstateRules {
     confidence = 1.0,
     recommendation = 'Review the evidence with the responsible owner before making changes.',
   } = {}) {
+    /*
+     * A finding with NO target records is ESTATE-WIDE, not harmless.
+     *
+     * "There is no MID server" and "Discovery has never run" name no rows
+     * because the rows are what is missing. The priority formula multiplies
+     * severity by a business proxy derived from affected services, so without
+     * this an estate-wide HIGH scored 4 — the bottom of P3, beneath a single
+     * CI with a blank owner. That is exactly backwards: nothing being there
+     * affects everything downstream of it.
+     */
+    const estateWide = records.length === 0;
     const evidence = [];
     for (const r of records) {
       for (const field of fields) {
@@ -165,6 +223,7 @@ export class EstateRules {
       description,
       severity,
       confidence,
+      estate_wide: estateWide,
       affected_ci_ids: tableName === 'cmdb_ci' ? records.map((r) => r.sys_id) : [],
       affected_service_ids: [],
       evidence,
@@ -177,8 +236,40 @@ export class EstateRules {
     this.relationshipRules();
     this.serviceRules();
     this.platformRules();
+    this.itomRules();
+    this.itsmRules();
     this.synthesize();
     return this.findings;
+  }
+
+  /**
+   * ABSENCE, AS A FIRST-CLASS FINDING.
+   *
+   * The ITOM rules lean on this far harder than the CMDB ones do. "There are no
+   * Discovery runs" and "there is no MID server" are the most important things
+   * this module can say about an ITOM estate, and both are claims about what
+   * was NOT found — so both are only sound on complete coverage, and both go
+   * through here rather than being written out by hand each time.
+   *
+   * `whenEmpty` fires only when the table was read completely AND came back
+   * with nothing. A table that could not be read produces a skip with its
+   * reason, never a finding: "we could not see Discovery" and "Discovery has
+   * never run" are opposite conclusions.
+   */
+  whenEmpty(tableName, rule, make) {
+    const c = this.coverage[tableName] || {};
+    /* Emptiness is a property of the ROW set; a dropped field cannot make an
+       empty table non-empty, so no fields are required here. */
+    if (!this.complete(tableName)) {
+      this.skipped.push({
+        rule, table: tableName,
+        reason: c.status === 'not_requested' ? 'not_requested' : `Complete coverage required; got ${c.status || 'nothing'}`,
+      });
+      return false;
+    }
+    if ((this.estate[tableName] || []).length > 0) return false;
+    make();
+    return true;
   }
 
   /* ── CMDB quality ─────────────────────────────────────────────────────── */
@@ -267,7 +358,7 @@ export class EstateRules {
      * found, so a partial relationship extract would turn unread rows into
      * orphaned CIs. When coverage falls short the rule does not run and says so.
      */
-    if (this.coverage.cmdb_rel_ci?.status === 'complete') {
+    if (this.complete('cmdb_rel_ci', ['parent', 'child'])) {
       for (const c of this.rows('cmdb_ci')) {
         if (!related.has(c.sys_id)) {
           this.add('cmdb_agent', 'CMDB-UNRELATED', 'cmdb_ci', [c], ['name', 'sys_class_name'],
@@ -288,7 +379,7 @@ export class EstateRules {
   /* ── Service model (CSDM) ─────────────────────────────────────────────── */
   serviceRules() {
     const services = this.rows('cmdb_ci_service', [], { rule: 'CSDM' });
-    const offeringsComplete = this.coverage.service_offering?.status === 'complete';
+    const offeringsComplete = this.complete('service_offering', ['parent']);
     const parents = new Set(
       this.rows('service_offering', ['parent'], { rule: 'CSDM-OFFERING' }).map((o) => o.parent),
     );
@@ -396,6 +487,500 @@ export class EstateRules {
     }
   }
 
+
+  /* ── ITOM: is the machinery that maintains the CMDB actually running? ───── */
+  itomRules() {
+    this.discoveryRules();
+    this.credentialRules();
+    this.midRules();
+    this.serviceMappingRules();
+    this.availabilityRules();
+  }
+
+  /**
+   * DISCOVERY.
+   *
+   * The most valuable finding here is the absence of any run at all. A CMDB
+   * with no Discovery behind it is a snapshot that started going stale the day
+   * somebody imported it — and every CMDB rule above will happily report it as
+   * healthy, because the records are well-formed. They are just no longer true.
+   */
+  discoveryRules() {
+    const noRuns = this.whenEmpty('discovery_status', 'DISC-NEVER-RAN', () => {
+      this.add('discovery_agent', 'DISC-NEVER-RAN', 'discovery_status', [], [],
+        'Discovery has never run on this instance',
+        'The Discovery status table was read completely and is empty. No Discovery schedule has ever executed, so nothing in the CMDB is being refreshed automatically.',
+        {
+          severity: 'HIGH',
+          recommendation: 'Confirm whether Discovery is meant to be in use here. If it is, a MID server, credentials and a schedule are all required before it can run — check them in that order.',
+        });
+    });
+
+    /* Every rule below reads runs. With none, they would each add their own
+       skip line saying the same thing; one clear finding is better than six. */
+    if (noRuns) return;
+
+    for (const r of this.rows('discovery_status', ['state'], { rule: 'DISC-FAILED' })) {
+      const state = String(r.state).toLowerCase();
+      if (['error', 'cancelled', 'canceled'].includes(state)) {
+        this.add('discovery_agent', 'DISC-FAILED', 'discovery_status', [r],
+          ['state', 'status', 'scan_type', 'started', 'agent'],
+          `Discovery run ended in ${state}: ${r.scan_type || r.sys_id}`,
+          `The run finished with state "${state}". CIs it would have created or refreshed were not, so the CMDB is missing whatever that scan covered.`,
+          {
+            severity: 'HIGH',
+            recommendation: 'Open the run and read its Discovery log before re-running. A run that failed once on credentials or a firewall will fail again the same way.',
+          });
+      }
+    }
+
+    /*
+     * A schedule that has not completed recently. Measured against the same
+     * staleness window the CMDB rules use, so one setting moves both.
+     */
+    for (const r of this.rows('discovery_status', ['completed'], { rule: 'DISC-STALE' })) {
+      const done = parseDate(r.completed);
+      if (!done) continue;
+      const days = Math.floor((this.now - done) / DAY_MS);
+      if (days > this.staleDays) {
+        this.add('discovery_agent', 'DISC-STALE', 'discovery_status', [r],
+          ['completed', 'scan_type', 'source'],
+          `No Discovery completion for ${days} days: ${r.scan_type || r.sys_id}`,
+          `The most recent completion of this run is more than ${this.staleDays} days old. Anything it discovers has been drifting since.`,
+          {
+            confidence: 0.8,
+            recommendation: 'Check whether the schedule is still active and whether its MID server is up. A schedule that stopped silently is the usual cause.',
+          });
+      }
+    }
+
+    /* Devices Discovery reached but could not finish with. `issues` is the
+       platform's own count, so this is its assessment rather than ours. */
+    for (const r of this.rows('discovery_device_history', ['issues'], { rule: 'DISC-DEVICE-ISSUE' })) {
+      const issues = Number(r.issues);
+      if (Number.isFinite(issues) && issues > 0) {
+        this.add('discovery_agent', 'DISC-DEVICE-ISSUE', 'discovery_device_history', [r],
+          ['issues', 'source', 'state', 'scan_status', 'cmdb_ci'],
+          `Discovery reported ${issues} issue(s) on ${r.source || r.sys_id}`,
+          'The device was reached but the scan recorded issues against it, so the CI it produced may be incomplete.',
+          {
+            confidence: 0.9,
+            recommendation: 'Open the device history record and read the issue list. Credentials and permission gaps are the common causes and are fixed once, for every device that shares them.',
+          });
+      }
+    }
+
+    /* Errors the Discovery log itself recorded. */
+    for (const r of this.rows('discovery_log', ['level'], { rule: 'DISC-LOG-ERROR' })) {
+      if (String(r.level).toLowerCase() === 'error') {
+        this.add('discovery_agent', 'DISC-LOG-ERROR', 'discovery_log', [r],
+          ['level', 'message', 'source', 'agent'],
+          `Discovery logged an error: ${String(r.message || '').slice(0, 70) || r.sys_id}`,
+          'Discovery wrote an error-level log entry. The message is the platform\'s own and is reproduced in the evidence.',
+          { confidence: 0.9, severity: 'MEDIUM' });
+      }
+    }
+  }
+
+  /**
+   * CREDENTIALS.
+   *
+   * Discovery without a usable credential reaches a device, fails to
+   * authenticate, and records a CI with almost nothing on it. That produces
+   * CMDB findings that look like data-quality problems and are actually one
+   * credential — which is why this is its own domain rather than a Discovery
+   * detail.
+   */
+  credentialRules() {
+    const none = this.whenEmpty('discovery_credentials', 'CRED-NONE', () => {
+      this.add('credential_agent', 'CRED-NONE', 'discovery_credentials', [], [],
+        'No Discovery credentials are configured',
+        'The credentials table was read completely and is empty. Discovery can reach a device but cannot authenticate to it, so it can only ever record what an unauthenticated scan reveals.',
+        {
+          severity: 'HIGH',
+          recommendation: 'Add the credentials Discovery needs for each platform in scope. Credentials are also what most "CI has almost no attributes" findings turn out to be.',
+        });
+    });
+    if (none) return;
+
+    const creds = this.rows('discovery_credentials', ['active'], { rule: 'CRED-INACTIVE' });
+    for (const c of creds) {
+      if (!truth(c.active)) {
+        this.add('credential_agent', 'CRED-INACTIVE', 'discovery_credentials', [c],
+          ['name', 'active', 'type', 'applies_to'],
+          `Credential is inactive: ${c.name || c.sys_id}`,
+          'The credential exists but is switched off, so Discovery will not try it.',
+          {
+            severity: 'MEDIUM',
+            confidence: 0.85,
+            recommendation: 'Confirm it is inactive on purpose. A credential disabled during an incident and never re-enabled is a common cause of a Discovery that quietly stopped working.',
+          });
+      }
+    }
+
+    /* Every credential inactive is a different, worse fact than one being off,
+       and it is only sound on a complete read. */
+    const allOff = creds.length > 0 && creds.every((c) => !truth(c.active));
+    if (allOff && this.complete('discovery_credentials', ['active'])) {
+      this.add('credential_agent', 'CRED-ALL-INACTIVE', 'discovery_credentials', creds,
+        ['name', 'active'],
+        `All ${creds.length} Discovery credentials are inactive`,
+        'Every credential on the instance is switched off. Discovery cannot authenticate to anything.',
+        {
+          severity: 'HIGH',
+          recommendation: 'This is almost always accidental. Re-enable the credentials that should be live before investigating individual Discovery failures.',
+        });
+    }
+  }
+
+  /**
+   * MID SERVERS.
+   *
+   * Nothing in ITOM works without one. "There is no MID server" outranks every
+   * other ITOM finding, because Discovery, Service Mapping, Event Management
+   * and most integrations all fail the same way behind it.
+   */
+  midRules() {
+    const none = this.whenEmpty('ecc_agent', 'MID-NONE', () => {
+      this.add('mid_server_agent', 'MID-NONE', 'ecc_agent', [], [],
+        'No MID server is configured',
+        'The MID server table was read completely and is empty. Discovery, Service Mapping, Orchestration and any integration configured to use a MID cannot run at all.',
+        {
+          severity: 'HIGH',
+          recommendation: 'If ITOM is meant to be in use here, install and validate a MID server first — every other ITOM finding is downstream of this one.',
+        });
+    });
+    if (none) return;
+
+    const mids = this.rows('ecc_agent', ['validated'], { rule: 'MID-NOT-VALIDATED' });
+    for (const m of mids) {
+      /* Up but not validated is the failure mode people miss: the dashboard
+         reads green and the MID still refuses to accept work. */
+      if (!truth(m.validated) && String(m.status).toLowerCase() !== 'down') {
+        this.add('mid_server_agent', 'MID-NOT-VALIDATED', 'ecc_agent', [m],
+          ['name', 'status', 'validated', 'last_refreshed'],
+          `MID server is up but not validated: ${m.name || m.sys_id}`,
+          'The MID reports a status other than Down, but the instance has not validated it. An unvalidated MID does not pick up work, and the status alone reads as healthy.',
+          {
+            severity: 'HIGH',
+            confidence: 0.9,
+            recommendation: 'Open the MID server record and run Validate. A MID that will not validate usually has a certificate, user-role or version mismatch.',
+          });
+      }
+    }
+
+    /* A MID with no capabilities cannot be chosen for any work. Only sound when
+       the capability table was read completely. */
+    if (this.complete('ecc_agent_capability', ['agent'])) {
+      const withCap = new Set(
+        this.rows('ecc_agent_capability', ['agent'], { rule: 'MID-NO-CAPABILITY' }).map((c) => c.agent),
+      );
+      for (const m of mids) {
+        if (!withCap.has(m.sys_id) && !withCap.has(m.name)) {
+          this.add('mid_server_agent', 'MID-NO-CAPABILITY', 'ecc_agent', [m],
+            ['name', 'status'],
+            `MID server has no capabilities: ${m.name || m.sys_id}`,
+            'No capability record references this MID in the complete capability extract, so the instance has nothing it can select this MID to do.',
+            {
+              confidence: 0.8,
+              recommendation: 'Capabilities are normally populated automatically once a MID validates. A MID with none is usually one that has never completed validation.',
+            });
+        }
+      }
+    } else {
+      this.skipped.push({ rule: 'MID-NO-CAPABILITY', table: 'ecc_agent_capability', reason: 'Complete coverage required' });
+    }
+
+    for (const i of this.rows('ecc_agent_issue', ['state'], { rule: 'MID-ISSUE' })) {
+      if (!['resolved', 'closed'].includes(String(i.state).toLowerCase())) {
+        this.add('mid_server_agent', 'MID-ISSUE', 'ecc_agent_issue', [i],
+          ['agent', 'issue', 'state', 'severity'],
+          `Open MID server issue: ${String(i.issue || '').slice(0, 60) || i.sys_id}`,
+          'The platform raised an issue against this MID server and it has not been resolved.',
+          { severity: 'HIGH', confidence: 0.9 });
+      }
+    }
+  }
+
+  /**
+   * SERVICE MAPPING.
+   *
+   * Answers one question: are discovered services actually connected to the CIs
+   * that deliver them? A service with no mapping is a name in a list — impact
+   * analysis walks nothing from it.
+   */
+  serviceMappingRules() {
+    const discovered = this.rows('cmdb_ci_service_discovered', [], { rule: 'SM' });
+    if (!discovered.length) {
+      this.skipped.push({ rule: 'SM-UNMAPPED', table: 'cmdb_ci_service_discovered', reason: 'No discovered services to check' });
+      return;
+    }
+
+    if (!this.complete('svc_ci_assoc', ['service'])) {
+      this.skipped.push({ rule: 'SM-UNMAPPED', table: 'svc_ci_assoc', reason: 'Complete coverage required' });
+      return;
+    }
+
+    const links = this.rows('svc_ci_assoc', ['service'], { rule: 'SM-UNMAPPED' });
+    const mapped = new Set(links.map((l) => l.service));
+
+    if (!links.length) {
+      this.add('service_mapping_agent', 'SM-NOT-IN-USE', 'svc_ci_assoc', [], [],
+        `${discovered.length} discovered service(s) exist, and none is mapped to any CI`,
+        'The service-to-CI association table was read completely and is empty, while discovered services do exist. Nothing connects those services to the infrastructure underneath them.',
+        {
+          severity: 'HIGH',
+          recommendation: 'Service Mapping produces these associations. If it is licensed and expected here, check whether any mapping has ever run; if not, the services need their CIs associated another way before impact analysis means anything.',
+        });
+      return;
+    }
+
+    for (const s of discovered) {
+      if (!mapped.has(s.sys_id)) {
+        this.add('service_mapping_agent', 'SM-UNMAPPED', 'cmdb_ci_service_discovered', [s],
+          ['name', 'operational_status', 'service_classification'],
+          `Service is not mapped to any CI: ${s.name || s.sys_id}`,
+          'No association in the complete service-to-CI extract references this service, so nothing downstream of it is known.',
+          {
+            confidence: 0.85,
+            recommendation: 'Run or repair the mapping for this service. Until it has CIs, impact analysis and change risk report nothing against it.',
+          });
+      }
+    }
+  }
+
+  /**
+   * AVAILABILITY.
+   *
+   * An outage record with a start and no end is either a live outage or a
+   * record nobody closed. Both are worth surfacing, and the finding says it
+   * cannot tell them apart.
+   */
+  availabilityRules() {
+    for (const o of this.rows('cmdb_ci_outage', ['begin'], { rule: 'OUTAGE-OPEN' })) {
+      const began = parseDate(o.begin);
+      if (!began || o.end) continue;
+      const hours = Math.floor((this.now - began) / 3_600_000);
+      if (hours < 24) continue;   // a young open outage is probably just ongoing
+      this.add('availability_agent', 'OUTAGE-OPEN', 'cmdb_ci_outage', [o],
+        ['cmdb_ci', 'type', 'begin', 'details'],
+        `Outage open for ${Math.floor(hours / 24)} day(s) with no end recorded`,
+        'The outage has a start and no end. Either it is still running, or it ended and the record was never closed — this rule cannot tell which, and availability reporting counts it as ongoing either way.',
+        {
+          confidence: 0.75,
+          severity: 'MEDIUM',
+          recommendation: 'Confirm with the service owner whether it is still down. If it is over, set the end time — every availability figure for that CI is wrong until you do.',
+        });
+    }
+  }
+
+
+  /* ── ITSM: is the work that runs on top of the CMDB flowing? ─────────────── */
+
+  /**
+   * THE ITSM RULES.
+   *
+   * These tables were extracted from the first release and no rule read them,
+   * so ITSM produced nothing — not "healthy", NOTHING. That is the gap closed
+   * here.
+   *
+   * Every rule works on OPEN records, or on recent outcomes, and says so:
+   * incident, change and problem are read as a slice (active, or updated inside
+   * the window), so a finding about a record from three years ago cannot appear
+   * — and cannot be counted against a score that claims to describe now.
+   *
+   * State and priority are read as raw values. `active` is the field every
+   * task table agrees on; the numeric state codes differ between incident,
+   * change and problem and are instance-configurable (trap #28 — hardcoded
+   * platform code lists go stale silently), so no rule keys off a state number.
+   */
+  itsmRules() {
+    this.incidentRules();
+    this.changeRules();
+    this.problemRules();
+  }
+
+  /** Days an OPEN task may go without an update before it is a review signal. */
+  static ITSM_STALE_DAYS = 30;
+
+  incidentRules() {
+    const open = this.rows('incident', ['active'], { rule: 'ITSM' }).filter((r) => truth(r.active));
+
+    for (const r of open) {
+      const label = r.number || r.sys_id;
+      const pri = String(r.priority || '');
+
+      /* Unassigned. Only on records that actually carry the field — a hidden
+         `assignment_group` is a coverage gap, not an unassigned incident. */
+      if ('assignment_group' in r && !r.assignment_group) {
+        this.add('incident_agent', 'ITSM-INC-UNASSIGNED', 'incident', [r],
+          ['number', 'assignment_group', 'priority', 'short_description'],
+          `Open incident has no assignment group: ${label}`,
+          'The incident is active and nobody is assigned to work it, so no queue will pick it up.',
+          {
+            severity: ['1', '2'].includes(pri) ? 'HIGH' : 'MEDIUM',
+            recommendation: 'Route it to the group that owns the affected service or CI. If this happens often, the assignment rules are what need fixing, not each incident.',
+          });
+      }
+
+      /* A P1 that has been open for more than a day. */
+      const created = parseDate(r.sys_created_on);
+      if (pri === '1' && created && (this.now - created) > DAY_MS) {
+        const days = Math.floor((this.now - created) / DAY_MS);
+        this.add('incident_agent', 'ITSM-INC-P1-AGED', 'incident', [r],
+          ['number', 'priority', 'sys_created_on', 'assignment_group'],
+          `Priority 1 incident open for ${days} day(s): ${label}`,
+          `A priority 1 incident has been open for ${days} day(s). Either the outage is still running, or the record was not resolved when service came back.`,
+          {
+            severity: 'HIGH',
+            confidence: 0.9,
+            recommendation: 'Confirm with the assignment group whether it is still live. If service is restored, resolve it — every P1 metric counts it as ongoing until you do.',
+          });
+      }
+
+      /* Open and untouched. */
+      const updated = parseDate(r.sys_updated_on);
+      if (updated) {
+        const idle = Math.floor((this.now - updated) / DAY_MS);
+        if (idle > EstateRules.ITSM_STALE_DAYS) {
+          this.add('incident_agent', 'ITSM-INC-STALE', 'incident', [r],
+            ['number', 'sys_updated_on', 'assignment_group', 'assigned_to'],
+            `Open incident untouched for ${idle} days: ${label}`,
+            `The incident is active and has not been updated in ${idle} days. That is a review signal — it may be waiting on a user, or it may have been forgotten.`,
+            {
+              confidence: 0.8,
+              recommendation: 'Ask the assignee for a status. If it is waiting on the caller, put it on hold with a reason so it stops looking abandoned.',
+            });
+        }
+      }
+
+      /* No CI, so impact analysis cannot connect it to anything. */
+      if ('cmdb_ci' in r && !r.cmdb_ci && !r.business_service) {
+        this.add('incident_agent', 'ITSM-INC-NO-CI', 'incident', [r],
+          ['number', 'cmdb_ci', 'business_service', 'short_description'],
+          `Open incident is not linked to any CI or service: ${label}`,
+          'Neither a configuration item nor a business service is set, so this incident is invisible to impact analysis, problem trending and CI health.',
+          {
+            severity: 'LOW',
+            confidence: 0.9,
+            recommendation: 'Link the affected CI. When many incidents arrive without one, the fix is usually the intake form or the integration that raises them.',
+          });
+      }
+    }
+
+    /* Reopened repeatedly — recent history, so closed ones count too. */
+    for (const r of this.rows('incident', ['reopen_count'], { rule: 'ITSM-INC-REOPENED' })) {
+      const n = Number(r.reopen_count);
+      if (Number.isFinite(n) && n >= 2) {
+        this.add('incident_agent', 'ITSM-INC-REOPENED', 'incident', [r],
+          ['number', 'reopen_count', 'assignment_group'],
+          `Incident reopened ${n} times: ${r.number || r.sys_id}`,
+          `The incident was reopened ${n} times, which usually means it was resolved before the underlying cause was fixed.`,
+          {
+            recommendation: 'Look at why it keeps coming back. Repeated reopens are a strong signal that a problem record is needed.',
+          });
+      }
+    }
+  }
+
+  changeRules() {
+    const all = this.rows('change_request', ['active'], { rule: 'ITSM' });
+
+    for (const r of all.filter((x) => truth(x.active))) {
+      const label = r.number || r.sys_id;
+      const updated = parseDate(r.sys_updated_on);
+      if (updated) {
+        const idle = Math.floor((this.now - updated) / DAY_MS);
+        if (idle > EstateRules.ITSM_STALE_DAYS) {
+          this.add('change_agent', 'ITSM-CHG-STALE', 'change_request', [r],
+            ['number', 'state', 'sys_updated_on', 'assignment_group'],
+            `Open change untouched for ${idle} days: ${label}`,
+            `The change is active and has not been updated in ${idle} days. An open change that nobody is moving blocks the CAB calendar and hides the real schedule.`,
+            {
+              confidence: 0.8,
+              recommendation: 'Confirm whether it is still planned. Cancel it with a reason if not, rather than leaving it open.',
+            });
+        }
+      }
+
+      if ('cmdb_ci' in r && !r.cmdb_ci) {
+        this.add('change_agent', 'ITSM-CHG-NO-CI', 'change_request', [r],
+          ['number', 'cmdb_ci', 'short_description'],
+          `Open change names no configuration item: ${label}`,
+          'The change does not reference a CI, so conflict detection and impact analysis have nothing to check it against.',
+          {
+            severity: 'MEDIUM',
+            confidence: 0.9,
+            recommendation: 'Set the CI the change actually touches before it is approved — risk assessment without one is a guess.',
+          });
+      }
+
+      /* Past its own planned end and still open. */
+      const planned = parseDate(r.end_date);
+      if (planned && planned < this.now) {
+        const over = Math.floor((this.now - planned) / DAY_MS);
+        if (over >= 1) {
+          this.add('change_agent', 'ITSM-CHG-OVERDUE', 'change_request', [r],
+            ['number', 'end_date', 'state'],
+            `Change is ${over} day(s) past its planned end and still open: ${label}`,
+            'The planned end date has passed and the change is still active. Either implementation overran, or the record was never closed.',
+            {
+              severity: 'MEDIUM',
+              confidence: 0.85,
+              recommendation: 'Close it with the real outcome, or reschedule it. An overdue open change makes the change calendar lie.',
+            });
+        }
+      }
+    }
+
+    /* Recent failed changes. `close_code` values are the platform's own words. */
+    for (const r of this.rows('change_request', ['close_code'], { rule: 'ITSM-CHG-FAILED' })) {
+      if (String(r.close_code).toLowerCase() === 'unsuccessful') {
+        this.add('change_agent', 'ITSM-CHG-FAILED', 'change_request', [r],
+          ['number', 'close_code', 'cmdb_ci'],
+          `Change closed as unsuccessful: ${r.number || r.sys_id}`,
+          'The change was closed with an unsuccessful outcome inside the review window.',
+          {
+            severity: 'MEDIUM',
+            recommendation: 'Check a post-implementation review exists and that the CI was left in a known state.',
+          });
+      }
+    }
+  }
+
+  problemRules() {
+    for (const r of this.rows('problem', ['active'], { rule: 'ITSM' }).filter((x) => truth(x.active))) {
+      const label = r.number || r.sys_id;
+
+      if ('assignment_group' in r && !r.assignment_group) {
+        this.add('problem_agent', 'ITSM-PRB-UNASSIGNED', 'problem', [r],
+          ['number', 'assignment_group', 'short_description'],
+          `Open problem has no assignment group: ${label}`,
+          'The problem is active and nobody owns the investigation, so the root cause is not being worked.',
+          {
+            severity: 'MEDIUM',
+            recommendation: 'Assign it to the group that owns the affected service. An unowned problem is a known cause nobody is fixing.',
+          });
+      }
+
+      const updated = parseDate(r.sys_updated_on);
+      if (updated) {
+        const idle = Math.floor((this.now - updated) / DAY_MS);
+        if (idle > EstateRules.ITSM_STALE_DAYS) {
+          this.add('problem_agent', 'ITSM-PRB-STALE', 'problem', [r],
+            ['number', 'sys_updated_on', 'assignment_group'],
+            `Open problem untouched for ${idle} days: ${label}`,
+            `The problem is active and has not been updated in ${idle} days.`,
+            {
+              severity: 'LOW',
+              confidence: 0.8,
+              recommendation: 'Either record a known error and workaround, or close it with the reason. A stalled problem keeps its incidents looking unexplained.',
+            });
+        }
+      }
+    }
+  }
+
   /**
    * Blast radius and priority.
    *
@@ -441,16 +1026,29 @@ export class EstateRules {
 
       f.affected_ci_ids = [...visited].filter((id) => ciIds.has(id)).sort();
       f.affected_service_ids = [...visited].filter((id) => serviceIds.has(id)).sort();
-      f.impact = {
-        reachable_nodes: visited.size,
-        max_depth: 3,
-        direction: 'undirected',
-        interpretation: 'Topology reachability for review, not proven outage propagation',
-      };
+      f.impact = f.estate_wide
+        ? {
+          reachable_nodes: null,
+          max_depth: null,
+          direction: 'estate',
+          interpretation: 'Estate-wide: this names no individual records because the records are what is missing',
+        }
+        : {
+          reachable_nodes: visited.size,
+          max_depth: 3,
+          direction: 'undirected',
+          interpretation: 'Topology reachability for review, not proven outage propagation',
+        };
 
       const severity = SEVERITY_RANK[f.severity];
-      const business = 1 + Math.min(f.affected_service_ids.length, 4);
-      const dependency = 1 + Math.min(visited.size, 20) / 20;
+      /*
+       * An estate-wide finding takes the MAXIMUM business and dependency
+       * proxies rather than the minimum. It names no records because the
+       * records are what is absent, and "no MID server" is upstream of every
+       * other ITOM finding rather than smaller than all of them.
+       */
+      const business = f.estate_wide ? 5 : 1 + Math.min(f.affected_service_ids.length, 4);
+      const dependency = f.estate_wide ? 2 : 1 + Math.min(visited.size, 20) / 20;
       f.priority_score = Number((severity * business * dependency * f.confidence).toFixed(3));
       f.priority_factors = {
         severity,

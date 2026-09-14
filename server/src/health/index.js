@@ -1,8 +1,9 @@
 import { TABLES, resolveTables } from './tables.js';
 import { extractEstate } from './extract.js';
-import { EstateRules, RULE_VERSION, AGENTS } from './rules.js';
+import { EstateRules, RULE_VERSION, AGENTS, isComplete } from './rules.js';
 import { explainFindings } from './explain.js';
 import { digest } from './digest.js';
+import { summariseScopes } from './scopes.js';
 
 /**
  * Health Assist — the run.
@@ -20,8 +21,19 @@ import { digest } from './digest.js';
  * tables it is computed from were read completely.
  */
 
-export const MANIFEST_VERSION = '2.0.0';
-const MAX_FINDINGS = 1000;
+export const MANIFEST_VERSION = '3.0.0';
+
+/*
+ * How many findings a run STORES.
+ *
+ * This was 1,000, and the counts on the page were taken from what was stored.
+ * Measured on techsnitchpvtltddemo2: 12,194 findings were detected, 1,000 were
+ * stored, and the page said "1000 things found", "989 Moderate" and "0 Low" —
+ * every one of those numbers was wrong. The cap is now a memory guard for
+ * pathological instances rather than an everyday limit, and the counts come
+ * from the full detected set whatever it is.
+ */
+export const MAX_FINDINGS = 25_000;
 const DEFAULT_STALE_DAYS = 90;
 
 export { digest };
@@ -38,8 +50,11 @@ export { digest };
  */
 export function qualityScore(estate, coverage, findings) {
   const ciCount = (estate.cmdb_ci || []).length;
-  const ciComplete = coverage.cmdb_ci?.status === 'complete';
-  const relComplete = coverage.cmdb_rel_ci?.status === 'complete';
+  /* Every CI ROW and every relationship ROW. A missing optional column such as
+     `business_criticality` does not change which CIs exist, so it no longer
+     withholds the score. */
+  const ciComplete = isComplete(coverage, 'cmdb_ci');
+  const relComplete = isComplete(coverage, 'cmdb_rel_ci', ['parent', 'child']);
   if (!ciCount || !ciComplete || !relComplete) return null;
   const affected = new Set();
   for (const f of findings) {
@@ -87,6 +102,7 @@ export async function runHealthCheck({
   limit,
   onProgress = null,
   client,
+  signal = null,
   now = new Date(),
 } = {}) {
   const startedAt = Date.now();
@@ -99,12 +115,17 @@ export async function runHealthCheck({
   const { estate, coverage, cutoff } = await extractEstate(requested, {
     limit,
     client,
+    signal,
     onProgress: async ({ table: t, index, total }) => {
       await emit('extracting', 5 + Math.round((index * 55) / Math.max(1, total)), { table: t });
     },
   });
 
   const fetchedRows = Object.values(estate).reduce((n, rows) => n + rows.length, 0);
+
+  /* Checked between phases, not inside them. Analysis is pure and fast; the
+     expensive, interruptible part is extraction, and that checks per table. */
+  if (signal?.aborted) throw Object.assign(new Error('Stopped.'), { name: 'AbortError' });
 
   await emit('analysing', 70);
   const rules = new EstateRules(estate, coverage, staleDays, now);
@@ -118,7 +139,13 @@ export async function runHealthCheck({
     llm = await explainFindings(findings);
   }
 
-  const score = qualityScore(estate, coverage, findings);
+  /*
+   * Every count and score below is taken from `all` — the full detected set —
+   * never from the stored slice. A cap may drop rows from storage; it must not
+   * change what the page says was found.
+   */
+  const score = qualityScore(estate, coverage, all);
+  const scopes = summariseScopes(coverage, all);
 
   /*
    * `partial` is the run-level honesty flag, and it is deliberately eager: any
@@ -148,25 +175,28 @@ export async function runHealthCheck({
       fetched_rows: fetchedRows,
       cmdb_quality_score: score,
       score_definition: 'Percent of extracted CIs without a triggered CMDB rule. A Health Assist score, not ServiceNow CMDB Health.',
-      score_withheld_because: score === null
-        ? 'Requires complete coverage of both cmdb_ci and cmdb_rel_ci; a partial read would score our access rather than the estate.'
-        : null,
+      /* The SPECIFIC reason, from the same function the switch uses — the old
+         text named both tables whichever one had actually failed. */
+      score_withheld_because: score === null ? scopes.cmdb.score_withheld_because : null,
     },
     domains: Object.entries(AGENTS).map(([agent, [domain, label]]) => ({
       agent_id: agent,
       domain,
       label,
       version: RULE_VERSION,
-      findings: findings.filter((f) => f.agent_id === agent).length,
+      findings: all.filter((f) => f.agent_id === agent).length,
     })),
-    severity_counts: findings.reduce((acc, f) => {
+    severity_counts: all.reduce((acc, f) => {
       acc[f.severity] = (acc[f.severity] || 0) + 1;
       return acc;
     }, {}),
-    priority_counts: findings.reduce((acc, f) => {
+    priority_counts: all.reduce((acc, f) => {
       acc[f.priority] = (acc[f.priority] || 0) + 1;
       return acc;
     }, {}),
+    /* Per-scope summaries: the switch reads these, so every scope's numbers are
+       computed once, over everything detected, and stored with the run. */
+    scopes,
     llm,
     analysis_duration_ms: Date.now() - startedAt,
     consistency: 'A bounded Table REST extraction pinned to one cutoff. The Table API is not a transactionally consistent cross-table snapshot.',

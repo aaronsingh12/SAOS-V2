@@ -257,7 +257,7 @@ const CSV_COLUMNS = [
  * these cells carry model-authored text. Prefixing a quote neutralises it
  * without changing what a human reads.
  */
-function csvCell(v) {
+export function csvCell(v) {
   let s = v === null || v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v);
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return `"${s.replace(/"/g, '""')}"`;

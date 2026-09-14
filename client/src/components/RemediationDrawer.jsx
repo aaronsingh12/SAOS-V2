@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, sse } from '../api.js';
 import RecordDrawer from './RecordDrawer.jsx';
 import ReferenceField from './ReferenceField.jsx';
@@ -64,6 +64,14 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
   const [progress, setProgress] = useState(null);
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  /* The executor's per-record approval card, while it is waiting. */
+  const [gate, setGate] = useState(null);
+  const stopRef = useRef(null);
+
+  /* Closing the drawer mid-apply stops the stream, so the server cancels the
+     waiting gate at once instead of holding it open for five minutes. */
+  useEffect(() => () => stopRef.current?.abort(), []);
+  useEffect(() => { if (!open) stopRef.current?.abort(); }, [open]);
 
   const proposal = row?.proposal ?? null;
   const status = row?.status ?? 'draft';
@@ -147,27 +155,92 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
    * one sent. That is what makes "the agent executes what you approved" true
    * rather than hoped for: the server compares it with what it holds and
    * refuses on a mismatch.
+   *
+   * Two things this used to get wrong, both fixed here:
+   *
+   *   - An `error` frame was handled by THROWING inside the stream handler.
+   *     `sse()` catches handler exceptions (so one bad frame cannot kill a
+   *     stream), which meant the throw was logged and swallowed and the success
+   *     toast fired on a remediation that had been blocked. The terminal frame
+   *     is now captured and acted on after the stream ends.
+   *   - The executor asks its per-step gate before every write, and nothing
+   *     here rendered that card, so a step that got that far would have waited
+   *     for an answer nobody could give. It is rendered below and answered
+   *     through POST /api/agent/approve, the one resolver.
    */
   const approve = async () => {
     const fp = dirty ? await save() : fingerprint;
     if (!fp) return;
-    setBusy('approve'); setError(''); setProgress({ stage: 'starting' });
+    setBusy('approve'); setError(''); setProgress({ stage: 'starting' }); setGate(null);
+    const controller = new AbortController();
+    stopRef.current = controller;
+    let sessionId = null;
+    let terminal = null;
     try {
       await sse(`/health/proposals/${row.id}/approve`, { fingerprint: fp }, (evt) => {
-        if (evt.type === 'plan_created') setProgress({ stage: 'plan built', steps: evt.review?.stepCount });
-        else if (evt.type === 'execution_started') setProgress({ stage: 'executing', steps: evt.steps });
+        if (evt.type === 'targets_observing') setProgress({ stage: 're-reading the records from the instance' });
+        else if (evt.type === 'plan_created') setProgress({ stage: 'plan built', steps: evt.review?.stepCount });
+        else if (evt.type === 'execution_started') {
+          sessionId = evt.sessionId ?? null;
+          setProgress({ stage: 'executing', steps: evt.steps });
+        } else if (evt.type === 'approval_required') {
+          setGate({ ...evt, sessionId });
+          setProgress({ stage: 'waiting for you to confirm the write below' });
+        } else if (evt.type === 'approval_resolved') setGate(null);
         else if (evt.type === 'step_started') setProgress({ stage: `applying ${evt.step ?? ''}` });
+        else if (evt.type === 'step_failed') setProgress({ stage: `${evt.step ?? 'a step'} did not apply` });
         else if (evt.type === 'execution_complete') setProgress({ stage: 'validating' });
-        else if (evt.type === 'done') { setRow(evt.proposal); setProgress(null); }
-        else if (evt.type === 'error') { setRow(evt.proposal ?? row); throw new Error(evt.message); }
+        else if (evt.type === 'done' || evt.type === 'error') terminal = evt;
+      }, 'POST', { signal: controller.signal });
+
+      if (terminal?.proposal) setRow(terminal.proposal);
+      if (!terminal || terminal.type === 'error') {
+        setError(terminal?.message || 'The remediation did not complete.');
+        toast.error('The remediation did not complete — the reason is shown in the window.');
+        if (!terminal?.proposal) {
+          try { setRow((await api.get(`/health/proposals/${row.id}`)).proposal); } catch { /* keep what we have */ }
+        }
+      } else if (terminal.proposal?.status === 'applied') {
+        toast.success('Changes applied and read back.');
+      } else {
+        toast.info('Finished — some changes did not apply. Check each record below.');
+      }
+    } catch (e) {
+      setError(e.cancelled
+        ? 'Stopped. Anything not yet confirmed was not sent; anything already applied is shown on each record.'
+        : e.message);
+      if (!e.cancelled) toast.error('The remediation did not complete.');
+      try { setRow((await api.get(`/health/proposals/${row.id}`)).proposal); } catch { /* keep what we have */ }
+    } finally {
+      stopRef.current = null;
+      setBusy(''); setProgress(null); setGate(null);
+    }
+  };
+
+  /** Answer the executor's card for ONE record. The stream clears it. */
+  const decide = async (approved) => {
+    if (!gate) return;
+    if (!gate.sessionId) {
+      setError('This confirmation arrived without a session, so it cannot be answered. Nothing was sent — press Stop.');
+      return;
+    }
+    setGate((g) => (g ? { ...g, sending: approved } : g));
+    try {
+      const r = await api.post('/agent/approve', {
+        sessionId: gate.sessionId, approvalId: gate.approvalId, approved, nonce: gate.nonce,
       });
-      toast.success('Execution finished — check the result below.');
+      if (!r?.ok) {
+        setError('The write was no longer waiting for this answer — it was already answered, or it timed out.');
+      }
     } catch (e) {
       setError(e.message);
-      toast.error('The remediation did not complete.');
-      try { setRow((await api.get(`/health/proposals/${row.id}`)).proposal); } catch { /* keep what we have */ }
-    } finally { setBusy(''); setProgress(null); }
+      setGate((g) => (g ? { ...g, sending: undefined } : g));
+    }
   };
+
+  const gateChange = gate
+    ? changes.find((c) => c.sys_id === gate.input?.sys_id) ?? null
+    : null;
 
   const reject = async () => {
     setBusy('reject'); setError('');
@@ -198,7 +271,45 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
 
           {progress && (
             <p className="note">Execution in progress — {progress.stage}
-              {progress.steps ? ` · ${progress.steps} step(s)` : ''}. Do not close this window.</p>
+              {progress.steps ? ` · ${progress.steps} step(s)` : ''}. Closing this window stops it.</p>
+          )}
+
+          {/* THE EXECUTOR'S OWN CARD, one per write. What it shows is what will
+              be sent — the table, the record and the exact data. */}
+          {gate && (
+            <div className="approval-card rm-gate">
+              <div className="title">Confirm this write — it changes your instance</div>
+              <p className="rm-lead">
+                {gateChange ? (
+                  <>
+                    {gateChange.field ? 'Set ' : 'Delete '}
+                    {gateChange.field && <b className="mono">{gateChange.field}</b>}
+                    {gateChange.field ? ' on ' : ''}
+                    <b>{gateChange.table} / {gateChange.label}</b>
+                    {gateChange.field && <> to <b>{gateChange.proposedDisplay || gateChange.proposedValue}</b></>}
+                  </>
+                ) : (gate.operation || gate.name)}
+              </p>
+              <pre className="mono">{JSON.stringify(gate.input ?? {}, null, 2)}</pre>
+              {gate.warning && <p className="note">{gate.warning}</p>}
+              <div className="row">
+                <button
+                  type="button" className="btn primary sm" onClick={() => decide(true)}
+                  disabled={gate.sending !== undefined} aria-busy={gate.sending === true}
+                >
+                  {gate.sending === true ? 'Sending…' : 'Apply this change'}
+                </button>
+                <button
+                  type="button" className="btn sm" onClick={() => decide(false)}
+                  disabled={gate.sending !== undefined} aria-busy={gate.sending === false}
+                >
+                  {gate.sending === false ? 'Sending…' : 'Skip this record'}
+                </button>
+                <button type="button" className="btn ghost sm" onClick={() => stopRef.current?.abort()}>
+                  Stop
+                </button>
+              </div>
+            </div>
           )}
 
           {/* ── SUMMARY ─────────────────────────────────────────────── */}
@@ -261,6 +372,29 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
                             <span className="rm-val mono">
                               {c.proposedDisplay || c.proposedValue || <em>(none)</em>}
                             </span>
+                          ) : c.fieldKind === 'boolean' ? (
+                            /* A boolean is two states, so it gets two states.
+                               A free-text box here is how "True" ends up stored
+                               where `true` was meant. */
+                            <select
+                              className="input"
+                              value={c.proposedValue}
+                              onChange={(e) => setValue(c.id, e.target.value)}
+                            >
+                              <option value="true">true</option>
+                              <option value="false">false</option>
+                            </select>
+                          ) : c.fieldKind === 'datetime' ? (
+                            /* ServiceNow stores UTC. The control says so rather
+                               than letting a reader assume their own zone — an
+                               outage closed at the wrong hour is a wrong
+                               availability figure, not a cosmetic slip. */
+                            <input
+                              className="input"
+                              value={c.proposedValue}
+                              onChange={(e) => setValue(c.id, e.target.value)}
+                              placeholder="YYYY-MM-DD HH:MM:SS (UTC)"
+                            />
                           ) : c.fieldKind === 'reference' && c.references ? (
                             /* The app's own reference picker — a sys_id is
                                never typed by hand here, for the same reason
@@ -363,10 +497,14 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
           {row.validation && (
             <>
               <div className="rm-sec">Validation</div>
-              <p className={`rm-verdict tone-${row.validation.ok ? 'ok' : 'bad'}`}>
-                {row.validation.ok ? 'Validation successful' : 'Validation failed'} —{' '}
-                {row.validation.cleared} of {row.validation.total} record(s) hold the approved value.
-              </p>
+              {row.validation.skipped ? (
+                <p className="rm-verdict tone-idle">Not validated — nothing was applied.</p>
+              ) : (
+                <p className={`rm-verdict tone-${row.validation.ok ? 'ok' : 'bad'}`}>
+                  {row.validation.ok ? 'Validation successful' : 'Validation failed'} —{' '}
+                  {row.validation.cleared} of {row.validation.total} applied record(s) hold the approved value.
+                </p>
+              )}
               <p className="rm-note">{row.validation.note}</p>
             </>
           )}

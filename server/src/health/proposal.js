@@ -57,6 +57,36 @@ export const FIX_FIELD = Object.freeze({
   'REL-DUPLICATE': { table: 'cmdb_rel_ci', field: null, kind: 'delete' },
   'EVENT-UNBOUND': { table: 'em_alert', field: 'cmdb_ci', kind: 'reference', references: 'cmdb_ci' },
   'SEC-INACTIVE-ROLE': { table: 'sys_user_has_role', field: null, kind: 'delete' },
+
+  /* ── ITOM ──────────────────────────────────────────────────────────────
+   *
+   * Only the rules with a REAL single-field fix appear here. Most ITOM
+   * findings are operational — restarting a MID service, opening a port,
+   * running a Discovery schedule — and a REST write cannot do any of them.
+   * Leaving those out is how the proposal says so honestly: with no entry,
+   * it carries manual steps instead of a field editor rather than offering a
+   * button that could not work.
+   *
+   * `preset` is the value the RULE itself implies, filled in without asking a
+   * model. "This credential is switched off" has exactly one sensible fix and
+   * inventing a language round-trip to discover it would add a failure mode
+   * for nothing. It is still only a proposal, and it still needs approval. */
+  'CRED-INACTIVE': { table: 'discovery_credentials', field: 'active', kind: 'boolean', preset: 'true' },
+  'CRED-ALL-INACTIVE': { table: 'discovery_credentials', field: 'active', kind: 'boolean', preset: 'true' },
+  /* The end time is a FACT about when service resumed, and it lives in another
+     system. No preset: the reviewer supplies it, and a guessed round number is
+     exactly how availability figures become fiction. */
+  'OUTAGE-OPEN': { table: 'cmdb_ci_outage', field: 'end', kind: 'datetime' },
+
+  /* ── ITSM ──────────────────────────────────────────────────────────────
+   * Routing and linking are single fields and get a proposal. The time-based
+   * ITSM rules (stale, overdue, aged P1) deliberately do not: a write that only
+   * moved `sys_updated_on` would make the finding disappear without anybody
+   * having done the work it was pointing at. */
+  'ITSM-INC-UNASSIGNED': { table: 'incident', field: 'assignment_group', kind: 'reference', references: 'sys_user_group' },
+  'ITSM-PRB-UNASSIGNED': { table: 'problem', field: 'assignment_group', kind: 'reference', references: 'sys_user_group' },
+  'ITSM-INC-NO-CI': { table: 'incident', field: 'cmdb_ci', kind: 'reference', references: 'cmdb_ci' },
+  'ITSM-CHG-NO-CI': { table: 'change_request', field: 'cmdb_ci', kind: 'reference', references: 'cmdb_ci' },
 });
 
 /**
@@ -85,6 +115,17 @@ const CONTEXT_FIELDS = Object.freeze({
   sys_rest_message: ['name', 'rest_endpoint', 'description'],
   sys_user_has_role: ['user', 'role', 'inherited'],
   cmdb_rel_ci: ['parent', 'child', 'type'],
+  discovery_credentials: ['name', 'type', 'active', 'applies_to', 'user_name', 'order', 'tag'],
+  cmdb_ci_outage: ['cmdb_ci', 'type', 'begin', 'details', 'task_number'],
+  ecc_agent: ['name', 'status', 'validated', 'last_refreshed'],
+  discovery_status: ['scan_type', 'state', 'status', 'started', 'completed', 'agent', 'source'],
+  /* For routing: what the ticket is about, and what it touches. The CI's own
+     support group is the strongest single hint and is read through the
+     reference's display value. */
+  incident: ['number', 'short_description', 'category', 'subcategory', 'cmdb_ci', 'business_service',
+    'priority', 'caller_id', 'location', 'assignment_group'],
+  change_request: ['number', 'short_description', 'category', 'type', 'cmdb_ci', 'assignment_group', 'requested_by'],
+  problem: ['number', 'short_description', 'category', 'cmdb_ci', 'priority', 'assignment_group'],
 });
 
 /** The neighbouring evidence for one record, display values where they exist. */
@@ -219,7 +260,16 @@ export async function buildProposal(finding, {
   let llm = { status: 'skeleton', note: 'No model was consulted; values are blank for you to supply.' };
   let model = null;
 
-  if (fix && readable.length) {
+  /*
+   * A PRESET SKIPS THE MODEL ENTIRELY.
+   *
+   * When the rule implies its own value there is nothing to infer, so asking a
+   * model would only add a way to fail. The proposal is still reviewed and
+   * still approved — it just starts from the right answer.
+   */
+  if (fix?.preset) {
+    llm = { status: 'preset', note: 'The fix follows directly from the rule, so no model was consulted.' };
+  } else if (fix && readable.length) {
     const payload = {
       rule: finding.rule_id,
       finding: finding.title,
@@ -292,8 +342,9 @@ export async function buildProposal(finding, {
     const m = model?.byId?.get(id);
     const cur = current.get(id) || {};
     const r = resolved.get(id);
-    /* A resolved single match becomes the value; anything else stays blank. */
-    const proposed = r?.sys_id ?? (r ? '' : (m?.value ?? ''));
+    /* A resolved single match becomes the value; anything else stays blank.
+       A preset outranks both — the rule already knows the answer. */
+    const proposed = fix?.preset ?? r?.sys_id ?? (r ? '' : (m?.value ?? ''));
     return {
       id: `c${i + 1}`,
       table: fix?.table ?? finding.table,
@@ -315,9 +366,9 @@ export async function buildProposal(finding, {
         : r?.none
           ? `"${r.from}" matched no record on ${fix.references}, so no value was set.`
           : null,
-      why: m?.why ?? '',
+      why: m?.why ?? (fix?.preset ? 'The rule states this fix directly.' : ''),
       assumption: m?.assumption ?? '',
-      confidence: m?.confidence ?? null,
+      confidence: fix?.preset ? 1 : (m?.confidence ?? null),
       status: fix?.kind === 'delete' || proposed ? CHANGE_STATUS.READY : CHANGE_STATUS.NEEDS_VALUE,
       edited: false,
     };

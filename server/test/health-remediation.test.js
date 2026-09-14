@@ -21,9 +21,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RULES_SRC = fs.readFileSync(path.resolve(__dirname, '../src/health/rules.js'), 'utf8');
 
 /** Every rule id the rule pack can actually emit, read out of its source. */
+/* Segments may carry digits — `ITSM-INC-P1-AGED` — which an uppercase-only
+   pattern silently skipped, so that rule's guidance read as an orphan. A rule
+   id still has to START with a letter, which keeps quoted dates out. */
 const EMITTED_RULES = [...new Set(
-  [...RULES_SRC.matchAll(/'([A-Z]+(?:-[A-Z]+)+)'/g)].map((m) => m[1]),
-)].filter((id) => /^[A-Z]+-[A-Z-]+$/.test(id));
+  [...RULES_SRC.matchAll(/'([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)'/g)].map((m) => m[1]),
+)].filter((id) => /^[A-Z][A-Z0-9]*-[A-Z0-9-]+$/.test(id));
 
 const finding = (over = {}) => ({
   fingerprint: 'f1',

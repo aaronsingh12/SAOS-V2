@@ -421,41 +421,158 @@ test('a field the API silently dropped downgrades coverage to limited', async ()
   assert.ok(coverage.missing_fields.includes('owned_by'));
 });
 
-test('reading fewer rows than the platform counts is limited, not complete', async () => {
-  const rows = [{ sys_id: 'a', sys_updated_on: '2026-09-01 00:00:00' }];
-  const client = {
-    count: async () => 900,           // the platform says there are 900
-    query: async () => rows,          // we could read one
+/**
+ * A Table API double that pages the way the instance does under a KEYSET walk:
+ * rows sorted by sys_id, each page the next `limit` rows AFTER the `sys_id >`
+ * watermark in the query, with `hidden` rows removed from inside the page the
+ * way a row-level ACL removes them. `mutate(pageNo, rows)` lets a test change
+ * the table between pages — which is what a live instance does.
+ */
+function keysetDouble({ rows, count = rows.length, hidden = new Set(), mutate = null }) {
+  let table = [...rows].sort((x, y) => x.sys_id.localeCompare(y.sys_id));
+  let pageNo = 0;
+  return {
+    queries: [],
+    count: async () => (typeof count === 'function' ? count() : count),
+    async query(t, { query, limit }) {
+      this.queries.push(query);
+      if (mutate) table = mutate(pageNo, table).sort((x, y) => x.sys_id.localeCompare(y.sys_id));
+      pageNo += 1;
+      const after = /\^sys_id>([^^]+)/.exec(query)?.[1] ?? null;
+      const start = after == null ? 0 : table.findIndex((r) => r.sys_id > after);
+      if (start < 0) return [];
+      return table.slice(start, start + limit).filter((r) => !hidden.has(r.sys_id)).map((r) => ({ ...r }));
+    },
   };
+}
+
+const relRow = (i) => ({
+  sys_id: `r${String(i).padStart(5, '0')}`, sys_updated_on: '2026-09-01 00:00:00',
+  parent: 'p', child: 'c', type: 't', 'type.name': 'n',
+});
+
+test('reading fewer rows than the platform counts is limited, not complete', async () => {
+  const client = keysetDouble({ rows: [relRow(0)], count: 900 });   // the platform counts 900; one is visible
   const { coverage } = await fetchTable('cmdb_rel_ci', { cutoff: '2026-09-11 00:00:00', client });
   assert.equal(coverage.status, 'limited');
+  assert.equal(coverage.rows_complete, false);
   assert.equal(coverage.reported_total, 900);
   assert.equal(coverage.records, 1);
 });
 
-test('an unknown total falls back to the short-page test rather than blocking', async () => {
-  // Some tables answer 403 to the Aggregate API while serving the Table API.
+test('REGRESSION: an ACL-hidden row inside a page does not end the read', async () => {
+  /*
+   * Measured on techsnitchpvtltddemo2: `sys_script` stopped at 998 of 14,059
+   * and `sys_trigger` at 1,499 of 1,595. ServiceNow drops rows the caller may
+   * not read from INSIDE a page, so a page of 500 came back with 498 and the
+   * pager took the short page for the end of the table. Only an EMPTY page ends
+   * the walk now.
+   */
+  const rows = Array.from({ length: 1400 }, (_, i) => relRow(i));
+  const hidden = new Set([relRow(7).sys_id, relRow(612).sys_id, relRow(1203).sys_id]);
+  const client = keysetDouble({ rows, hidden });
+  const { records, coverage } = await fetchTable('cmdb_rel_ci', { cutoff: '2026-09-11 00:00:00', client, pageSize: 500 });
+  assert.equal(records.length, 1400 - hidden.size, 'the read stopped at the first ACL-shortened page');
+  assert.equal(coverage.rows_complete, false, 'hidden rows were counted as read');
+  assert.equal(coverage.status, 'limited');
+  assert.equal(coverage.completeness_basis, 'reported_total');
+  assert.ok(client.queries.length >= 3, 'the walk did not continue past the short pages');
+});
+
+test('REGRESSION: a row inserted mid-read does not throw the whole table away', async () => {
+  /*
+   * Measured live: after paging by offset, `sys_script` (14,059 → 14,250 in two
+   * days) and `sysauto` both FAILED with "the same sys_id appeared on two
+   * pages". A row inserted ahead of the current offset shifts every later row
+   * by one, so the first row of the next page was one already read — and the
+   * table was discarded. A keyset walk starts each page after the last sys_id
+   * actually seen, so an insert elsewhere cannot repeat or skip anything.
+   */
+  const rows = Array.from({ length: 1200 }, (_, i) => relRow(i * 2));   // even ids leave gaps to insert into
+  const client = keysetDouble({
+    rows,
+    count: rows.length,
+    mutate: (page, table) => (page === 1
+      // Between pages: three rows appear BEFORE the watermark, one after it.
+      ? [...table, relRow(1), relRow(3), relRow(5), relRow(2399)]
+      : table),
+  });
+  const { records } = await fetchTable('cmdb_rel_ci', { cutoff: '2026-09-11 00:00:00', client, pageSize: 500 });
+  const ids = records.map((r) => r.sys_id);
+  assert.equal(new Set(ids).size, ids.length, 'a row was read twice');
+  for (const r of rows) assert.ok(ids.includes(r.sys_id), `${r.sys_id} existed for the whole read and was skipped`);
+});
+
+test('REGRESSION: a missing optional FIELD does not make the row set incomplete', async () => {
+  /*
+   * Measured: `cmdb_ci` read 3,412 of 3,412 rows, `business_criticality` is not
+   * a column on that instance, and the CMDB score was withheld for it. The
+   * status still says `limited` — a field really was dropped — but the ROWS
+   * are complete, and that is what the score and absence rules need.
+   */
   const client = {
-    count: async () => { throw Object.assign(new Error('no'), { status: 403 }); },
+    count: async () => 2,
     query: async (t, { offset }) => (offset === 0
-      ? Array.from({ length: 500 }, (_, i) => ({ sys_id: `a${i}`, sys_updated_on: '2026-09-01 00:00:00', parent: 'p', child: 'c', type: 't', 'type.name': 'n' }))
+      ? [{ sys_id: 'a', sys_updated_on: '2026-09-01 00:00:00', name: 'x' }, { sys_id: 'b', sys_updated_on: '2026-09-01 00:00:00', name: 'y' }]
       : []),
   };
+  const { coverage } = await fetchTable('cmdb_ci', { cutoff: '2026-09-11 00:00:00', client });
+  assert.equal(coverage.status, 'limited');
+  assert.equal(coverage.rows_complete, true, 'a dropped column was treated as missing rows');
+  assert.ok(coverage.missing_fields.includes('owned_by'));
+});
+
+test('the CMDB score is computed when every row was read, even if an unused field was dropped', () => {
+  const estate = { cmdb_ci: [ci('a'), ci('b')], cmdb_rel_ci: [] };
+  const coverage = {
+    cmdb_ci: { status: 'limited', rows_complete: true, records: 2, missing_fields: ['business_criticality'] },
+    cmdb_rel_ci: { status: 'complete', rows_complete: true, records: 0, missing_fields: [] },
+  };
+  assert.equal(qualityScore(estate, coverage, []), 100, 'the score was withheld over a field it does not use');
+});
+
+test('a rule that NEEDS a dropped field still refuses to run on it', () => {
+  // `agent` hidden on ecc_agent_capability must not read as "no MID has a capability".
+  const estate = {
+    ecc_agent: [{ sys_id: 'm1', name: 'mid', status: 'Up', validated: 'true' }],
+    ecc_agent_capability: [{ sys_id: 'k1', capability: 'ALL' }],
+  };
+  const coverage = {
+    ecc_agent: { status: 'complete', rows_complete: true, records: 1, missing_fields: [] },
+    ecc_agent_capability: { status: 'limited', rows_complete: true, records: 1, missing_fields: ['agent'] },
+  };
+  const rules = new EstateRules(estate, coverage, 90, NOW);
+  const findings = rules.analyze();
+  assert.equal(findings.some((f) => f.rule_id === 'MID-NO-CAPABILITY'), false,
+    'an ACL-hidden field produced an invented finding');
+  assert.ok(rules.skipped.some((s) => s.rule === 'MID-NO-CAPABILITY'));
+});
+
+test('an unknown total falls back to walking until an empty page rather than blocking', async () => {
+  // Some tables answer 403 to the Aggregate API while serving the Table API.
+  const rows = Array.from({ length: 500 }, (_, i) => relRow(i));
+  const client = keysetDouble({ rows, count: () => { throw Object.assign(new Error('no'), { status: 403 }); } });
   const { records, coverage } = await fetchTable('cmdb_rel_ci', { cutoff: '2026-09-11 00:00:00', client });
   assert.equal(records.length, 500);
   assert.equal(coverage.reported_total, null);
   assert.equal(coverage.status, 'complete');
+  assert.equal(coverage.completeness_basis, 'empty_page');
 });
 
-test('a sys_id repeated across pages fails loudly instead of double-counting', async () => {
-  const row = { sys_id: 'same', sys_updated_on: '2026-09-01 00:00:00', parent: 'p', child: 'c', type: 't', 'type.name': 'n' };
+test('an instance that ignores the paging condition is refused rather than paged forever', async () => {
+  /*
+   * Under a keyset walk a repeated sys_id can no longer be concurrency — each
+   * page starts strictly after the last row seen. A repeat means the instance
+   * did not apply `sys_id >`, and the walk would re-read the same rows until
+   * its limit.
+   */
   const client = {
     count: async () => 1000,
-    query: async () => Array.from({ length: 500 }, () => ({ ...row })),
+    query: async () => Array.from({ length: 500 }, (_, i) => relRow(i)),
   };
   await assert.rejects(
     fetchTable('cmdb_rel_ci', { cutoff: '2026-09-11 00:00:00', client }),
-    /same sys_id appeared on two pages/,
+    /same sys_id appeared on two pages even though each page starts after the last row read/,
   );
 });
 

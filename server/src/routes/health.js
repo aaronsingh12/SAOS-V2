@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { startBuildRun, finishBuildRun, auditedEmit } from '../memory/audit.js';
+import { startBuildRun, finishBuildRun, auditedEmit, csvCell } from '../memory/audit.js';
 import { boundInstance } from '../servicenow/instance-binding.js';
-import { runHealthCheck } from '../health/index.js';
+import { runHealthCheck, MAX_FINDINGS } from '../health/index.js';
 import { TABLES, DEFAULT_TABLES } from '../health/tables.js';
 import { AGENTS, RULE_VERSION, SEVERITIES } from '../health/rules.js';
 import { remediationFor } from '../health/remediation.js';
@@ -13,21 +13,34 @@ import {
   createProposal, getProposal, proposalsForFinding, saveEdit, rejectProposal,
 } from '../health/proposal-store.js';
 import {
-  openRun, completeRun, failRun, listRuns, getRun, latestRun, listFindings, getFinding, deleteRun,
+  openRun, completeRun, failRun, cancelRun, runInFlight, trend, scopesForRun,
+  listRuns, getRun, latestRun, listFindings, getFinding, deleteRun,
 } from '../health/store.js';
+import {
+  setFindingState, clearFindingState, stateMap, STATE_VOCABULARY,
+} from '../health/finding-state.js';
+import { scopeVocabulary, normaliseScope, scopeOf as scopeOfFinding } from '../health/scopes.js';
 
 export const healthRouter = Router();
 
 /**
- * Health Assist — estate health over the bound instance.
+ * Health Assist — estate health over the bound instance, across CMDB, ITOM,
+ * ITSM and platform hygiene.
  *
- * READ-ONLY, every route. There is no authoring here and no approval gate,
- * for the same reason the Access module has neither: this module's whole job is
- * to tell you what is wrong, and a tool that both diagnoses and fixes invites
- * exactly the confident wrong write the rest of this app is built to prevent.
- * A finding carries a `recommendation` written for a human to act on, never a
- * payload for the machine to apply.
+ * DETECTION READS; ONLY AN APPROVED PLAN WRITES. Running a check, reading
+ * findings, setting a finding's lifecycle state and generating a remediation
+ * proposal never touch the instance — the last two write only to our own
+ * database. The single route that can lead to a change is
+ * `POST /proposals/:id/approve`, and it binds the approval here and hands the
+ * change list to the ordinary plan executor, which owns the gate, the read-back
+ * and the audit trail. This router never imports the instance client.
  */
+
+/** Attach per-scope summaries to a run — stored, or computed for an older one. */
+function withScopes(run) {
+  if (!run?.manifest) return run;
+  return { ...run, manifest: { ...run.manifest, scopes: scopesForRun(run) } };
+}
 
 /** GET /api/health/meta — the rule pack, the allow-list, and what is bound. */
 healthRouter.get('/meta', (req, res) => {
@@ -38,6 +51,10 @@ healthRouter.get('/meta', (req, res) => {
     configured: bound.configured,
     // The severity words the UI renders. Served, not coined in the browser.
     severities: SEVERITIES,
+    // Same rule for the lifecycle vocabulary.
+    findingStates: STATE_VOCABULARY,
+    // And for the CMDB / ITOM / ITSM / Platform switch.
+    scopes: scopeVocabulary(),
     domains: Object.entries(AGENTS).map(([agent, [domain, label]]) => ({ agent_id: agent, domain, label })),
     tables: Object.entries(TABLES).map(([name, spec]) => ({
       table: name,
@@ -46,8 +63,11 @@ healthRouter.get('/meta', (req, res) => {
       fields: spec.fields,
       default: DEFAULT_TABLES.includes(name),
     })),
-    writes: false,
-    note: 'Health Assist reads. It never writes to the instance, and it has no tool that could.',
+    /* Stated in two parts because it is two facts. The old single `writes:
+       false` became untrue the day remediation shipped. */
+    detectionWrites: false,
+    remediation: { requiresApproval: true, executesThrough: 'plan executor' },
+    note: 'Checks only read. A fix is proposed first, and nothing on the instance changes until you approve that exact list.',
   });
 });
 
@@ -64,6 +84,23 @@ healthRouter.post('/runs', async (req, res) => {
   if (!bound.configured) {
     return res.status(409).json({
       message: 'No ServiceNow instance is bound. Connect one on the Dashboard before running a health check.',
+    });
+  }
+
+  /*
+   * ONE RUN AT A TIME, PER INSTANCE.
+   *
+   * Two concurrent checks extract the same tables twice and leave whichever
+   * finished last as "latest", so the page would show one run's coverage beside
+   * the other's findings. There is no way to merge two snapshots taken at
+   * different cutoffs, so the second is refused rather than reconciled.
+   */
+  const inFlight = runInFlight();
+  if (inFlight) {
+    return res.status(409).json({
+      message: 'A health check is already running against this instance. Wait for it to finish, or stop it first.',
+      runId: inFlight.id,
+      startedAt: inFlight.startedAt,
     });
   }
 
@@ -84,6 +121,16 @@ healthRouter.post('/runs', async (req, res) => {
   const emit = auditedEmit(auditRun, write);
   const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* noop */ } }, 15000);
 
+  /*
+   * Phase 0's cancellation, unchanged: one controller per request, aborted when
+   * the client goes away, observed between tables. A health check only reads,
+   * so stopping one leaves nothing half-done on the instance.
+   */
+  const controller = new AbortController();
+  let settled = false;
+  const onGone = () => { if (!settled && !res.writableEnded) controller.abort(); };
+  res.on('close', onGone);
+
   const runId = openRun();
   emit({ type: 'run_started', runId });
 
@@ -93,6 +140,7 @@ healthRouter.post('/runs', async (req, res) => {
       explain,
       limit: Number(limit) || undefined,
       staleDays: Number(staleDays) || undefined,
+      signal: controller.signal,
       onProgress: async (p) => emit({ type: 'progress', ...p }),
     });
 
@@ -109,15 +157,28 @@ healthRouter.post('/runs', async (req, res) => {
     });
   } catch (err) {
     /*
-     * A failed run is KEPT, not discarded. "The check could not complete" is
-     * itself a fact about the instance — usually an ACL — and deleting the row
-     * would leave the page looking like nobody ever tried.
+     * A cancellation is not a failure. Somebody changed their mind, and saying
+     * "the check failed" would send them looking for a problem that is not
+     * there.
      */
-    failRun(runId, err);
-    emit({ type: 'error', runId, message: err.message });
-    finishBuildRun(auditRun, { status: 'error', summary: { runId, message: err.message } });
+    if (controller.signal.aborted || err?.name === 'AbortError') {
+      cancelRun(runId);
+      emit({ type: 'cancelled', runId, note: 'Stopped. A health check only reads, so nothing was left half-done.' });
+      finishBuildRun(auditRun, { status: 'ok', summary: { runId, status: 'cancelled' } });
+    } else {
+      /*
+       * A failed run is KEPT, not discarded. "The check could not complete" is
+       * itself a fact about the instance — usually an ACL — and deleting the row
+       * would leave the page looking like nobody ever tried.
+       */
+      failRun(runId, err);
+      emit({ type: 'error', runId, message: err.message });
+      finishBuildRun(auditRun, { status: 'error', summary: { runId, message: err.message } });
+    }
   } finally {
     clearInterval(keepAlive);
+    settled = true;
+    res.off('close', onGone);
     res.end();
   }
 });
@@ -134,7 +195,13 @@ healthRouter.get('/runs/latest', (req, res, next) => {
   try {
     const run = latestRun();
     if (!run) return res.json({ run: null });
-    res.json({ run, ...listFindings(run.id, { limit: Math.min(Number(req.query.limit) || 50, 200) }) });
+    res.json({
+      run: withScopes(run),
+      ...listFindings(run.id, {
+        scope: normaliseScope(req.query.scope),
+        limit: Math.min(Number(req.query.limit) || 50, 200),
+      }),
+    });
   } catch (err) { next(err); }
 });
 
@@ -142,7 +209,7 @@ healthRouter.get('/runs/:runId', (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
     if (!run) return res.status(404).json({ message: 'No such run on the bound instance.' });
-    res.json({ run });
+    res.json({ run: withScopes(run) });
   } catch (err) { next(err); }
 });
 
@@ -151,6 +218,7 @@ healthRouter.get('/runs/:runId/findings', (req, res, next) => {
   try {
     if (!getRun(req.params.runId)) return res.status(404).json({ message: 'No such run on the bound instance.' });
     res.json(listFindings(req.params.runId, {
+      scope: normaliseScope(req.query.scope),
       domain: req.query.domain || undefined,
       severity: req.query.severity || undefined,
       priority: req.query.priority || undefined,
@@ -389,6 +457,9 @@ healthRouter.post('/proposals/:id/approve', async (req, res) => {
       presentedFingerprint: req.body?.fingerprint || null,
       emit,
       signal: controller.signal,
+      /* The targets are re-read in the remediation's own session before the
+         plan is built, so the executor's provenance guard sees them. */
+      readRecord,
     });
 
     let result = prep;
@@ -402,9 +473,12 @@ healthRouter.post('/proposals/:id/approve', async (req, res) => {
        * thing that may open the edge into EXECUTING.
        *
        * The provenance is `user_click` because that is literally what happened: a
-       * human read this exact change list and pressed Approve and apply. No card
-       * is raised a second time — re-prompting after a deliberate review trains
-       * people to click through gates.
+       * human read this exact change list and pressed Approve and apply.
+       *
+       * This binds the PLAN. The executor still raises its per-step card before
+       * each write, and that card is answered in the drawer through
+       * POST /api/agent/approve — never here. This route does not resolve
+       * approvals; it only binds the one the human just gave.
        */
       const bound = approvePlan(prep.taskId, prep.planFingerprint, { source: 'user_click' });
       if (!bound.ok) {
@@ -451,4 +525,107 @@ healthRouter.post('/proposals/:id/approve', async (req, res) => {
     res.end();
   }
   return undefined;
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LIFECYCLE, TREND AND EXPORT
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * PATCH /api/health/findings/:fingerprint/state
+ *
+ * Acknowledge, mute or accept a finding. Muting is PRESENTATION, never
+ * deletion: the finding is still detected, still stored and still counted. What
+ * changes is whether it demands attention.
+ *
+ * Keyed on the fingerprint, so a decision carries across runs — and cannot
+ * suppress a different set of records, because a different set hashes
+ * differently and arrives as new.
+ */
+healthRouter.patch('/findings/:fingerprint/state', (req, res, next) => {
+  try {
+    const { state, reason, ruleId, expiresAt } = req.body || {};
+    const done = setFindingState(req.params.fingerprint, { state, reason, ruleId, expiresAt });
+    if (!done.ok) {
+      return res.status(422).json({
+        message: done.note
+          || (done.reason === 'unknown_state'
+            ? `Unknown state. Allowed: ${done.allowed.join(', ')}.`
+            : done.reason),
+      });
+    }
+    return res.json({ state: done.state });
+  } catch (err) { return next(err); }
+});
+
+/** DELETE — back to plain `open`, with no recorded decision. */
+healthRouter.delete('/findings/:fingerprint/state', (req, res, next) => {
+  try {
+    return res.json({ cleared: clearFindingState(req.params.fingerprint).ok });
+  } catch (err) { return next(err); }
+});
+
+/** GET /api/health/states — every decision on this instance, for the UI's filters. */
+healthRouter.get('/states', (req, res, next) => {
+  try {
+    return res.json({ vocabulary: STATE_VOCABULARY, states: [...stateMap().values()] });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * GET /api/health/trend — the score and counts over time.
+ *
+ * A run whose score was WITHHELD carries `null` rather than being dropped, so
+ * the line has a visible gap instead of implying continuity across a period
+ * where coverage was actually incomplete.
+ */
+healthRouter.get('/trend', (req, res, next) => {
+  try {
+    return res.json({ points: trend({ limit: Math.min(Number(req.query.limit) || 30, 100) }) });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * GET /api/health/runs/:runId/export.csv
+ *
+ * Honours the same filters the page is showing, rather than dumping the table —
+ * an export that does not match what you were looking at is a different report.
+ *
+ * Cells go through the audit module's own `csvCell`. There is one escaper in
+ * this app and this is it: a spreadsheet executes a cell beginning `=`, `+`,
+ * `-` or `@` (trap #38), and these carry rule text and model-authored
+ * summaries.
+ */
+healthRouter.get('/runs/:runId/export.csv', (req, res, next) => {
+  try {
+    const run = getRun(req.params.runId);
+    if (!run) return res.status(404).json({ message: 'No such run on the bound instance.' });
+
+    const { findings } = listFindings(req.params.runId, {
+      scope: normaliseScope(req.query.scope),
+      domain: req.query.domain || undefined,
+      severity: req.query.severity || undefined,
+      rule: req.query.rule || undefined,
+      /* The run's own storage cap, not a smaller one of our own: an export that
+         silently stopped at 10,000 of 12,194 would be a different report. */
+      limit: MAX_FINDINGS,
+    });
+
+    const columns = ['scope', 'severity', 'priority', 'domain', 'rule', 'title', 'table',
+      'records', 'sys_ids', 'state', 'state_reason', 'confidence', 'recommendation'];
+    const lines = [columns.join(',')];
+    for (const f of findings) {
+      lines.push([
+        scopeOfFinding(f), f.severity, f.priority, f.domain, f.rule_id, f.title, f.table,
+        (f.target_ids || []).length, (f.target_ids || []).join(' '),
+        f.lifecycle?.state || 'open', f.lifecycle?.reason || '',
+        f.confidence, f.recommendation || '',
+      ].map(csvCell).join(','));
+    }
+
+    const stamp = (run.startedAt || '').slice(0, 10) || 'run';
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="health-${stamp}-${req.params.runId.slice(0, 8)}.csv"`);
+    return res.send(lines.join('\n'));
+  } catch (err) { return next(err); }
 });

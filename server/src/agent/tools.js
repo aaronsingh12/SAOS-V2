@@ -527,9 +527,26 @@ export const TOOLS = [
     // their behalf. Nothing changes when mode is off.
     impersonable: true,
     execute: async ({ table: t, data }, ctx = {}) => {
+      /*
+       * THE STATIC GUARD RUNS FIRST, BEFORE ANYTHING TOUCHES THE NETWORK.
+       *
+       * `assertCreatableTable` is a lookup against a constant map — it already
+       * knows `sys_scope` can never be created this way. It used to run AFTER
+       * `refuseRecordWrite`, which calls `tableExists` and therefore queries
+       * `sys_db_object` on the instance, and that ordering cost two things:
+       *
+       *   - a pointless round-trip for a write we were always going to refuse;
+       *   - the refusal itself, whenever the instance was unreachable. Found
+       *     by switching instances: with bad credentials the read threw 401 and
+       *     the caller was told their password was wrong, when the real answer
+       *     was "you cannot create an application over REST at all".
+       *
+       * A guard that needs the network to say something it already knows is a
+       * guard that stops working exactly when things are going wrong.
+       */
+      assertCreatableTable(t);
       const refusal = await refuseRecordWrite('create_record', t);
       if (refusal) return refusal;
-      assertCreatableTable(t);
       return writeAsCurrentIdentity({
         ctx, tool: 'create_record', table: t, operation: 'create', data,
         direct: () => table.create(t, data),

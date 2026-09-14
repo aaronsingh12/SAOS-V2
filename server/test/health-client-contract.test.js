@@ -124,18 +124,43 @@ test('every domain the rules can emit is nameable by the page', () => {
 
 /* ── It cannot write ───────────────────────────────────────────────────── */
 
-test('the page has no mutating call of any kind', () => {
+test('the page can only reach Health Assist endpoints — never the instance', () => {
   /*
-   * THE PROPERTY THIS MODULE IS SOLD ON. Health Assist reads. The only POST on
-   * the page starts a read-only analysis run; there must be no patch, no
-   * delete, and no post to anything else.
+   * THE PROPERTY THIS MODULE IS SOLD ON, restated against what it is really
+   * about.
+   *
+   * This asserted "no api.patch anywhere", which was a fair proxy while the
+   * page was purely a reader. The finding lifecycle broke it by adding one —
+   * and that call writes to OUR database (a mute is a presentation decision),
+   * not to ServiceNow.
+   *
+   * So the claim is now the accurate one: every call the page makes is under
+   * `/health/`, which is a router that has no instance client at all. A path
+   * outside that prefix is the thing that would matter, and it fails here.
    */
-  assert.equal(/api\.patch\(/.test(PAGE), false, 'the page patches something');
-  assert.equal(/api\.del\(/.test(PAGE), false, 'the page deletes something');
-  const posts = [...PAGE.matchAll(/api\.post\(\s*'([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(posts, [], `the page posts to ${posts.join(', ')}`);
+  const calls = [...PAGE.matchAll(/(?:api\.(?:get|post|patch|del)|sse)\(\s*[`']([^`'$]*)/g)]
+    .map((m) => m[1])
+    .filter(Boolean);
+  assert.ok(calls.length > 0, 'the scan found no calls at all — the pattern is wrong, not the page');
+  const escapees = calls.filter((c) => !c.startsWith('/health/'));
+  assert.deepEqual(escapees, [], `the page calls outside /health/: ${escapees.join(', ')}`);
+
+  // And only ONE endpoint streams: the run. Remediation streams from the drawer.
   const streams = [...PAGE.matchAll(/sse\(\s*'([^']+)'/g)].map((m) => m[1]);
   assert.deepEqual(streams, ['/health/runs'], 'the page streams from somewhere other than the run endpoint');
+});
+
+test('the lifecycle write goes to our own database, and can never delete a finding', () => {
+  /*
+   * Muting is PRESENTATION. A health tool that could make findings disappear
+   * would be a tool for hiding problems, so the page may set a state and may
+   * not remove a finding — and the muted ones stay in every count.
+   */
+  assert.match(PAGE, /\/health\/findings\/\$\{[^}]+\}\/state/, 'the page no longer sets a finding state');
+  assert.equal(/api\.del\(\s*[`']\/health\/runs\/[^`']*\/findings/.test(PAGE), false,
+    'the page can delete a finding');
+  assert.match(PAGE, /still detected and still counted/i,
+    'the page no longer tells the user a muted finding is still counted');
 });
 
 test('the server route surface offers no instance write either', () => {
@@ -143,7 +168,16 @@ test('the server route surface offers no instance write either', () => {
   // The one DELETE removes a stored RUN from our own database. It must not
   // reach the instance, so the router may not import the table client at all.
   assert.equal(/servicenow\/client\.js/.test(ROUTE), false, 'the health router talks to the instance directly');
-  assert.match(ROUTE, /writes: false/, 'the meta endpoint no longer states that this module does not write');
+  /*
+   * This asserted a single `writes: false`, which became untrue the day
+   * remediation shipped — an approved plan does change the instance. The
+   * claim is now two facts, and both are asserted: detection never writes,
+   * and a fix needs approval and goes through the plan executor.
+   */
+  assert.match(ROUTE, /detectionWrites: false/, 'the meta endpoint no longer states that detection does not write');
+  assert.match(ROUTE, /requiresApproval: true, executesThrough: 'plan executor'/,
+    'the meta endpoint no longer states how a fix reaches the instance');
+  assert.equal(/writes: false,/.test(ROUTE), false, 'the old, now-false blanket claim is back');
 });
 
 test('only the two declared seams reach the instance, and only through the one client', () => {
@@ -218,10 +252,19 @@ test('the rule pack is pure: no network, no database, no model', () => {
 
 /* ── The allow-list is real ────────────────────────────────────────────── */
 
-test('the meta endpoint offers exactly the allow-listed tables', () => {
+test('the meta endpoint derives its table list from the allow-list', () => {
+  /*
+   * This pinned the count at 15, which was a proxy for "the route does not keep
+   * its own list" and broke the moment ITOM added ten tables. The real claim is
+   * that the route ENUMERATES the allow-list rather than restating it — a
+   * second list is what goes stale, not a growing first one.
+   */
   const ROUTE = fs.readFileSync(path.resolve(__dirname, '../src/routes/health.js'), 'utf8');
   assert.match(ROUTE, /Object\.entries\(TABLES\)/, 'the route hardcodes a table list beside the allow-list');
-  assert.ok(Object.keys(TABLES).length === 15);
+  assert.ok(Object.keys(TABLES).length > 0);
+  // The two the rule pack cannot run without must still be marked required.
+  const required = Object.entries(TABLES).filter(([, s]) => s.required).map(([n]) => n);
+  assert.deepEqual(required.sort(), ['cmdb_ci', 'cmdb_rel_ci']);
 });
 
 
@@ -259,4 +302,78 @@ test('the time comparison is labelled an estimate wherever it appears', () => {
   assert.match(PAGE, /Estimated, not measured/, 'the estimate is presented as a measurement');
   assert.match(PAGE, /effort\.basis/, 'the basis for the estimate is not shown');
   assert.match(PAGE, /effort\.disclaimer/, 'the disclaimer is not shown');
+});
+
+/* ── The CMDB / ITOM / ITSM / Platform switch ──────────────────────────── */
+
+test('the switch reads its scopes from the server and keeps the choice in the URL', () => {
+  /*
+   * Served vocabulary, like every other word here. In the URL so a view
+   * survives a refresh and can be shared: /health?scope=itom opens on ITOM.
+   */
+  assert.match(PAGE, /meta\?\.scopes/, 'the page coined its own scope list');
+  assert.match(PAGE, /useSearchParams/, 'the scope is not kept in the URL');
+  assert.match(PAGE, /params\.get\('scope'\)/);
+  assert.match(PAGE, /qs\.set\('scope', scopeKey\)/, 'the findings list does not follow the scope');
+  assert.match(PAGE, /if \(scope !== 'all'\) qs\.set\('scope', scope\)/, 'the export ignores the scope on screen');
+});
+
+test('every number on the page comes from the server summary for the scope, over all detected findings', () => {
+  /*
+   * REGRESSION. "1000 things found", "989 Moderate" and "0 Low" were all
+   * counted from the stored 1,000 of 12,194 findings.
+   */
+  assert.match(PAGE, /manifest\?\.scopes\?\.\[scope\]/, 'the page does not read the per-scope summary');
+  assert.match(PAGE, /findings_detected/, 'the headline count is not the detected count');
+  assert.equal(/\{manifest\?\.findings_stored \?\? 0\}<\/b><span>things found/.test(PAGE), false,
+    'the headline count is the STORED number again');
+});
+
+test('the All view shows each scope on its own and never averages them', () => {
+  // CMDB and ITSM are record scores, ITOM a check score, Platform none. An
+  // average of those would be a number that means nothing.
+  assert.match(PAGE, /function ScopeTiles/);
+  assert.equal(/reduce\([^)]*score[^)]*\)\s*\/\s*/.test(PAGE), false, 'something averages the scope scores');
+  assert.match(PAGE, /rather than averaged/);
+});
+
+test('switching scope clears the area AND rule filters so a scope is never filtered to another scope’s', () => {
+  /*
+   * Both belong to one scope. A CMDB area or a CMDB rule carried into ITSM
+   * filters the list to nothing, which reads as a clean ITSM estate.
+   */
+  assert.match(PAGE, /setFilter\(\(cur\) => \(\{ \.\.\.cur, domain: '', rule: '' \}\)\)/,
+    'an area or rule filter from one scope survives into another and shows an empty list');
+});
+
+test('ITOM checks that could not be evaluated are shown as not counted, never as a pass', () => {
+  assert.match(PAGE, /c\.result === 'not_applicable' && `not counted/);
+});
+
+test('the header no longer claims Health Assist cannot write', () => {
+  /*
+   * True until remediation shipped; false after. Both halves now come from meta.
+   * Comments are stripped first: the page's own comment QUOTES the old claim to
+   * explain why it was removed, and what matters is what the page renders.
+   */
+  const rendered = PAGE.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.equal(/it has no tool that could/.test(rendered), false, 'the stale "no tool that could" claim is back');
+  assert.equal(/read only<\/div>/i.test(rendered), false, 'the stale "read only" title is back');
+  assert.match(PAGE, /meta\?\.note/);
+});
+
+test('every scope tone and switch class the page uses has a style', () => {
+  for (const cls of ['hs-scope', 'hs-scope-btn', 'hs-tiles', 'hs-tile', 'hs-checks', 'hs-check']) {
+    /* String.raw, because in an ordinary template literal `\b` is a BACKSPACE
+       character — the first version of this test could never match anything. */
+    assert.match(CSS, new RegExp(String.raw`\.${cls}\b`), `styles.css has no .${cls}`);
+  }
+});
+
+test('the scorecard shows what is pulling the score down, and each driver filters to its findings', () => {
+  assert.match(PAGE, /summary\?\.score_drivers/, 'the page does not render the score drivers');
+  assert.match(PAGE, /applyFilter\(\{ rule: filter\.rule === d\.rule_id \? '' : d\.rule_id \}\)/,
+    'a driver does not click through to its findings');
+  assert.match(PAGE, /if \(next\.rule\) qs\.set\('rule', next\.rule\)/, 'the rule filter never reaches the server');
+  assert.match(PAGE, /do not add up/, 'the page does not say driver shares overlap');
 });

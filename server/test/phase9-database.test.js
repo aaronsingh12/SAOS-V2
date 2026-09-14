@@ -49,7 +49,7 @@ const { createTask, startTask, completeTask } = await import('../src/memory/task
 const P = await import('../src/agent/plan/index.js');
 
 const DB_SRC = fs.readFileSync(new URL('../src/memory/db.js', import.meta.url), 'utf8');
-const HEAD_VERSION = 25;
+const HEAD_VERSION = 26;
 
 /** The migration bodies only, with comments stripped. */
 const MIGRATION_BODY = (() => {
@@ -86,7 +86,7 @@ function columnsOf(db) {
  * A. THE HISTORY
  * ================================================================== */
 
-test('D1 — the head is 25 and a fresh database reaches it', () => {
+test('D1 — the head is 26 and a fresh database reaches it', () => {
   const db = migrate(new DatabaseSync(freshFile()));
   try {
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, HEAD_VERSION);

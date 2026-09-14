@@ -149,7 +149,7 @@ test('A1 — migration 23 exists, is append-only, and adds two nullable columns'
   const db = getDb();
   // 24 is the head since Health Assist appended its two tables; 23's own
   // content is what the column checks below still assert.
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 25);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 26);
   for (const table of ['mutation_ledger', 'tool_events']) {
     const col = db.prepare(`PRAGMA table_info(${table})`).all().find((c) => c.name === 'task_id');
     assert.ok(col, `${table} has no task_id column`);

@@ -2,7 +2,7 @@ import {
   generatePlan, savePlan, setPlanState, buildReview, executePlan, loadPlan,
 } from '../agent/plan/index.js';
 import { createTask, startTask, completeTask, failTask } from '../memory/tasks.js';
-import { getSession, createSession } from '../memory/sessions.js';
+import { getSession, createSession, recordToolEvent } from '../memory/sessions.js';
 import { getSettings } from '../config/store.js';
 import { log } from '../logging.js';
 import { planFromProposal, executableChanges, proposalFingerprint } from './proposal.js';
@@ -44,19 +44,121 @@ import { approveProposal, attachTask, recordExecution, recordValidation } from '
  * approval inventory that guards this rule and to the person reading the
  * router. Splitting the function puts the binding where it can be seen.
  *
- * ═══ WHY THE APPROVAL IS NOT ASKED FOR TWICE ═══
+ * ═══ TWO APPROVALS, AND WHY THE SECOND ONE IS NOT ANSWERED HERE ═══
  *
- * The plan route raises an approval card because its plan was generated from a
- * sentence and the human has not seen it yet. Here the human has just read the
- * exact change list, edited it, and pressed Approve and apply — that IS the
- * approval, and it carries `user_click` provenance. Re-prompting would train
- * people to click through the gate, which is worse than not showing it.
+ * Approve and apply binds the PLAN: the proposal's fingerprint is checked before
+ * a plan is built, and the plan's fingerprint is bound by `approvePlan` and
+ * re-checked before every step. If either version moved between the click and
+ * the execution, nothing runs.
  *
- * What makes that safe is that the approval is bound to content twice over: the
- * proposal's own fingerprint is checked before a plan is built, and the plan's
- * fingerprint is checked by `approvePlan` before a step runs. If either version
- * moved between the click and the execution, nothing runs.
+ * The executor then asks its own per-step gate before each write, exactly as it
+ * does for every other plan. That card is answered by the human, in the drawer,
+ * through `POST /api/agent/approve` — the one resolver in this system. An
+ * earlier version of this comment claimed the second card was never raised. It
+ * was wrong: the executor raises it unconditionally, and the drawer did not
+ * render it, so a remediation that got past the provenance guard would have
+ * waited five minutes for an answer nobody could give. Answering it in-process
+ * instead would have made `routes/health.js` a second resolver, which the
+ * approval inventory forbids for good reason.
+ *
+ * ═══ WHY THE TARGETS ARE RE-READ BEFORE THE PLAN IS BUILT ═══
+ *
+ * The executor refuses a write to any sys_id that has never appeared in the
+ * session doing the writing. That guard is right, and remediation is not exempt
+ * from it. Health Assist's reads — the extraction, the proposal's current
+ * values, the reference lookup — happen outside any session, so the
+ * remediation session had seen nothing and every step was BLOCKED as a
+ * confabulated sys_id. The agent path worked only because its own read put the
+ * record in front of the session first.
+ *
+ * So remediation does what the agent does: it reads each target, and each
+ * referenced record it is about to point a field at, from the instance at
+ * approval time, and records that read as an ordinary `get_record` tool event.
+ * Provenance is registered by the same single producer every other read uses —
+ * no exemption, no side door — and a record that no longer exists stops the
+ * remediation before a plan is built, instead of surfacing as a failed write.
  */
+
+const SYS_ID = /^[0-9a-f]{32}$/i;
+
+/**
+ * Re-read every record a remediation will write to or point at, in `sessionId`.
+ *
+ * Returns `{ ok: true, observed }` or `{ ok: false, reason, note, missing }`. A
+ * record that cannot be read is a refusal, not a warning: writing to a record
+ * nobody could just read is the exact write the provenance guard exists to stop.
+ */
+export async function observeTargets({ sessionId, taskId = null, changes, readRecord, signal = null }) {
+  if (typeof readRecord !== 'function') {
+    return {
+      ok: false, reason: 'no_reader',
+      note: 'The records could not be re-read before applying (no instance reader was supplied). Nothing ran.',
+    };
+  }
+  const wanted = new Map();
+  for (const c of changes) {
+    wanted.set(`${c.table}:${c.sys_id}`, { table: c.table, sys_id: c.sys_id, role: 'target' });
+    if (c.fieldKind === 'reference' && c.references && SYS_ID.test(String(c.proposedValue ?? ''))) {
+      const key = `${c.references}:${c.proposedValue}`;
+      if (!wanted.has(key)) wanted.set(key, { table: c.references, sys_id: c.proposedValue, role: 'reference' });
+    }
+  }
+
+  const missing = [];
+  let observed = 0;
+  for (const w of wanted.values()) {
+    if (signal?.aborted) return { ok: false, reason: 'cancelled', note: 'Cancelled before anything was applied.' };
+    let row = null;
+    let failure = null;
+    try { row = await readRecord(w.table, w.sys_id); } catch (err) { failure = err?.message || String(err); }
+    if (row) {
+      recordToolEvent(sessionId, {
+        taskId,
+        kind: 'tool_call',
+        name: 'get_record',
+        payload: { table: w.table, sys_id: w.sys_id },
+        result: JSON.stringify(row),
+        resultStatus: 'ok',
+        mutating: false,
+      });
+      observed += 1;
+    } else {
+      /*
+       * Recorded as a GUARD, not a tool call. A `tool_call` result is indexed
+       * for sys_ids, and the error text of a failed read names the very sys_id
+       * that could not be read — so a failed read would have registered the
+       * record as seen. Caught by the test for exactly this; a read that
+       * returned nothing is not evidence the record exists.
+       */
+      const reason = failure || 'no record returned';
+      recordToolEvent(sessionId, {
+        taskId,
+        kind: 'guard',
+        name: 'remediation_target_unreadable',
+        payload: { table: w.table, sys_id: w.sys_id, role: w.role },
+        result: reason,
+        resultStatus: 'blocked',
+        mutating: false,
+      });
+      missing.push({ ...w, reason });
+    }
+  }
+
+  if (missing.length) {
+    const list = missing.slice(0, 5)
+      .map((m) => `${m.table}/${m.sys_id}${m.role === 'reference' ? ' (the value being set)' : ''} — ${m.reason}`)
+      .join('; ');
+    return {
+      ok: false,
+      reason: 'target_unreadable',
+      missing,
+      note: `${missing.length} record(s) could not be re-read from the instance just now, so nothing was applied: ${list}`
+        + `${missing.length > 5 ? '; …' : ''}. They may have been deleted, or this user may not be able to read them. `
+        + 'Re-run the health check or generate a new plan.',
+    };
+  }
+  return { ok: true, observed };
+}
 
 /** A failure to read a record back is not a successful validation. */
 const UNKNOWN = 'unknown';
@@ -126,7 +228,7 @@ export async function validateRemediation(proposal, changes, { readRecord }) {
  * so the UI shows the same vocabulary the agent workspace does.
  */
 export async function prepareRemediation({
-  proposalId, proposal, runId, presentedFingerprint, emit = () => {}, signal = null,
+  proposalId, proposal, runId, presentedFingerprint, emit = () => {}, signal = null, readRecord,
 }) {
   /*
    * GUARD ONE — the proposal the user approved is the proposal on disk.
@@ -173,6 +275,17 @@ export async function prepareRemediation({
   startTask(task.id);
 
   try {
+    /* See "WHY THE TARGETS ARE RE-READ" above. Before the plan exists, so a
+       record that vanished stops here rather than as a failed step. */
+    emit({ type: 'targets_observing', taskId: task.id, records: changes.length });
+    const seen = await observeTargets({ sessionId, taskId: task.id, changes, readRecord, signal });
+    if (!seen.ok) {
+      setPlanState(task.id, 'failed', { failure_reason: seen.note });
+      failTask(task.id, seen.note);
+      return { ok: false, reason: seen.reason, note: seen.note, taskId: task.id, missing: seen.missing ?? [] };
+    }
+    emit({ type: 'targets_observed', taskId: task.id, observed: seen.observed });
+
     /*
      * The approved change list goes through the ORDINARY planner seam. The
      * model is not consulted — `propose` returns the plan the human approved —
@@ -244,7 +357,9 @@ export async function runRemediation({
 }) {
   const draft = planFromProposal(proposal);
   try {
-    emit({ type: 'execution_started', taskId, steps: draft.steps.length });
+    /* `sessionId` travels with the frame because the drawer answers each step's
+       approval card with it, through POST /api/agent/approve. */
+    emit({ type: 'execution_started', taskId, sessionId, steps: draft.steps.length });
 
     const { agent } = getSettings();
     const result = await executePlan({
@@ -273,8 +388,17 @@ export async function runRemediation({
     const results = draft.steps.map((s, i) => {
       const row = byStep.get(s.id);
       const change = changes[i];
-      const verdict = row?.verification?.verdict ?? row?.verification?.strategy ?? null;
-      const ok = row?.state === 'completed' && verdict !== 'no-op' && verdict !== 'partial';
+      /*
+       * `verification.status` is the mutation pipeline's verdict (applied,
+       * no-op, partial, unverified, self-verified). This used to read
+       * `verification.verdict ?? verification.strategy` — neither exists on a
+       * step row, so a blocked step showed "read-back read_back", the PLAN's
+       * declared strategy, as if a read-back had happened. And the reason was
+       * read from `failure_reason` when the row calls it `failureReason`, so
+       * the BLOCKED explanation never reached the drawer.
+       */
+      const verdict = row?.verification?.status ?? null;
+      const ok = row?.state === 'completed' && !['no-op', 'partial', 'unverified'].includes(verdict);
       return {
         sys_id: change.sys_id,
         table: change.table,
@@ -284,7 +408,8 @@ export async function runRemediation({
         state: row?.state ?? 'not_reached',
         verdict,
         ok,
-        note: row?.result?.note ?? row?.failure_reason ?? null,
+        note: row?.failureReason
+          ?? (row ? null : 'This step was never reached, so nothing was sent for this record.'),
       };
     });
 
@@ -293,7 +418,24 @@ export async function runRemediation({
       error: result.ok ? null : (result.note || result.reason),
     });
 
-    const validation = await validateRemediation(proposal, changes, { readRecord });
+    /*
+     * Validation checks that approved values LANDED. When nothing was applied
+     * there is nothing to check, and "Validation failed — 0 of 1" beside a
+     * blocked step reads as though a write happened and did not stick. Say
+     * what is true instead.
+     */
+    const appliedChanges = changes.filter((_, i) => results[i]?.state === 'completed');
+    const validation = appliedChanges.length
+      ? await validateRemediation(proposal, appliedChanges, { readRecord })
+      : {
+        method: 'targeted_read_back',
+        skipped: true,
+        checks: [],
+        cleared: 0,
+        total: 0,
+        ok: false,
+        note: 'Nothing was applied, so there was nothing to validate. The reason is shown on each record above.',
+      };
     recordValidation(proposalId, validation);
 
     if (result.ok) completeTask(taskId);

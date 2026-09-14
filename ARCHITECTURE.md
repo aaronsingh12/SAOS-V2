@@ -113,7 +113,7 @@ nowforge/
 │   │   │                         dba · rag · skills
 │   │   ├── memory/               THE STORAGE LAYER (15 modules) — §7
 │   │   ├── health/               Health Assist: allow-list · extract · PURE
-│   │   │                         rule pack · manifest · store · remediation (§16)
+│   │   │                         rule pack · scopes · manifest · store · remediation (§16)
 │   │   ├── knowledge/            documentation corpus, ingestion, precedence
 │   │   ├── servicenow/           40+ modules — the ONLY code that talks to the
 │   │   │                         instance (§6)
@@ -337,7 +337,7 @@ failing the first chat turn with something unrecognisable. **A shipped migration
 is never edited.** `user_version` is the only thing that decides what has run,
 so an edit would silently skip on every existing file.
 
-**Current schema version: 25.**
+**Current schema version: 26.**
 
 | # | Adds |
 |---|---|
@@ -359,6 +359,7 @@ so an edit would silently skip on every existing file.
 | 23 | `task_id` on mutation_ledger and tool_events — exact correlation |
 | 24 | health_runs / health_findings — Health Assist's estate checks |
 | 25 | health_proposals — the remediation trail: draft, edits, approval, result |
+| 26 | health_finding_state — acknowledged / muted / accepted, keyed on the fingerprint |
 
 ### 7.1 Why the audit trail is separate from the transcript
 
@@ -701,8 +702,8 @@ cases SQL cannot express (SQLite has no `ADD COLUMN IF NOT EXISTS`).
 
 ## 16. `health/` — Health Assist
 
-Estate health: read an allow-listed slice of the instance, run a deterministic
-rule pack over it, and report findings. Ported from SAOS, a separate Python
+Estate health across **CMDB, ITOM, ITSM and platform hygiene**, switchable by scope (§16.7): read an allow-listed slice of the
+instance, run a deterministic rule pack over it, and report findings. Ported from SAOS, a separate Python
 service, and folded in rather than run beside NowForge — a sidecar would have
 meant a second path that talks to the instance, a second credential store and a
 second model config, which is three violations of §16 for a feature that is one
@@ -815,12 +816,31 @@ neither the approval inventory nor a reader of the router could see it.
 Splitting `prepareRemediation` from `runRemediation` puts the binding where both
 can — and the closed inventory in the approval-audit suite is what caught it.
 
-**No second approval card.** The plan route raises one because its plan came
-from a sentence the human has not seen. Here they have just read the exact
-change list and pressed Approve and apply — that *is* the approval, with
-`user_click` provenance. Re-prompting would train people to click through the
-gate. A global auto-approve preference is deliberately **not** threaded through
-either: a session-wide setting must not widen what one specific approval covered.
+**Approve and apply binds the plan; each write still gets its card.** An
+earlier version of this section said there was no second approval card. That
+was wrong: the executor raises its per-step gate unconditionally, and the drawer
+did not render it — hidden only because every step was being blocked before it
+got that far (below). The drawer now renders the executor's own card for each
+record (operation, table, sys_id, exact data) and answers it through
+`POST /api/agent/approve`, the one resolver. The route could have answered the
+gate itself, but that would make `routes/health.js` a second caller of
+`resolveApproval`, which the approval inventory forbids. A global auto-approve
+preference is deliberately **not** threaded through either: a session-wide
+setting must not widen what one specific approval covered.
+
+**The targets are re-read in the remediation's session before the plan is
+built.** The executor refuses a write to a sys_id that never appeared in the
+writing session. Health Assist's reads (extraction, proposal values, reference
+lookup) happen outside any session, so on techsnitchpvtltddemo2 Approve and
+apply was refused with *"BLOCKED: sys_id 5f9b83bf… has never appeared in this
+session"* — while the same change through the agent worked, because the agent's
+own read had put the record in front of its session. The guard was right;
+remediation is not exempt from it. `observeTargets` reads each target, and each
+referenced record a field will point at, and records the read as an ordinary
+`get_record` tool event, so provenance is registered by the same single producer
+every read uses. A record that cannot be read stops the remediation before a
+plan exists. When nothing was applied, validation is reported as *skipped* with
+the reason, not as "failed — 0 of 1".
 
 #### What the model may and may not do
 
@@ -868,6 +888,174 @@ colouring each bar by its own size would double-encode length as hue; and the
 findings table is the charts' **table-view twin**, so every value in a bar is
 also readable as text.
 
+### 16.5 ITOM — is the machinery that maintains the CMDB running?
+
+The CMDB rules ask *"is this record right?"* The ITOM rules ask *"is anything
+keeping these records true?"* A perfect CMDB that no Discovery is refreshing is
+a snapshot going stale — and every CMDB rule will keep reporting it as healthy,
+because the records are well-formed. They are just no longer accurate.
+
+Four domains: **Discovery**, **Credentials**, **Service Mapping** and
+**Availability**, alongside the existing MID Server, Event Management and
+Performance ones. Ten tables were added, each **probed against a real instance
+first** — a spec for a table that is not there reports `unavailable` for ever
+and teaches a reader to ignore the coverage strip.
+
+#### Absence is the most valuable finding here
+
+`whenEmpty()` exists because the two most important things this module can say
+about an ITOM estate are *"Discovery has never run"* and *"there is no MID
+server"*, and both are claims about what was **not** found.
+
+That makes the coverage rule load-bearing rather than decorative:
+
+| what was read | what is reported |
+|---|---|
+| `discovery_status` complete, zero rows | **DISC-NEVER-RAN** — nothing is refreshing the CMDB |
+| `discovery_status` unreadable | a **skip**, with the reason |
+
+Getting that backwards would tell somebody their Discovery is dead because their
+account lacks a role. Measured live on dev424910: `MID-NONE` and
+`DISC-NEVER-RAN` both fired at **P1**, while `em_alert` — Event Management is
+not installed — reported `unavailable` and produced no findings at all.
+
+**An estate-wide finding takes the maximum impact proxy, not the minimum.** The
+priority formula multiplies severity by a business proxy derived from affected
+services, so a finding naming no records scored 4 — the bottom of P3, beneath a
+single CI with a blank owner. That is exactly backwards: nothing being there
+affects everything downstream of it. `estate_wide` findings take the maximum,
+and their `impact` says *"this names no individual records because the records
+are what is missing"* rather than reporting a reachability of zero.
+
+#### Most ITOM remediation is operational, and says so
+
+Restarting a MID service, opening a firewall port and running a Discovery
+schedule are not things a REST write can do. Those rules appear in the
+remediation catalogue with manual steps and are deliberately **absent from
+`FIX_FIELD`** — so the proposal carries instructions instead of a field editor,
+rather than offering a Fix button that could not work.
+
+Three ITOM rules do have a real field fix, and one of them carries a `preset`:
+"this credential is switched off" has exactly one sensible remedy, so the value
+is filled in without a model round-trip that could only add a failure mode. It
+is still a proposal and still needs approval.
+
+### 16.6 The finding lifecycle — why this is production-ready
+
+Without it, every run re-reports every finding for ever. A team reviews 900,
+decides 400 are known and accepted, and has no way to record that — so the next
+run shows 900 again, and within about three runs nobody opens the page. **A
+health checker that cannot be told "we know, and we accepted it" gets ignored,
+and being ignored is a worse failure than a few false positives.**
+
+Two properties keep it honest:
+
+- **Muting is presentation, never deletion.** A muted finding is still detected,
+  still stored, still in every count, and one click from visible. A health tool
+  that could make findings disappear would be a tool for hiding problems.
+- **State is keyed on the FINGERPRINT**, which is sha256 over rule + table + the
+  sorted sys_ids. Muting *"these four CIs have no owner"* carries across runs
+  and **cannot** silence a fifth CI that goes ownerless next week — that is a
+  different hash and arrives as new.
+
+`muted` and `accepted` require a reason, because the next person has to be able
+to tell an accepted risk from an unexplained silence. `acknowledged` does not —
+it is triage, not a decision, and still counts as outstanding. A snooze carries
+an `expires_at` and is re-evaluated **at read time**: there is no sweeper in this
+app, and a state that quietly stayed muted past its own end date would be the
+permanent blind spot the field exists to prevent. The decision source is a
+literal in the INSERT — a model that could mute its own findings would be a model
+that can hide its own mistakes.
+
+Three more production guards, each closing a real failure:
+
+| guard | the failure it closes |
+|---|---|
+| **one run at a time per instance** | two concurrent runs leave whichever finished last as "latest", so the page shows one run's coverage beside the other's findings. There is no way to merge two snapshots taken at different cutoffs |
+| **abandoned runs expire after 30 minutes** | a server killed mid-run leaves its row at `running` for ever; without an age bound one crash disables the feature permanently |
+| **cancellation, observed between tables** | a table half-read would be stored with whatever coverage it happened to reach. Stopping on a clean boundary keeps the partial estate an honest description of the tables that finished — and a health check only reads, so nothing is left half-done |
+
+The score **trend** keeps withheld scores as `null` and renders them as a gap
+rather than dropping or zeroing them: a line joined across a period where
+coverage was incomplete would assert a continuity the data does not have. CSV
+export honours the on-screen filters and goes through the audit module's own
+`csvCell` — one escaper in this app, because a spreadsheet executes a cell
+beginning `=`, `+`, `-` or `@` (trap #38).
+
+### 16.7 Scopes — CMDB, ITOM, ITSM, Platform — and what a score honestly means
+
+`health/scopes.js` is the single definition of the switch: which domains each
+scope owns, which tables it reads, and how it is scored. It is pure, so the same
+function summarises a run as it finishes and re-reads an older run that was
+recorded before the switch existed.
+
+**The scores are deliberately not all the same kind**, because one formula over
+four areas would produce four numbers that look comparable and are not:
+
+| scope | score | why that kind |
+|---|---|---|
+| **CMDB** | share of CIs no CMDB rule objected to | records are the unit of CMDB health. Unchanged from before, so the trend line stays continuous |
+| **ITSM** | share of open-or-recent incidents, changes and problems with no ITSM finding | the same kind, over the slice that was actually read — and the slice is named in the basis |
+| **ITOM** | share of *applicable* capability checks that pass | ITOM's important findings are about absence and name no records; "no MID server" cannot be a percentage of rows |
+| **Platform** | none, and it says why | 42,000 role assignments and fourteen integrations share no denominator; any percentage would be decided by table size |
+
+The All view shows one tile per scope and **never averages them**.
+
+**A score explains itself.** Record scores carry `score_drivers`: distinct records
+per rule, largest first, each clicking through to its findings. Added after the
+first live CMDB score came back at 0.3% — correct, and useless alone. The drivers
+said why: 3,233 of 3,412 CIs have no owner, 3,211 no relationships, 2,956 unchanged
+for 90 days. Re-weighting the score would have flattered a true number (dropping
+the Low rule only moves it to 2.8%); naming the levers is what makes it
+actionable.
+
+**A vacuous truth is not a pass.** An ITOM check over an empty table — "open alerts
+are bound to CIs" with zero alerts — is `not_applicable`. Measured: counting it as a
+pass lifted the ITOM score from 42.9% to 50%.
+
+Every score describes only what was read. A table whose rows were not all read is
+excluded from its scope and named; if nothing usable is left, the score is
+withheld with the specific reason. An ITOM check whose table could not be read is
+`not_applicable` and left out of the score entirely — never counted as a pass.
+The SQL filter behind the findings list and the in-memory mapping behind the
+counts are built from the same definitions, and a test asserts they place every
+rule in the same scope.
+
+#### ITSM
+
+The incident, change and problem tables were extracted from the first release and
+**no rule read them** — ITSM produced nothing, which is not the same as healthy.
+Eleven rules now do: unassigned, aged P1, stale, no CI and reopened incidents;
+stale, CI-less, overdue and failed changes; unassigned and stale problems.
+
+They read a stated slice — active, or updated in the last 90 days — because
+health is about what is live now, and reading every incident since go-live would
+make a run take as long as the instance is old. The same condition goes into the
+count, or a table could never be complete. No rule keys off a numeric state code:
+those differ between tables and are instance-configurable (trap #28), so `active`
+is the only state the rules trust.
+
+Routing and linking are field fixes and get proposals. The time-based rules do
+not: a write that only moved `sys_updated_on` would make *"untouched for 40
+days"* disappear without anyone doing the work it pointed at.
+
+#### Three defects found on a real instance, and fixed
+
+Measured on techsnitchpvtltddemo2, where the page showed *"No score"* and
+*"1000 things found"*:
+
+| what the page showed | what was actually wrong |
+|---|---|
+| **No score** | `cmdb_ci` read 3,412 of 3,412 rows, but `business_criticality` is not a column there. Coverage conflated *every row* with *every field*, so a missing optional field withheld the score. `rows_complete` now answers the row question on its own; `isComplete(coverage, table, fields)` is the one place every gate asks it, naming only the fields that rule reads |
+| **1000 things found** | 12,194 were detected and 1,000 stored, and every count on the page — including "989 Moderate, 0 Low" — was taken from the stored slice. Counts and scores now come from the full detected set; the cap is 25,000 as a memory guard, and truncation is stated when it happens |
+| (unseen) `sys_script` 998 of 14,059 | ServiceNow removes ACL-hidden rows from *inside* a page, so a page of 500 came back with 498 and the pager took the short page for the end. The first fix — paging on by offset — exposed a second defect live: `sys_script` and `sysauto` are written *while they are read* (14,059 → 14,250 in two days), an insert ahead of the offset shifts every later row, and both tables failed outright on a repeated sys_id. Extraction now uses the DBA module's own keyset walk (`sys_id > watermark`, only an empty page ends it), which cannot shift. Measured after: `sys_script` 14,362 rows, `sysauto` 1,652 |
+
+The fix to the second created a new obligation: storing every finding writes
+~12,000 rows per check on a large instance. The **five most recent runs** keep
+their findings; every run keeps its manifest — coverage, counts, every scope's
+score — which is all the trend reads. Lifecycle states and remediation proposals
+keep their own records and are never pruned.
+
 ---
 
 ## 17. The things that must stay true
@@ -878,7 +1066,7 @@ If a change would break one of these, it is the wrong change:
    builder, **one** cancellation path, **one** redactor.
 2. Nothing outside `servicenow/` talks to the instance.
 3. The Experience layer reads; it never executes, approves or verifies.
-4. A shipped migration is never edited; the schema is at **25**.
+4. A shipped migration is never edited; the schema is at **26**.
 5. `prompts.js` is frozen.
 6. An unclassified tool is a test failure, not a silent exclusion.
 7. No component of the UI has success-shaped vocabulary of its own — "verified"
