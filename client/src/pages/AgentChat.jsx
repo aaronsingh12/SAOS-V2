@@ -1350,14 +1350,21 @@ export default function AgentChat() {
         * components, same props, same handlers — and every piece of state they
         * read still lives on this page.
         */}
+      {/* New chat, above the Chats group. Same newChat(), same disabled-while-
+          running guard — only the slot it lands in changed. */}
+      {slots.newChat && createPortal(
+        <button className="nav-newchat-btn" onClick={newChat} disabled={running}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+            strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span>New chat</span>
+        </button>,
+        slots.newChat,
+      )}
+
       {slots.chats && createPortal(
         <div className="rail-pane">
-        <div className="rail-head">
-          {/* Delete Chats moved to the Settings section; New chat stays with
-              the list it adds to. Same handlers either way. */}
-          <button className="btn primary sm" onClick={newChat} disabled={running}>New chat</button>
-        </div>
-
         <form className="rail-search" onSubmit={runSearch}>
           <input
             className="input"
@@ -1400,21 +1407,43 @@ export default function AgentChat() {
               key={s.id}
               className={`rail-item${s.id === sessionId ? ' active' : ''}${s.source === 'meeting' ? ' from-meeting-row' : ''}`}
               onClick={() => { if (!running) { setSessionId(s.id); openAgent(); } }}
-              title={s.title || 'Untitled chat'}
+              title={[
+                s.title || 'Untitled chat',
+                s.source === 'meeting' && `from the meeting "${s.source_label || ''}"`,
+                new Date(s.updated).toLocaleDateString(),
+                s.message_count > 0 && `${s.message_count} message${s.message_count === 1 ? '' : 's'}`,
+                s.mutation_count > 0 && `${s.mutation_count} mutation${s.mutation_count === 1 ? '' : 's'}`,
+                s.snippet,
+              ].filter(Boolean).join(' · ')}
             >
               <div className="rail-title">{s.title || 'Untitled chat'}</div>
-              <div className="rail-meta">
-                {s.source === 'meeting' && (
-                  <span className="badge green" title={`From the meeting "${s.source_label || ''}"`}>meeting</span>
-                )}
-                <span className="mono">{new Date(s.updated).toLocaleDateString()}</span>
-                {s.message_count > 0 && <span>{s.message_count} msg</span>}
-                {s.mutation_count > 0 && <span className="badge amber">{s.mutation_count}</span>}
-              </div>
-              {s.snippet && <div className="rail-snippet">{s.snippet}</div>}
+              {/* Two actions, no overflow menu. They are clipped rather than
+                  display:none so they stay in the tab order on every row — a
+                  button that is not in the DOM cannot be focused, and the
+                  confirm dialog could not restore focus to it afterwards. */}
               <div className="rail-actions">
-                <button className="rail-btn" onClick={(e) => { e.stopPropagation(); rename(s); }} title="Rename">rename</button>
-                <button className="rail-btn danger" onClick={(e) => { e.stopPropagation(); remove(s); }} title="Delete">delete</button>
+                <button
+                  type="button" className="rail-btn"
+                  onClick={(e) => { e.stopPropagation(); rename(s); }}
+                  title="Rename" aria-label={`Rename "${s.title || 'Untitled chat'}"`}
+                >
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+                    strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+                  </svg>
+                </button>
+                <button
+                  type="button" className="rail-btn danger"
+                  onClick={(e) => { e.stopPropagation(); remove(s); }}
+                  title="Delete" aria-label={`Delete "${s.title || 'Untitled chat'}"`}
+                >
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+                    strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6" />
+                    <path d="M18.5 6v13a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2V6" />
+                  </svg>
+                </button>
               </div>
             </div>
           ))}

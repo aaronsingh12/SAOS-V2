@@ -246,14 +246,26 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
 
   return (
     <div className="page-full">
-      {/* The toolbar card that used to stand here permanently — a heading, the
-          New item button and a "Search items…" field — is gone. The heading and
-          the button are the table's own header now, and the table's filter is
-          the search. What is left is the create form, and it is only on screen
-          while you are actually creating something. */}
-      {creating && (
-        <div className="card">
-          <div className="card-title">New catalog item</div>
+      {/* The catalog list, full width. Create opens the same right-side drawer
+          that Incidents opens for New incident — one pattern for every "new
+          record" in the app, rather than a card here and a drawer there. */}
+      <DataTable
+        title="Catalog items"
+        action={<button className="btn primary sm" onClick={() => setCreating(true)}>New item</button>}
+        rows={items}
+        loading={loading}
+        error={error}
+        getRowId={(r) => val(r, 'sys_id')}
+        activeId={selected ? val(selected.item, 'sys_id') : null}
+        onRowClick={(r) => openItem(val(r, 'sys_id'))}
+        selectable
+        filterPlaceholder="Filter loaded items…"
+        empty="No catalog items match."
+        columns={itemColumns(itemScopes)}
+      />
+
+      {/* Create. Same fields, same createItem(), same category helper. */}
+      <RecordDrawer open={creating} onClose={() => setCreating(false)} title="New catalog item" width={560}>
           <div className="field"><label className="label">Name</label>
             <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
           <div className="field"><label className="label">Short description</label>
@@ -292,30 +304,9 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
               <button className="btn sm" onClick={createCategory} aria-busy={busy} disabled={busy || !newCategory.title}>Create category</button>
             </div>
           )}
-          <button className="btn primary sm" onClick={createItem} aria-busy={busy} disabled={busy || !draft.name}>Create item</button>
-        </div>
-      )}
-
-      {/* The catalog list, full width, with no column reserved beside it.
-          openItem() is untouched — it still fetches the deep view. */}
-      <DataTable
-        title="Catalog items"
-        action={(
-          <button className="btn primary sm" onClick={() => setCreating(!creating)}>
-            {creating ? 'Cancel' : 'New item'}
-          </button>
-        )}
-        rows={items}
-        loading={loading}
-        error={error}
-        getRowId={(r) => val(r, 'sys_id')}
-        activeId={selected ? val(selected.item, 'sys_id') : null}
-        onRowClick={(r) => openItem(val(r, 'sys_id'))}
-        selectable
-        filterPlaceholder="Filter loaded items…"
-        empty="No catalog items match."
-        columns={itemColumns(itemScopes)}
-      />
+        {error && <p className="error-text">{error}</p>}
+        <button className="btn primary" onClick={createItem} aria-busy={busy} disabled={busy || !draft.name}>Create item</button>
+      </RecordDrawer>
 
       {/* The deep view — variables, choices, policies — in a drawer. */}
       <RecordDrawer
@@ -399,7 +390,13 @@ function SetsTab({ meta, typeLabel }) {
   const [vars, setVars] = useState([]);
   const [draft, setDraft] = useState({ title: '', description: '' });
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+
+  /* Only one drawer at a time: opening either closes the other, so the create
+     sheet and the detail sheet can never both be on screen. */
+  const openNew = () => { setSelected(null); setError(''); setCreating(true); };
+  const openSet = (r) => { setCreating(false); setSelected(r); };
 
   const load = () => api.get('/catalog/variable-sets').then(setSets).catch((e) => setError(e.message));
   useEffect(() => { load(); }, []);
@@ -414,6 +411,7 @@ function SetsTab({ meta, typeLabel }) {
     try {
       await api.post('/catalog/variable-sets', draft);
       setDraft({ title: '', description: '' });
+      setCreating(false);
       load();
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
@@ -431,26 +429,29 @@ function SetsTab({ meta, typeLabel }) {
 
   return (
     <div className="page-full">
-      <div className="card">
-        <div className="card-title">Variable sets</div>
-        <div className="field"><label className="label">Title</label>
-          <input className="input" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></div>
-        <div className="field"><label className="label">Description</label>
-          <input className="input" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></div>
-        <button className="btn primary sm" onClick={create} aria-busy={busy} disabled={busy || !draft.title}>Create set</button>
-      </div>
-
+      {/* The creation form that used to stand above the table is now behind
+          New set, in the same drawer Incidents uses. */}
       <DataTable
         title="Variable sets"
+        action={<button className="btn primary sm" onClick={openNew}>New set</button>}
         rows={sets}
         error={error}
         getRowId={(r) => val(r, 'sys_id')}
         activeId={selected ? val(selected, 'sys_id') : null}
-        onRowClick={setSelected}
+        onRowClick={openSet}
         filterPlaceholder="Filter sets…"
         empty="No variable sets yet."
         columns={SET_COLUMNS}
       />
+
+      <RecordDrawer open={creating} onClose={() => setCreating(false)} title="New variable set" width={520}>
+        <div className="field"><label className="label">Title</label>
+          <input className="input" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></div>
+        <div className="field"><label className="label">Description</label>
+          <input className="input" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></div>
+        {error && <p className="error-text">{error}</p>}
+        <button className="btn primary" onClick={create} aria-busy={busy} disabled={busy || !draft.title}>Create set</button>
+      </RecordDrawer>
       <RecordDrawer
         open={Boolean(selected)}
         onClose={() => setSelected(null)}
@@ -478,19 +479,24 @@ function GuidesTab() {
   const [draft, setDraft] = useState({ name: '', short_description: '', two_step: true });
   const [addItem, setAddItem] = useState({ item: null, order: 100, condition: '' });
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
 
   const load = () => api.get('/catalog/order-guides').then(setGuides).catch((e) => setError(e.message));
   useEffect(() => { load(); }, []);
 
+  /* One drawer at a time, as on the other tabs. */
+  const openNew = () => { setSelected(null); setError(''); setCreating(true); };
+
   const open = (g) => {
+    setCreating(false);
     setSelected(g); setError('');
     api.get(`/catalog/order-guides/${val(g, 'sys_id')}/items`).then(setGuideItems).catch((e) => { setGuideItems([]); setError(e.message); });
   };
 
   const create = async () => {
     setBusy(true); setError('');
-    try { await api.post('/catalog/order-guides', draft); setDraft({ name: '', short_description: '', two_step: true }); load(); }
+    try { await api.post('/catalog/order-guides', draft); setDraft({ name: '', short_description: '', two_step: true }); setCreating(false); load(); }
     catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
@@ -522,8 +528,8 @@ function GuidesTab() {
 
   return (
     <div className="page-full">
-      <div className="card">
-        <div className="card-title">Order guides</div>
+      {/* Create is behind New guide, in the shared drawer. */}
+      <RecordDrawer open={creating} onClose={() => setCreating(false)} title="New order guide" width={520}>
         <div className="field"><label className="label">Name</label>
           <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
         <div className="field"><label className="label">Short description</label>
@@ -531,11 +537,13 @@ function GuidesTab() {
         <label className="check" style={{ marginBottom: 10 }}>
           <input type="checkbox" checked={draft.two_step} onChange={(e) => setDraft({ ...draft, two_step: e.target.checked })} /> Two-step checkout
         </label>
-        <button className="btn primary sm" onClick={create} aria-busy={busy} disabled={busy || !draft.name}>Create guide</button>
-      </div>
+        {error && <p className="error-text">{error}</p>}
+        <button className="btn primary" onClick={create} aria-busy={busy} disabled={busy || !draft.name}>Create guide</button>
+      </RecordDrawer>
 
       <DataTable
         title="Order guides"
+        action={<button className="btn primary sm" onClick={openNew}>New guide</button>}
         rows={guides}
         error={error}
         getRowId={(r) => val(r, 'sys_id')}
@@ -657,12 +665,9 @@ function ProducersTab({ onOpenItem }) {
 
   return (
     <div className="page-full">
-      {/* Same shape as the Items tab: the form is a card only while you are
-          creating one, and the list is the shared table. Nothing about create,
-          delete or "Variables & policies" changed — only where they are drawn. */}
-      {creating && (
-        <div className="card">
-          <div className="card-title">New record producer</div>
+      {/* Create, in the shared drawer. Nothing about create, delete or
+          "Variables & policies" changed — only where the form is drawn. */}
+      <RecordDrawer open={creating} onClose={() => setCreating(false)} title="New record producer" width={560}>
           <div className="field"><label className="label">Name</label>
             <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
           <div className="field"><label className="label">Target table</label>
@@ -671,17 +676,13 @@ function ProducersTab({ onOpenItem }) {
             <input className="input" value={draft.short_description} onChange={(e) => setDraft({ ...draft, short_description: e.target.value })} /></div>
           <div className="field"><label className="label">Script (maps variables → record)</label>
             <textarea className="textarea mono" placeholder="current.short_description = producer.issue_summary;" value={draft.script} onChange={(e) => setDraft({ ...draft, script: e.target.value })} /></div>
-          <button className="btn primary sm" onClick={create} aria-busy={busy} disabled={busy || !draft.name || !draft.table}>Create producer</button>
-        </div>
-      )}
+          {error && <p className="error-text">{error}</p>}
+          <button className="btn primary" onClick={create} aria-busy={busy} disabled={busy || !draft.name || !draft.table}>Create producer</button>
+      </RecordDrawer>
 
       <DataTable
         title="Record producers"
-        action={(
-          <button className="btn primary sm" onClick={() => setCreating(!creating)}>
-            {creating ? 'Cancel' : 'New producer'}
-          </button>
-        )}
+        action={<button className="btn primary sm" onClick={() => setCreating(true)}>New producer</button>}
         rows={producers}
         error={error}
         getRowId={(p) => val(p, 'sys_id')}

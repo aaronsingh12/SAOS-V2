@@ -28,6 +28,10 @@ import { useEffect, useState } from 'react';
  * — collapsing the column unmounts the expanded panes, and the portal has to
  * find the new node rather than keep pointing at the detached one.
  */
+/* New chat sits ABOVE the Chats group, so it needs a slot of its own — a
+   button inside the group's panel is a button you must open the group to
+   reach. Same handler, same newChat(); only its position moved. */
+export const AGENT_NEWCHAT_SLOT_ID = 'agent-newchat-slot';
 export const AGENT_CHATS_SLOT_ID = 'agent-chats-slot';
 export const AGENT_TASKS_SLOT_ID = 'agent-tasks-slot';
 export const AGENT_SKILLS_SLOT_ID = 'agent-skills-slot';
@@ -80,6 +84,7 @@ function useNavNonce() {
 export function useAgentSlots() {
   const nonce = useNavNonce();
   return {
+    newChat: useSlot(AGENT_NEWCHAT_SLOT_ID, nonce),
     chats: useSlot(AGENT_CHATS_SLOT_ID, nonce),
     tasks: useSlot(AGENT_TASKS_SLOT_ID, nonce),
     skills: useSlot(AGENT_SKILLS_SLOT_ID, nonce),

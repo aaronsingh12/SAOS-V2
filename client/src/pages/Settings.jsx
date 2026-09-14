@@ -163,29 +163,6 @@ export default function Settings() {
         <div id={AGENT_PREFS_SLOT_ID} className="prefs-slot" />
       </div>
 
-      <div className="card">
-        <div className="card-title">Notes</div>
-        <div className="stack">
-          <div className="note">
-            Credentials and API keys are stored locally in <span className="mono">server/data/settings.json</span> on
-            your machine — never sent anywhere except the instance / provider you configured. Keep that folder out of
-            version control (it's gitignored).
-          </div>
-          <div className="note">
-            Ollama runs fully local: point the base URL at <span className="mono">http://localhost:11434/v1</span> and
-            pick a tool-capable model (llama3.1, qwen2.5). No API key, no metering — useful for client environments
-            where data cannot leave the machine.
-          </div>
-          <div className="note">
-            Conversations, the instance knowledge ledger and recall embeddings live in one SQLite file at{' '}
-            <span className="mono">server/data/nowhelpassist.db</span> (gitignored). Chats survive a server restart, and
-            the ledger carries what this project has measured about your instance into every new session.
-          </div>
-          <div className="note warn">
-            Auto-approve removes the human gate on create/update/delete. Recommended only on throwaway PDIs.
-          </div>
-        </div>
-      </div>
       </div>
     </div>
   );
