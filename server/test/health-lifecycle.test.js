@@ -22,7 +22,7 @@ const {
   FINDING_STATES, QUIET_STATES, STATE_VOCABULARY,
 } = await import('../src/health/finding-state.js');
 const {
-  openRun, completeRun, cancelRun, runInFlight, trend, listFindings, getRun,
+  openRun, completeRun, cancelRun, runInFlight, trend, listFindings, getRun, abandonOrphanedRuns, INTERRUPTED_NOTE,
 } = await import('../src/health/store.js');
 const { getDb } = await import('../src/memory/db.js');
 
@@ -215,6 +215,45 @@ test('an abandoned run does not lock the feature for ever', () => {
   getDb().prepare('UPDATE health_runs SET started_at = ? WHERE id = ?')
     .run(new Date(Date.now() - 60 * 60 * 1000).toISOString(), id);
   assert.equal(runInFlight(), null, 'an abandoned run still blocks new checks');
+});
+
+test('with the live set, "running" means THIS PROCESS is executing it — age does not matter', () => {
+  /*
+   * THE MEASURED FAILURE: a server closed mid-check left the row at `running`,
+   * and a restart — even a reboot — still answered "a health check is already
+   * running" for thirty minutes, because the row was recent.
+   */
+  const orphan = openRun();                        // recent, but nobody is running it
+  assert.equal(runInFlight({ live: new Set() }), null, 'a row no process owns still blocks new checks');
+  assert.equal(runInFlight({ live: new Set([orphan]) })?.id, orphan, 'a run this process owns was not detected');
+
+  const old = openRun();
+  getDb().prepare('UPDATE health_runs SET started_at = ? WHERE id = ?')
+    .run(new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), old);
+  getDb().prepare("UPDATE health_runs SET status = 'failed' WHERE id = ?").run(orphan);
+  assert.equal(runInFlight({ live: new Set([old]) })?.id, old,
+    'a long check this process is still running was treated as abandoned — a second could start beside it');
+  completeRun(old, { status: 'completed', manifest: { cutoff: 'x', metrics: {} }, findings: [] });
+});
+
+test('orphaned runs are closed as interrupted, live ones are left alone, finished ones untouched', () => {
+  abandonOrphanedRuns([]);   // rows earlier tests left at `running` are not this test's subject
+  const live = openRun();
+  const orphan = openRun();
+  const done = openRun();
+  completeRun(done, { status: 'completed', manifest: { cutoff: 'x', metrics: {} }, findings: [] });
+
+  const closed = abandonOrphanedRuns([live]);
+  assert.equal(closed, 1);
+  assert.equal(getRun(orphan).status, 'failed');
+  assert.equal(getRun(orphan).error, INTERRUPTED_NOTE);
+  assert.match(getRun(orphan).error, /server stopped/i);
+  assert.match(getRun(orphan).error, /only reads/);
+  assert.equal(getRun(live).status, 'running', 'a run this process is executing was closed');
+  assert.equal(getRun(done).status, 'completed', 'a finished run was rewritten');
+
+  assert.equal(abandonOrphanedRuns([]), 1, 'with nothing live, the last running row should close');
+  assert.equal(abandonOrphanedRuns([]), 0, 'closing is not idempotent');
 });
 
 test('a cancelled run is distinct from a failed one, and says nothing was written', () => {

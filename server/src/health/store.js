@@ -25,14 +25,33 @@ const nowIso = () => new Date().toISOString();
  * honest option, because there is no way to merge two snapshots taken at
  * different cutoffs.
  *
- * A run older than the timeout is treated as ABANDONED rather than running: a
- * server killed mid-run leaves its row at `running` for ever, and one crash
- * would otherwise lock the feature permanently.
+ * WHAT "RUNNING" MEANS. A row at `running` is only a claim; the run is real
+ * only while this server process is executing it. Pass `live` — the route's
+ * set of runs this process owns — and that is the whole test: a row the process
+ * does not own is not in flight, however recent it is.
+ *
+ * Without `live`, a run older than the timeout is treated as abandoned. That
+ * fallback was the ONLY protection once, and it was not enough: a server closed
+ * mid-run left its row at `running`, and every restart inside the next thirty
+ * minutes — including a reboot — answered "a health check is already running"
+ * about a check nothing was running. Measured by a user who restarted the PC
+ * and still could not start one.
  */
 const ABANDON_AFTER_MS = 30 * 60 * 1000;
 
-export function runInFlight() {
+export function runInFlight({ live = null } = {}) {
   const bound = boundInstance();
+  if (live) {
+    /* Every running row, not just the newest: a stale row started after a
+       genuinely live one must not hide it. */
+    const rows = getDb().prepare(`
+      SELECT * FROM health_runs
+       WHERE instance_key = ? AND status = 'running'
+       ORDER BY started_at DESC
+    `).all(bound.key || 'unbound');
+    const owned = rows.find((r) => live.has(r.id));
+    return owned ? hydrateRun(owned) : null;
+  }
   const row = getDb().prepare(`
     SELECT * FROM health_runs
      WHERE instance_key = ? AND status = 'running'
@@ -42,6 +61,28 @@ export function runInFlight() {
   const age = Date.now() - new Date(row.started_at).getTime();
   if (Number.isFinite(age) && age > ABANDON_AFTER_MS) return null;
   return hydrateRun(row);
+}
+
+export const INTERRUPTED_NOTE = 'The server stopped while this check was running, so it never finished. '
+  + 'Nothing was written to the instance — a health check only reads. Run it again.';
+
+/**
+ * Close out every `running` row this process is not executing.
+ *
+ * Across ALL instances, because the process that owned them is gone no matter
+ * which instance they were against. Recorded as `failed` with a note saying
+ * what happened rather than deleted: a check that was interrupted is still a
+ * fact about the history, and a page that silently lost it would look like
+ * nobody tried. Returns how many rows it closed.
+ */
+export function abandonOrphanedRuns(liveIds = []) {
+  const keep = [...liveIds];
+  const placeholders = keep.map(() => '?').join(',');
+  const result = getDb().prepare(`
+    UPDATE health_runs SET status = 'failed', completed_at = ?, error = ?
+     WHERE status = 'running'${keep.length ? ` AND id NOT IN (${placeholders})` : ''}
+  `).run(nowIso(), INTERRUPTED_NOTE, ...keep);
+  return Number(result?.changes ?? 0);
 }
 
 export function openRun({ instanceKey, instanceUrl } = {}) {

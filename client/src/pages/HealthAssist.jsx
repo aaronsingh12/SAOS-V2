@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api, sse } from '../api.js';
+import { api } from '../api.js';
 import { SkeletonLines, EmptyState } from '../components/states.jsx';
 import { toast } from '../components/toast.js';
 import RemediationDrawer from '../components/RemediationDrawer.jsx';
+import {
+  useHealthRun, isActive, startHealthRun, stopHealthRun, discoverHealthRun, getHealthRun,
+} from '../components/healthRun.js';
 
 /**
  * Health Assist — estate health over the bound instance.
@@ -303,8 +306,11 @@ export default function HealthAssist() {
   const [run, setRun] = useState(null);
   const [findings, setFindings] = useState([]);
   const [total, setTotal] = useState(0);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState(null);
+  /* The run lives in an app-wide store, not in this component — leaving the
+     page or reloading the tab no longer loses it. See components/healthRun.js. */
+  const healthRun = useHealthRun();
+  const running = isActive(healthRun);
+  const progress = healthRun.progress;
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState({ domain: '', severity: '', rule: '' });
@@ -321,7 +327,10 @@ export default function HealthAssist() {
   const [points, setPoints] = useState([]);         // score over time
   const [showQuiet, setShowQuiet] = useState(false);
   const [stateBusy, setStateBusy] = useState('');
-  const abortRef = useRef(null);                    // the one cancellation path
+  /* Which finished run this page has already reloaded for. Starts at the
+     current count, so opening the page after a check finished does not
+     reload twice — the mount effect already reads the latest run. */
+  const seenFinish = useRef(getHealthRun().finishedSeq);
 
   useEffect(() => {
     let alive = true;
@@ -391,45 +400,37 @@ export default function HealthAssist() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, run?.id]);
 
-  const start = async () => {
-    setRunning(true); setError(''); setOpenFinding(null); setDetail(null);
-    setProgress({ stage: 'starting', percent: 0 });
-    let runId = null;
-    let stopped = false;
-    let failure = null;
-    /* ONE cancellation path: the client aborts its own fetch, the server sees
-       the disconnect and stops at the next table boundary. A health check only
-       reads, so there is nothing to unwind. */
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      await sse('/health/runs', {}, (evt) => {
-        if (evt.type === 'run_started') runId = evt.runId;
-        else if (evt.type === 'progress') setProgress(evt);
-        else if (evt.type === 'cancelled') { stopped = true; }
-        /* Captured, not thrown: `sse()` catches a handler's exception so one bad
-           frame cannot kill a stream, which swallowed this throw and let a
-           failed run fall through to "Health check complete". */
-        else if (evt.type === 'error') failure = evt;
-      }, 'POST', { signal: controller.signal });
-      if (failure) throw new Error(failure.message || 'The health check did not finish.');
-      if (runId && !stopped) {
-        setRun((await api.get(`/health/runs/${runId}`)).run);
-        await loadFindings(runId, filter, scope);
-        try { setPoints((await api.get('/health/trend')).points || []); } catch { /* the trend is not load-bearing */ }
-        toast.success('Health check complete.');
-      } else if (stopped) {
-        toast.success('Stopped. Nothing was written — a health check only reads.');
+  /* Opening the page picks up a check that is already running — started
+     before a refresh, from another tab, or before you went elsewhere. */
+  useEffect(() => { discoverHealthRun(); }, []);
+
+  /* When a run finishes — wherever you were when it did — show its result.
+     The toast and the desktop notification come from the store, once. */
+  useEffect(() => {
+    if (healthRun.finishedSeq === seenFinish.current) return;
+    seenFinish.current = healthRun.finishedSeq;
+    const { runId, status, message } = healthRun;
+    if (status === 'cancelled' || !runId) return;
+    (async () => {
+      try {
+        const fresh = (await api.get(`/health/runs/${runId}`)).run;
+        if (status === 'completed') {
+          setRun(fresh);
+          await loadFindings(runId, filter, scope);
+          try { setPoints((await api.get('/health/trend')).points || []); } catch { /* the trend is not load-bearing */ }
+        } else if (status === 'failed') {
+          setError(message || fresh?.error || 'The health check did not finish.');
+        }
+      } catch (e) {
+        if (status === 'failed') setError(message || e.message);
       }
-    } catch (e) {
-      if (e.cancelled) {
-        toast.success('Stopped. Nothing was written — a health check only reads.');
-      } else {
-        setError(e.message);
-        toast.error('The health check did not finish.');
-        if (runId) { try { setRun((await api.get(`/health/runs/${runId}`)).run); } catch { /* nothing more to show */ } }
-      }
-    } finally { setRunning(false); setProgress(null); abortRef.current = null; }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [healthRun.finishedSeq]);
+
+  const start = () => {
+    setError(''); setOpenFinding(null); setDetail(null);
+    startHealthRun();
   };
 
   /** Change a finding's lifecycle state. Presentation only — nothing is deleted. */
@@ -751,10 +752,11 @@ export default function HealthAssist() {
             {running ? 'Checking…' : run ? 'Check again' : 'Run health check'}
           </button>
           {running && (
-            /* Aborting our own fetch IS the cancellation. The server sees the
-               disconnect and stops at the next table boundary; nothing is left
-               half-done because a health check only reads. */
-            <button type="button" className="btn ghost" onClick={() => abortRef.current?.abort()}>
+            /* An explicit request, not a disconnect: leaving the page no longer
+               stops a check, so Stop has to say so on purpose. The server stops
+               at the next table boundary; a health check only reads, so nothing
+               is left half-done. */
+            <button type="button" className="btn ghost" onClick={stopHealthRun} disabled={!healthRun.runId}>
               Stop
             </button>
           )}
@@ -773,7 +775,8 @@ export default function HealthAssist() {
         </div>
         {running && progress && (
           <div className="note hs-mt">
-            {progress.stage}{progress.table ? ` · ${progress.table}` : ''} — {progress.percent}%
+            {progress.stage}{progress.table ? ` · ${progress.table}` : ''} — {progress.percent ?? 0}%
+            <span className="hs-muted"> · keeps running if you leave this page</span>
           </div>
         )}
         {error && <p className="error-text">{error}</p>}

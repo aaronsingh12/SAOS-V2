@@ -4,6 +4,7 @@ import RecordDrawer from './RecordDrawer.jsx';
 import ReferenceField from './ReferenceField.jsx';
 import { SkeletonLines } from './states.jsx';
 import { toast } from './toast.js';
+import { notifyDesktop } from './notify.js';
 
 /**
  * THE REMEDIATION REVIEW WINDOW.
@@ -185,6 +186,12 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
           setProgress({ stage: 'executing', steps: evt.steps });
         } else if (evt.type === 'approval_required') {
           setGate({ ...evt, sessionId });
+          notifyDesktop({
+            title: 'A fix is waiting for you to confirm a write',
+            body: evt.operation || 'Open Health Assist to apply or skip it.',
+            tag: `nha-remediation-${evt.approvalId ?? ''}`,
+            path: '/health',
+          });
           setProgress({ stage: 'waiting for you to confirm the write below' });
         } else if (evt.type === 'approval_resolved') setGate(null);
         else if (evt.type === 'step_started') setProgress({ stage: `applying ${evt.step ?? ''}` });
@@ -197,13 +204,16 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
       if (!terminal || terminal.type === 'error') {
         setError(terminal?.message || 'The remediation did not complete.');
         toast.error('The remediation did not complete — the reason is shown in the window.');
+        notifyDesktop({ title: 'Fix did not complete', body: terminal?.message || '', tag: 'nha-remediation', path: '/health' });
         if (!terminal?.proposal) {
           try { setRow((await api.get(`/health/proposals/${row.id}`)).proposal); } catch { /* keep what we have */ }
         }
       } else if (terminal.proposal?.status === 'applied') {
         toast.success('Changes applied and read back.');
+        notifyDesktop({ title: 'Fix applied', body: 'Every change landed and was read back.', tag: 'nha-remediation', path: '/health' });
       } else {
         toast.info('Finished — some changes did not apply. Check each record below.');
+        notifyDesktop({ title: 'Fix finished — not everything applied', body: 'Open Health Assist to see each record.', tag: 'nha-remediation', path: '/health' });
       }
     } catch (e) {
       setError(e.cancelled

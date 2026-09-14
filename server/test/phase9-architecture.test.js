@@ -121,6 +121,33 @@ test('B5 — there is exactly ONE cancellation mechanism', () => {
    */
   assert.deepEqual(controllers.sort(), ['routes/agent.js', 'routes/flows.js', 'routes/health.js', 'routes/plan.js'],
     `an AbortController appeared outside the three streaming handlers: ${controllers.join(', ')}`);
+
+  /*
+   * THE ONE REGISTRY, WRITTEN DOWN AS THIS LIST REQUIRES.
+   *
+   * Health checks are READ-ONLY, and tying one to its request produced two
+   * measured failures and no safety: leaving the page lost the run while it
+   * kept going ("already running" with nothing on screen), and a server closed
+   * mid-run left a row at `running` that a restart — even a reboot — could not
+   * clear for thirty minutes. So `routes/health.js` owns its checks in one
+   * module-level map and the page watches them.
+   *
+   * Pinned narrowly: exactly that one map, in that one file, and the ROUTE
+   * THAT WRITES — applying a remediation — may not touch it. Work that changes
+   * the instance still stops when the person authorising it goes away.
+   */
+  const registries = sources()
+    .filter((f) => /^const\s+\w*(live|active|running|inflight|in_flight)\w*(runs?|jobs?|tasks?|checks?)\s*=\s*new (Map|Set)\(/im.test(body(f)))
+    .map((f) => rel(f));
+  assert.deepEqual(registries, ['routes/health.js'], `a run registry appeared somewhere else: ${registries.join(', ')}`);
+  const healthRoutes = body(sources().find((f) => rel(f) === 'routes/health.js'));
+  assert.match(healthRoutes, /^const liveHealthRuns = new Map\(\)/m, 'the health run registry was renamed or moved');
+  const from = healthRoutes.indexOf("healthRouter.post('/proposals/:id/approve'");
+  assert.ok(from > 0, 'the remediation route was not found, so this guard checks nothing');
+  const approveRoute = healthRoutes.slice(from, healthRoutes.indexOf('\n});', from));
+  assert.ok(!/liveHealthRuns/.test(approveRoute),
+    'the remediation route reaches the read-only run registry — a write must still cancel with its request');
+  assert.match(approveRoute, /res\.on\('close'/, 'the remediation route no longer cancels when its page goes away');
   for (const f of sources()) {
     const b = body(f);
     assert.ok(!/^const\s+\w*(inflight|IN_FLIGHT|activeRuns|runningTasks)\w*\s*=\s*new (Map|Set)/m.test(b),

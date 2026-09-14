@@ -4,6 +4,7 @@ import RecordDrawer from '../components/RecordDrawer.jsx';
 import { api, sse, val, disp } from '../api.js';
 import { confirmDestructive, CONSEQUENCE } from '../components/confirm.js';
 import { toast } from '../components/toast.js';
+import { notifyDesktop } from '../components/notify.js';
 import { SkeletonRows, SkeletonLines, LoadingRegion, EmptyState } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import { useScopeLabels } from '../hooks/useScopeLabels.js';
@@ -177,10 +178,19 @@ function LiveBuild({ capOk, seedSpec, managed = [], onDeployed }) {
     setRunning(true); setEvents([]); setResult(null); setFailure(null); setApproval(null);
     try {
       await sse('/flows/live', { spec, updates: updates || undefined, artifact_type: artifactType, sessionId }, (e) => {
-        if (e.type === 'approval_required') { setApproval(e); return; }
+        if (e.type === 'approval_required') {
+          setApproval(e);
+          notifyDesktop({ title: 'A flow build is waiting for your approval', body: e.operation || '', tag: 'nha-flow-approval', path: '/flows' });
+          return;
+        }
         if (e.type === 'approval_resolved') { setApproval(null); return; }
-        if (e.type === 'done' && e.result) { setResult(e.result); onDeployed?.(); }
-        else if (e.type === 'error') setFailure(e);
+        if (e.type === 'done' && e.result) {
+          setResult(e.result); onDeployed?.();
+          notifyDesktop({ title: 'Flow build finished', body: 'Open Flows to see the result.', tag: 'nha-flow', path: '/flows' });
+        } else if (e.type === 'error') {
+          setFailure(e);
+          notifyDesktop({ title: 'Flow build failed', body: e.message || '', tag: 'nha-flow', path: '/flows' });
+        }
         else setEvents((prev) => [...prev, e]);
       });
     } catch (e) {

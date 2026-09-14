@@ -972,8 +972,23 @@ Three more production guards, each closing a real failure:
 | guard | the failure it closes |
 |---|---|
 | **one run at a time per instance** | two concurrent runs leave whichever finished last as "latest", so the page shows one run's coverage beside the other's findings. There is no way to merge two snapshots taken at different cutoffs |
-| **abandoned runs expire after 30 minutes** | a server killed mid-run leaves its row at `running` for ever; without an age bound one crash disables the feature permanently |
+| **"running" means this process is executing it** | a row at `running` is only a claim. The route keeps the one set of checks this process owns (`liveHealthRuns`); any `running` row outside it is closed as *interrupted* the next time anyone asks. The 30-minute age bound this replaced was not enough — measured: a server closed mid-run, then a restart and even a reboot, still answered "already running" until the half hour passed |
 | **cancellation, observed between tables** | a table half-read would be stored with whatever coverage it happened to reach. Stopping on a clean boundary keeps the partial estate an honest description of the tables that finished — and a health check only reads, so nothing is left half-done |
+
+**A check belongs to the server; the page watches it.** Every other streaming
+route cancels when its client disconnects, because they write. A health check
+does not, and tying it to the request only lost it: navigating to another page
+left it running with nothing on screen, and pressing the button again answered
+"already running". So `POST /runs` starts a check and watches it on that
+response; leaving closes the watch, not the check. `GET /runs/active` and
+`GET /runs/:id/stream` find it again (a finished run answers with its one
+terminal frame), and **Stop** is an explicit `POST /runs/:id/cancel`. On the
+page, the run lives in an app-wide store (`client/src/components/healthRun.js`),
+picked back up on load, and its outcome is announced once — a toast, and a
+desktop notification if enabled. The exception is pinned narrowly in the
+architecture suite (B5): one registry, in `routes/health.js`, never reachable from
+the remediation route — applying a fix is a write and still stops when its page
+goes away.
 
 The score **trend** keeps withheld scores as `null` and renders them as a gap
 rather than dropping or zeroing them: a line joined across a period where

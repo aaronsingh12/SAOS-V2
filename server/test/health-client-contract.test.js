@@ -145,9 +145,32 @@ test('the page can only reach Health Assist endpoints — never the instance', (
   const escapees = calls.filter((c) => !c.startsWith('/health/'));
   assert.deepEqual(escapees, [], `the page calls outside /health/: ${escapees.join(', ')}`);
 
-  // And only ONE endpoint streams: the run. Remediation streams from the drawer.
-  const streams = [...PAGE.matchAll(/sse\(\s*'([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(streams, ['/health/runs'], 'the page streams from somewhere other than the run endpoint');
+  /*
+   * The page streams NOTHING itself any more. The run is watched by the
+   * app-wide tracker, so leaving the page cannot lose it — the measured failure
+   * was "already running" with nothing on screen. Remediation streams from the
+   * drawer.
+   */
+  assert.equal(/\bsse\(/.test(PAGE), false, 'the page opened its own stream again — navigating away would lose the run');
+  assert.match(PAGE, /from '..\/components\/healthRun\.js'/, 'the page no longer watches the run through the tracker');
+
+  const TRACKER = read('components/healthRun.js');
+  const trackerCalls = [...TRACKER.matchAll(/(?:api\.(?:get|post|patch|del)|sse)\(\s*[`']([^`'$]*)/g)].map((m) => m[1]);
+  assert.ok(trackerCalls.length > 0, 'the scan found no tracker calls — the pattern is wrong');
+  assert.deepEqual(trackerCalls.filter((c) => !c.startsWith('/health/runs')), [],
+    'the run tracker calls something other than the run endpoints');
+  const trackerStreams = [...TRACKER.matchAll(/sse\(\s*[`']([^`']+)[`']/g)].map((m) => m[1]).sort();
+  assert.deepEqual(trackerStreams, ['/health/runs', '/health/runs/${runId}/stream'],
+    'the tracker streams from somewhere other than the run endpoints');
+});
+
+test('leaving the page does not stop a check: Stop is an explicit request, and the run is found again', () => {
+  const TRACKER = read('components/healthRun.js');
+  assert.match(TRACKER, /api\.post\(`\/health\/runs\/\$\{state\.runId\}\/cancel`\)/, 'Stop is not an explicit cancel request');
+  assert.equal(/AbortController/.test(TRACKER), false, 'the tracker aborts its own fetch — that would be the old cancel-by-leaving');
+  assert.match(TRACKER, /api\.get\('\/health\/runs\/active'\)/, 'the tracker cannot find a run started before a reload');
+  assert.match(read('App.jsx'), /discoverHealthRun\(\)/, 'the app does not pick a running check back up after a reload');
+  assert.match(PAGE, /onClick=\{stopHealthRun\}/, 'the Stop button no longer calls the explicit cancel');
 });
 
 test('the lifecycle write goes to our own database, and can never delete a finding', () => {

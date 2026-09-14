@@ -155,9 +155,25 @@ test('E6 — §79.4: there is still exactly ONE cancellation path', () => {
    *
    * So the blocker is a new route, and this is what would catch one.
    */
+  /*
+   * ONE WRITTEN-DOWN EXCEPTION: `POST /api/health/runs/:runId/cancel`.
+   *
+   * A health check is READ-ONLY and belongs to the server, not to the page
+   * watching it (see routes/health.js, "THE ONE IN-MEMORY RUN TABLE", and the
+   * registry pin in phase9-architecture B5). Tying it to the request lost the
+   * run whenever someone navigated away, and a stale `running` row survived
+   * restarts. Once the page no longer owns the check, "stop" cannot be a
+   * disconnect, so it is an explicit request — for that route only. Turns,
+   * plans, flow builds and remediation still stop by aborting.
+   */
+  const ALLOWED = new Map([['health.js', ["healthRouter.post('/runs/:runId/cancel'"]]]);
   const routes = path.join(SRC, 'routes');
   for (const f of fs.readdirSync(routes).filter((x) => x.endsWith('.js'))) {
-    const src = strip(read(path.join(routes, f)));
+    let src = strip(read(path.join(routes, f)));
+    for (const allowed of ALLOWED.get(f) ?? []) {
+      assert.ok(src.includes(allowed), `routes/${f} no longer has the documented exception "${allowed}" — remove it from this list`);
+      src = src.replace(allowed, '');
+    }
     assert.ok(!/\.(post|delete|patch)\(['"][^'"]*cancel/i.test(src), `routes/${f} adds a cancellation endpoint`);
   }
   /* And the client still stops by aborting, not by calling one. */

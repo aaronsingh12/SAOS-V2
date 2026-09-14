@@ -7,6 +7,7 @@ import { useHealth } from '../hooks/useHealth.js';
 import Markdown from '../components/Markdown.jsx';
 import { confirmDestructive, promptFor, CONSEQUENCE } from '../components/confirm.js';
 import { toast } from '../components/toast.js';
+import { notifyDesktop } from '../components/notify.js';
 import { SkeletonLines, LoadingRegion, EmptyState, DisconnectedBanner } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import ImpersonationChip from '../components/ImpersonationChip.jsx';
@@ -235,6 +236,21 @@ export default function AgentChat() {
     (path, body, onEvent, method = 'POST', opts = {}) => sse(path, body, (evt) => {
       observe(evt);
       onEvent(evt);
+      /* Tell someone in another window. `notifyDesktop` does nothing unless
+         they turned notifications on AND are away, so this costs nothing for
+         a person watching the chat. */
+      if (evt.type === 'approval_required') {
+        notifyDesktop({
+          title: 'The agent is waiting for your approval',
+          body: evt.operation || (evt.name ? `Approve or reject: ${evt.name}` : 'Open the agent to approve or reject.'),
+          tag: `nha-approval-${evt.approvalId ?? ''}`,
+          path: '/agent',
+        });
+      } else if (evt.type === 'done') {
+        notifyDesktop({ title: 'The agent finished', body: 'Its reply is ready.', tag: 'nha-agent', path: '/agent' });
+      } else if (evt.type === 'error') {
+        notifyDesktop({ title: 'The agent stopped with an error', body: evt.message || '', tag: 'nha-agent', path: '/agent' });
+      }
     }, method, opts),
     [observe],
   );

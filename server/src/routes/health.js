@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { log } from '../logging.js';
 import { startBuildRun, finishBuildRun, auditedEmit, csvCell } from '../memory/audit.js';
 import { boundInstance } from '../servicenow/instance-binding.js';
 import { runHealthCheck, MAX_FINDINGS } from '../health/index.js';
@@ -14,7 +15,7 @@ import {
 } from '../health/proposal-store.js';
 import {
   openRun, completeRun, failRun, cancelRun, runInFlight, trend, scopesForRun,
-  listRuns, getRun, latestRun, listFindings, getFinding, deleteRun,
+  listRuns, getRun, latestRun, listFindings, getFinding, deleteRun, abandonOrphanedRuns,
 } from '../health/store.js';
 import {
   setFindingState, clearFindingState, stateMap, STATE_VOCABULARY,
@@ -71,79 +72,97 @@ healthRouter.get('/meta', (req, res) => {
   });
 });
 
-/**
- * POST /api/health/runs — run a check, streaming progress.
- *
- * SSE over POST because the request carries a body, like every other streaming
- * route here. Exactly one terminal frame (`done` or `error`) per §4.6 — the
- * client's reader throws on a stream that simply stops, so a server that dies
- * mid-run is distinguishable from one that finished.
- */
-healthRouter.post('/runs', async (req, res) => {
-  const bound = boundInstance();
-  if (!bound.configured) {
-    return res.status(409).json({
-      message: 'No ServiceNow instance is bound. Connect one on the Dashboard before running a health check.',
-    });
-  }
+/* ══════════════════════════════════════════════════════════════════════════
+   RUNNING A CHECK — owned by the server, watched by the page
 
-  /*
-   * ONE RUN AT A TIME, PER INSTANCE.
-   *
-   * Two concurrent checks extract the same tables twice and leave whichever
-   * finished last as "latest", so the page would show one run's coverage beside
-   * the other's findings. There is no way to merge two snapshots taken at
-   * different cutoffs, so the second is refused rather than reconciled.
-   */
-  const inFlight = runInFlight();
-  if (inFlight) {
-    return res.status(409).json({
-      message: 'A health check is already running against this instance. Wait for it to finish, or stop it first.',
-      runId: inFlight.id,
-      startedAt: inFlight.startedAt,
-    });
-  }
+   ═══ THE ONE IN-MEMORY RUN TABLE, AND WHY HEALTH CHECKS EARN IT ═══
 
-  const { tables, staleDays, explain = true, limit } = req.body || {};
+   Every other streaming route here ties the work to the request: the client
+   aborts its fetch, the server sees `close`, the controller aborts. That is
+   right for them, because they WRITE — a turn, a plan, a flow install, a
+   remediation — and work that changes the instance should stop when the person
+   authorising it walks away.
 
+   A health check does not write. Tying it to the request produced two measured
+   failures instead of any safety:
+
+     1. Navigating to another page, or refreshing, lost the run. The page came
+        back showing "Check again", the check was still going on the server,
+        and pressing the button answered "a health check is already running".
+     2. Closing the server mid-run left the row at `running`. The only thing
+        that cleared it was a thirty-minute timeout, so restarting the project —
+        and restarting the PC — still answered "already running" about a check
+        nothing was executing.
+
+   So the run belongs to the server process, and the page is a WATCHER:
+
+     POST   /runs             start one, and watch it on this response
+     GET    /runs/active      is one running against this instance, and where is it
+     GET    /runs/:id/stream  watch it again after leaving or refreshing
+     POST   /runs/:id/cancel  stop it — an explicit request, not a disconnect
+
+   `liveHealthRuns` is what "running" means. A row at `running` that this
+   process is not executing is closed out as interrupted the next time anyone
+   asks, so a restart can never lock the feature again.
+
+   The exception is deliberately narrow: this table holds read-only checks and
+   nothing else. Applying a remediation still cancels when its page goes away
+   (see `/proposals/:id/approve` below), and the architecture suite pins that.
+   ══════════════════════════════════════════════════════════════════════════ */
+const liveHealthRuns = new Map();   // runId -> { runId, instanceKey, startedAt, controller, watchers, last }
+
+/** Close out rows this process is not executing. Cheap; runs on every question. */
+function reconcileRuns() {
+  const closed = abandonOrphanedRuns([...liveHealthRuns.keys()]);
+  if (closed) log.warn('health', `closed ${closed} health run(s) left at "running" by a server that stopped mid-check`);
+}
+
+const TERMINAL = new Set(['done', 'error', 'cancelled']);
+
+/** Open an SSE response and keep it alive. Returns a writer that never throws. */
+function openStream(res) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
-  const write = (event) => { try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client gone */ } };
-  const auditRun = startBuildRun({
-    kind: 'health_check',
-    label: bound.url,
-    request: { tables: tables ?? null, staleDays: staleDays ?? null, explain },
-  });
-  const emit = auditedEmit(auditRun, write);
   const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* noop */ } }, 15000);
+  res.on('close', () => clearInterval(keepAlive));
+  return (event) => { try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* watcher gone */ } };
+}
 
-  /*
-   * Phase 0's cancellation, unchanged: one controller per request, aborted when
-   * the client goes away, observed between tables. A health check only reads,
-   * so stopping one leaves nothing half-done on the instance.
-   */
-  const controller = new AbortController();
-  let settled = false;
-  const onGone = () => { if (!settled && !res.writableEnded) controller.abort(); };
-  res.on('close', onGone);
+/**
+ * Add a watcher to a live run. Leaving removes the watcher — and ONLY the
+ * watcher. The run carries on.
+ */
+function watch(entry, res, { replay = false } = {}) {
+  const write = openStream(res);
+  const watcher = (event) => {
+    write(event);
+    if (TERMINAL.has(event.type)) { try { res.end(); } catch { /* already gone */ } }
+  };
+  entry.watchers.add(watcher);
+  res.on('close', () => entry.watchers.delete(watcher));
+  if (replay) {
+    write({ type: 'run_started', runId: entry.runId, startedAt: entry.startedAt, reattached: true });
+    if (entry.last) write(entry.last);
+  }
+}
 
-  const runId = openRun();
-  emit({ type: 'run_started', runId });
+/** Everything a run says goes to the audit trail once and to every watcher. */
+function publish(entry, event) {
+  if (event.type === 'progress') entry.last = event;
+  for (const watcher of [...entry.watchers]) {
+    try { watcher(event); } catch { /* one broken watcher must not stop the others */ }
+  }
+}
 
+/** Execute a check to its one terminal frame. Never throws; always forgets the run. */
+async function executeRun(entry, { emit, auditRun, options }) {
+  const { runId, controller } = entry;
   try {
-    const result = await runHealthCheck({
-      tables,
-      explain,
-      limit: Number(limit) || undefined,
-      staleDays: Number(staleDays) || undefined,
-      signal: controller.signal,
-      onProgress: async (p) => emit({ type: 'progress', ...p }),
-    });
-
+    const result = await runHealthCheck({ ...options, signal: controller.signal, onProgress: async (p) => emit({ type: 'progress', ...p }) });
     completeRun(runId, result);
     emit({ type: 'done', runId, status: result.status, manifest: result.manifest });
     finishBuildRun(auditRun, {
@@ -171,16 +190,139 @@ healthRouter.post('/runs', async (req, res) => {
        * itself a fact about the instance — usually an ACL — and deleting the row
        * would leave the page looking like nobody ever tried.
        */
-      failRun(runId, err);
+      log.error('health', `health run ${runId.slice(0, 8)} failed — ${err.message}`);
+      try { failRun(runId, err); } catch { /* the row stays running; reconcile closes it */ }
       emit({ type: 'error', runId, message: err.message });
       finishBuildRun(auditRun, { status: 'error', summary: { runId, message: err.message } });
     }
   } finally {
-    clearInterval(keepAlive);
-    settled = true;
-    res.off('close', onGone);
-    res.end();
+    liveHealthRuns.delete(runId);
+    entry.watchers.clear();
   }
+}
+
+/**
+ * POST /api/health/runs — start a check, and watch it on this response.
+ *
+ * SSE over POST because the request carries a body, like every other streaming
+ * route here. Exactly one terminal frame (`done`, `error` or `cancelled`) per
+ * §4.6. Closing this response stops WATCHING; it does not stop the check — use
+ * `POST /runs/:id/cancel` for that.
+ */
+healthRouter.post('/runs', (req, res) => {
+  const bound = boundInstance();
+  if (!bound.configured) {
+    return res.status(409).json({
+      message: 'No ServiceNow instance is bound. Connect one on the Dashboard before running a health check.',
+    });
+  }
+
+  /*
+   * ONE RUN AT A TIME, PER INSTANCE.
+   *
+   * Two concurrent checks extract the same tables twice and leave whichever
+   * finished last as "latest", so the page would show one run's coverage beside
+   * the other's findings. There is no way to merge two snapshots taken at
+   * different cutoffs, so the second is refused rather than reconciled — and
+   * the refusal carries the run's id, so the page can watch it instead.
+   */
+  reconcileRuns();
+  const inFlight = runInFlight({ live: liveHealthRuns });
+  if (inFlight) {
+    return res.status(409).json({
+      message: 'A health check is already running against this instance. Wait for it to finish, or stop it first.',
+      runId: inFlight.id,
+      startedAt: inFlight.startedAt,
+    });
+  }
+
+  const { tables, staleDays, explain = true, limit } = req.body || {};
+  const auditRun = startBuildRun({
+    kind: 'health_check',
+    label: bound.url,
+    request: { tables: tables ?? null, staleDays: staleDays ?? null, explain },
+  });
+
+  const runId = openRun();
+  const entry = {
+    runId,
+    instanceKey: bound.key,
+    startedAt: new Date().toISOString(),
+    controller: new AbortController(),
+    watchers: new Set(),
+    last: null,
+  };
+  liveHealthRuns.set(runId, entry);
+  const emit = auditedEmit(auditRun, (event) => publish(entry, event));
+
+  watch(entry, res);
+  emit({ type: 'run_started', runId, startedAt: entry.startedAt });
+
+  /* Not awaited: the server owns the run from here. */
+  executeRun(entry, {
+    emit,
+    auditRun,
+    options: {
+      tables,
+      explain,
+      limit: Number(limit) || undefined,
+      staleDays: Number(staleDays) || undefined,
+    },
+  });
+  return undefined;
+});
+
+/** GET /api/health/runs/active — the check running against this instance, if any. */
+healthRouter.get('/runs/active', (req, res, next) => {
+  try {
+    reconcileRuns();
+    const row = runInFlight({ live: liveHealthRuns });
+    if (!row) return res.json({ run: null });
+    const entry = liveHealthRuns.get(row.id);
+    res.json({ run: { id: row.id, startedAt: row.startedAt, progress: entry?.last ?? null } });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/health/runs/:runId/stream — watch a check again.
+ *
+ * A live run replays where it is, then streams to its terminal frame. A run
+ * that already ended answers with that ending as its one terminal frame, so a
+ * page that comes back after the check finished learns how it finished.
+ */
+healthRouter.get('/runs/:runId/stream', (req, res, next) => {
+  try {
+    const bound = boundInstance();
+    const entry = liveHealthRuns.get(req.params.runId);
+    if (entry && entry.instanceKey === bound.key) {
+      watch(entry, res, { replay: true });
+      return undefined;
+    }
+    reconcileRuns();
+    const run = getRun(req.params.runId);
+    if (!run) return res.status(404).json({ message: 'No such run on the bound instance.' });
+    const write = openStream(res);
+    if (run.status === 'completed' || run.status === 'partial') {
+      write({ type: 'done', runId: run.id, status: run.status });
+    } else if (run.status === 'cancelled') {
+      write({ type: 'cancelled', runId: run.id, note: run.error });
+    } else {
+      write({ type: 'error', runId: run.id, message: run.error || 'The health check did not finish.' });
+    }
+    res.end();
+    return undefined;
+  } catch (err) { return next(err); }
+});
+
+/** POST /api/health/runs/:runId/cancel — stop a check. Nothing to unwind: it only reads. */
+healthRouter.post('/runs/:runId/cancel', (req, res) => {
+  const bound = boundInstance();
+  const entry = liveHealthRuns.get(req.params.runId);
+  if (!entry || entry.instanceKey !== bound.key) {
+    return res.status(409).json({ ok: false, message: 'That health check is not running any more.' });
+  }
+  entry.controller.abort();
+  return res.json({ ok: true, runId: entry.runId });
 });
 
 /** GET /api/health/runs — this instance's runs, newest first. */

@@ -396,11 +396,19 @@ end date re-opens itself when it expires.
 
 - **One run at a time.** Two concurrent checks leave whichever finished last as
   "latest", so the page would show one run's coverage beside the other's
-  findings. A run abandoned by a server crash expires after 30 minutes, so one
-  crash cannot disable the feature permanently.
+  findings. A check interrupted by the server stopping is closed as
+  *interrupted* the moment you come back — it never blocks the next one.
+- **Keeps running when you leave.** Go to another page, another window, or
+  reload the tab: the check carries on in the server, and Health Assist picks it
+  back up with its progress when you return.
 - **Stop.** Cancellation is observed between tables, never mid-table, so the
   partial estate stays an honest description of what finished. Nothing is left
   half-done, because a health check only reads.
+- **Desktop notifications** (Preferences → Notifications, off by default). When
+  you are in another window, get a system notification when a health check
+  finishes, the agent replies or needs an approval, a flow build finishes, or a
+  fix needs you to confirm a write. Uses the browser's own notifications; nothing
+  leaves your machine.
 - **Score over time**, with runs whose score was withheld drawn as a **gap**
   rather than dropped or zeroed — a line joined across incomplete coverage would
   assert a continuity the data does not have.

@@ -3,6 +3,9 @@ import { AGENT_PREFS_SLOT_ID } from '../components/agentRail.js';
 import { api } from '../api.js';
 import { toast } from '../components/toast.js';
 import { DisconnectedBanner } from '../components/states.jsx';
+import {
+  desktopNotificationsEnabled, notificationSupport, notifyDesktop, setDesktopNotifications, subscribeNotificationPref,
+} from '../components/notify.js';
 
 const HINTS = {
   anthropic: { model: 'claude-sonnet-4-6', baseUrl: 'api.anthropic.com (fixed)', key: true },
@@ -22,6 +25,74 @@ const HINTS = {
   // make a token-protected gateway unusable.
   opencode: { model: 'required — whatever your gateway serves', baseUrl: 'required — e.g. http://localhost:4096/v1', key: true },
 };
+
+const PERMISSION_LABEL = {
+  granted: 'allowed by this browser',
+  denied: 'blocked by this browser',
+  default: 'not asked yet',
+  unsupported: 'not supported by this browser',
+};
+
+/**
+ * Desktop notifications — the switch, what it covers, and a way to prove it
+ * works. Per browser, because the permission it depends on is per browser.
+ */
+function NotificationsCard() {
+  const [enabled, setEnabled] = useState(desktopNotificationsEnabled);
+  const [permission, setPermission] = useState(notificationSupport);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+
+  useEffect(() => subscribeNotificationPref((on) => {
+    setEnabled(on);
+    setPermission(notificationSupport());
+  }), []);
+
+  const toggle = async (on) => {
+    setBusy(true); setNote('');
+    const r = await setDesktopNotifications(on);
+    setEnabled(r.enabled);
+    setPermission(notificationSupport());
+    if (!r.ok) setNote(r.reason);
+    else if (r.enabled) toast.success('Desktop notifications are on.');
+    setBusy(false);
+  };
+
+  const test = () => {
+    const shown = notifyDesktop({
+      title: 'NowHelpAssist notifications work',
+      body: 'You will see this when long-running work finishes while you are in another window.',
+      tag: 'nha-test',
+      force: true,
+    });
+    if (!shown) setNote('No notification was shown. Check that this switch is on and the browser allows notifications for this site.');
+    else setNote('');
+  };
+
+  return (
+    <div className="card">
+      <div className="card-title">Notifications</div>
+      <label className="check" style={{ marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={busy || permission === 'unsupported'}
+          onChange={(e) => toggle(e.target.checked)}
+        />
+        Notify me on this computer when work finishes or needs me
+      </label>
+      <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--muted)' }}>
+        Only while you are in another window or tab — if you are looking at the app, it tells you in place instead.
+        Covers health checks finishing, agent replies, approvals waiting for you, flow builds and remediations.
+        Browser permission: <b>{PERMISSION_LABEL[permission] || permission}</b>.
+      </p>
+      <button type="button" className="btn" onClick={test} disabled={!enabled}>
+        Send a test notification
+      </button>
+      {note && <p className="error-text">{note}</p>}
+    </div>
+  );
+}
 
 export default function Settings() {
   const [llm, setLlm] = useState({ provider: 'anthropic', apiKey: '', baseUrl: '', model: '', embedModel: '' });
@@ -162,6 +233,8 @@ export default function Settings() {
         </p>
         <div id={AGENT_PREFS_SLOT_ID} className="prefs-slot" />
       </div>
+
+      <NotificationsCard />
 
       <div className="card">
         <div className="card-title">Notes</div>

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { logToServer } from './logging.js';
 import Dashboard from './pages/Dashboard.jsx';
 import AgentChat from './pages/AgentChat.jsx';
@@ -22,6 +22,7 @@ import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { RequiresInstance } from './components/states.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import PlaygroundBackground from './components/PlaygroundBackground.jsx';
+import { discoverHealthRun } from './components/healthRun.js';
 
 const TITLES = {
   '/': 'Dashboard',
@@ -76,6 +77,19 @@ function Shell() {
    * session, and Tables subscribes to useBinding for the scope it reads.
    */
   const immersive = pathname === '/agent';
+  const navigate = useNavigate();
+
+  /* A desktop notification's click lands here: go to the page it was about,
+     inside the app, without reloading and losing whatever else is running. */
+  useEffect(() => {
+    const go = (e) => { if (typeof e.detail === 'string') navigate(e.detail); };
+    window.addEventListener('nha:navigate', go);
+    return () => window.removeEventListener('nha:navigate', go);
+  }, [navigate]);
+
+  /* A health check outlives the page that started it. After a reload, pick it
+     back up from wherever the app opened, so its outcome is still announced. */
+  useEffect(() => { discoverHealthRun(); }, []);
 
   // D-4 — the tab says which page you left open. With eight routes behind one
   // title, a pinned NowHelpAssist tab was unidentifiable among its own siblings.
