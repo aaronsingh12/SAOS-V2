@@ -219,12 +219,6 @@ export default function Tables() {
           <button className="btn sm" onClick={loadList} disabled={loadingList} style={{ marginLeft: 'auto' }}>
             {loadingList ? 'Reading…' : 'Refresh'}
           </button>
-          {/* Disabled until the constraints are read: a create form without the
-              instance's own rules could only guess at them. */}
-          <button className="btn primary sm" onClick={() => setCreating((c) => !c)} disabled={!constraints}
-            title={constraints ? '' : 'Waiting for the instance constraints'}>
-            {creating ? 'Close' : 'Create table'}
-          </button>
         </div>
 
         {list && (
@@ -238,21 +232,6 @@ export default function Tables() {
           </p>
         )}
       </div>
-
-      {creating && constraints && (
-        <CreateTableForm
-          constraints={constraints}
-          onCancel={() => setCreating(false)}
-          onDone={(name) => {
-            // The new table is real and verified by now — refresh the list and
-            // open it, so the next thing seen is the instance's own answer.
-            setCreating(false);
-            loadList();
-            setSelected(name);
-            setTab('fields');
-          }}
-        />
-      )}
 
       {/* The schema list, full width. Nothing is reserved beside it — a table
           opens in a drawer — and the list's own 70vh scroller is gone with the
@@ -269,7 +248,41 @@ export default function Tables() {
           filterPlaceholder="Filter loaded tables…"
           empty="No tables match these filters. The instance was read successfully; nothing matched what you asked for."
           columns={TABLE_COLUMNS}
+          action={(
+            /* Same control, same guard — it is disabled until the instance's
+               constraints have been read, because a create form without the
+               instance's own rules could only guess at them. */
+            <button className="btn primary sm" onClick={() => setCreating(true)} disabled={!constraints}
+              title={constraints ? '' : 'Waiting for the instance constraints'}>
+              New table
+            </button>
+          )}
         />
+
+        {/* Create, in the drawer every other page opens for a new record.
+            CreateTableForm is untouched: same constraints, same validation,
+            same onDone — only where it is drawn has changed. */}
+        <RecordDrawer
+          open={creating && Boolean(constraints)}
+          onClose={() => setCreating(false)}
+          title="New table"
+          width={720}
+        >
+          {creating && constraints && (
+            <CreateTableForm
+              constraints={constraints}
+              onCancel={() => setCreating(false)}
+              onDone={(name) => {
+                // The new table is real and verified by now — refresh the list
+                // and open it, so the next thing seen is the instance's answer.
+                setCreating(false);
+                loadList();
+                setSelected(name);
+                setTab('fields');
+              }}
+            />
+          )}
+        </RecordDrawer>
 
         {/* Fields, references, hierarchy, indexes and the schema map — the same
             tabbed workspace as before, now dismissible. */}

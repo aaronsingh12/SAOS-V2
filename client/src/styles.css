@@ -384,58 +384,87 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .rail-list { flex: 1; overflow-y: auto; padding: 4px 8px 10px; min-height: 0; }
 .rail-empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 20px 8px; }
 
+/* ── A chat row ───────────────────────────────────────────────────────────
+   One compact line: the title fills it, and the two actions sit at the right
+   on top of the title's own end rather than below it. The date, the message
+   count and the snippet the row used to print are on the row's title
+   attribute — a sidebar list reads as a list of names, and three lines per
+   chat is how eight conversations filled the column.
+
+   `position: relative` is load-bearing, and its absence was a real bug. The
+   clipped .rail-actions are position:absolute; with no positioned ancestor
+   their containing block became the initial one, so they escaped .rail-list's
+   overflow and extended documentElement.scrollHeight to 999px against a 904px
+   viewport. That made the whole DOCUMENT scrollable, which is what the chat's
+   auto-scroll then scrolled. */
 .rail-item {
-  /* `position: relative` is load-bearing, and its absence was a real bug.
-     The clipped .rail-actions below are position:absolute; with no positioned
-     ancestor their containing block became the initial one, so they escaped
-     .rail-list's overflow and extended documentElement.scrollHeight to 999px
-     against a 904px viewport. That made the whole DOCUMENT scrollable, which
-     is what the chat's auto-scroll then scrolled. */
   position: relative;
-  padding: 8px 9px; border-radius: var(--radius-sm); cursor: pointer;
-  border: 1px solid transparent; margin-bottom: 3px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 8px; border-radius: var(--radius-sm); cursor: pointer;
+  border: 1px solid transparent; margin-bottom: 1px;
   transition: background 120ms, border-color 120ms;
 }
 .rail-item:hover { background: var(--panel-2); }
 .rail-item.active { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--verdigris); }
 .rail-title {
+  flex: 1 1 auto; min-width: 0;
   font-size: 13px; font-weight: 500; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rail-item:not(.active) .rail-title { color: var(--muted); }
-.rail-meta {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-top: 3px; font-size: 10.5px; color: var(--muted);
-}
-.rail-meta .badge { padding: 0 6px; font-size: 10px; }
-.rail-snippet {
-  margin-top: 4px; font-size: 11.5px; color: var(--muted);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-/* Rename and delete are revealed on hover, which meant they were unreachable
-   by keyboard on every row but the active one — and D-2's dialog could not
-   restore focus to a button that had gone display:none while it was open.
-   `display: none` removes an element from the tab order entirely, so adding
-   :focus-within to the old rule was measured and found INERT: nothing can
-   focus into a subtree that is not there. Clipping keeps the buttons
-   focusable while looking exactly as they did. */
+.rail-item:hover .rail-title { color: var(--text); }
+
+/* The actions are CLIPPED rather than display:none so they stay in the tab
+   order on every row — a button that is not in the DOM cannot be focused, and
+   the confirm dialog could not restore focus to one that vanished while it was
+   open. Clipping keeps them focusable while looking hidden.
+
+   The reserved 44px means revealing them never reflows the title: the row is
+   the same shape hovered and at rest, so a list does not shuffle under the
+   pointer. */
 .rail-actions {
-  position: absolute; width: 1px; height: 1px;
+  position: absolute; right: 6px; top: 50%;
+  transform: translateY(-50%);
+  width: 1px; height: 1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }
+.rail-item:hover .rail-title,
+.rail-item.active .rail-title,
+.rail-item:focus-within .rail-title { padding-right: 44px; }
 .rail-item:hover .rail-actions,
 .rail-item.active .rail-actions,
 .rail-item:focus-within .rail-actions {
-  position: static; width: auto; height: auto; clip: auto; white-space: normal;
-  display: flex; gap: 8px; margin-top: 6px;
+  width: auto; height: auto; clip: auto; white-space: normal;
+  display: flex; align-items: center; gap: 2px;
 }
 .rail-btn {
-  background: none; border: none; padding: 0; cursor: pointer;
-  color: var(--muted); font-size: 11px; font-family: var(--font-body);
-  text-decoration: underline; text-underline-offset: 2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; flex: none;
+  background: none; border: 0; border-radius: 5px; padding: 0; cursor: pointer;
+  color: var(--muted);
+  transition: background 120ms, color 120ms;
 }
-.rail-btn:hover { color: var(--text); }
-.rail-btn.danger:hover { color: var(--red); }
+.rail-btn:hover { background: var(--line); color: var(--text); }
+.rail-btn.danger:hover { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+
+/* ── New chat, above the list ─────────────────────────────────────────────
+   A nav row in shape, so it lines up with the destinations under it, and the
+   app's accent as a fill, so it reads as the one thing on the column that
+   creates something. */
+.nav-newchat { margin-bottom: 6px; }
+.nav-newchat-btn {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: var(--verdigris-dim); color: var(--text);
+  font-family: var(--font-body); font-size: 13.5px; font-weight: 500;
+  text-align: left; cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.nav-newchat-btn:hover { background: color-mix(in srgb, var(--verdigris) 30%, var(--panel-2)); }
+.nav-newchat-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.nav-newchat-btn svg { flex: none; }
 
 /* The degraded-recall banner. Quiet by construction — it states the mode and
    the one command that fixes it, and never pretends keyword search is more

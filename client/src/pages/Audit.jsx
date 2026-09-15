@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { toast } from '../components/toast.js';
-import { SkeletonRows, LoadingRegion, EmptyState } from '../components/states.jsx';
+import { SkeletonRows, LoadingRegion } from '../components/states.jsx';
+import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
 
 /**
  * D-5 — the audit page.
@@ -151,73 +153,82 @@ function BuildEvents({ runId }) {
   );
 }
 
-function Row({ row, expanded, onToggle }) {
-  const when = new Date(row.ts);
-  return (
-    <>
-      <tr className="click" onClick={onToggle}>
-        <td className="mono" style={{ whiteSpace: 'nowrap' }}>
+/* The columns. `text` is what sorting and filtering read; `cell` only draws,
+   so a badge stays a badge while sorting compares the word behind it. */
+const AUDIT_COLUMNS = [
+  { key: 'when', header: 'When', width: 140, text: (r) => String(r.ts),
+    cell: (r) => {
+      const when = new Date(r.ts);
+      return (
+        <span className="mono" style={{ whiteSpace: 'nowrap' }}>
           {when.toLocaleDateString()}<br />
           <span style={{ color: 'var(--muted)' }}>{when.toLocaleTimeString()}</span>
-        </td>
-        <td>
-          <span className={`badge ${row.source === 'build' ? 'blue' : ''}`}>{row.source}</span>
-        </td>
-        <td>
-          <span className="mono">{row.name}</span>
-          {row.source === 'build' && KIND_LABEL[row.kind] && (
-            <div className="audit-sub">{KIND_LABEL[row.kind]}</div>
-          )}
-          {row.kind === 'capture' && <div className="audit-sub">{captureSummary(row)}</div>}
-          {row.sessionTitle && <div className="audit-sub">{row.sessionTitle}</div>}
-        </td>
-        <td>
-          {row.kind === 'capture'
-            ? <CaptureBadge row={row} />
-            : row.mutating
-              ? <span className="badge amber">mutation</span>
-              : <span className="badge">read</span>}
-        </td>
-        <td><ApprovalBadge row={row} /></td>
-        <td><StatusBadge status={row.status} /></td>
-        <td className="mono audit-ids">
-          {row.sysIds.length === 0 ? <span style={{ color: 'var(--muted)' }}>—</span> : row.sysIds.join(' ')}
-        </td>
-      </tr>
-      {expanded && (
-        <tr>
-          <td colSpan={7} className="audit-detail">
-            <dl className="kv" style={{ marginBottom: 10 }}>
-              <div style={{ display: 'contents' }}><dt>instance</dt>
-                <dd className="mono">{row.instance || <span className="audit-missing">not recorded</span>}</dd></div>
-              <div style={{ display: 'contents' }}><dt>account</dt>
-                <dd className="mono">{row.actor || <span className="audit-missing">not recorded</span>}</dd></div>
-              <div style={{ display: 'contents' }}><dt>session</dt>
-                <dd className="mono">{row.session || 'none — driven from a module page'}</dd></div>
-              {row.source === 'build' && (
-                <div style={{ display: 'contents' }}><dt>run</dt><dd className="mono">{row.id}</dd></div>
-              )}
-            </dl>
-            {row.dropped > 0 && (
-              <div className="note warn" style={{ marginBottom: 10 }}>
-                {row.dropped} event{row.dropped === 1 ? '' : 's'} could not be written to the audit database during this
-                run. What is below is incomplete — the server log has the reason.
-              </div>
-            )}
-            <Block label="request" value={row.payload} />
-            <Block
-              label="result"
-              value={row.result}
-              missingNote={
-                row.source === 'agent'
-                  ? 'Not recorded. Results were only stored from D-5 onwards, so this event predates the column — it does not mean the tool returned nothing.'
-                  : 'Not recorded.'
-              }
-            />
-            {row.source === 'build' && <BuildEvents runId={row.id} />}
-          </td>
-        </tr>
+        </span>
+      );
+    } },
+  { key: 'source', header: 'Source', width: 110, text: (r) => r.source,
+    cell: (r) => <span className={`badge ${r.source === 'build' ? 'blue' : ''}`}>{r.source}</span> },
+  { key: 'what', header: 'What', width: 320, text: (r) => r.name,
+    cell: (r) => (
+      <>
+        <span className="mono">{r.name}</span>
+        {r.source === 'build' && KIND_LABEL[r.kind] && <div className="audit-sub">{KIND_LABEL[r.kind]}</div>}
+        {r.kind === 'capture' && <div className="audit-sub">{captureSummary(r)}</div>}
+        {r.sessionTitle && <div className="audit-sub">{r.sessionTitle}</div>}
+      </>
+    ) },
+  { key: 'kind', header: 'Kind', width: 130,
+    text: (r) => (r.kind === 'capture' ? 'capture' : r.mutating ? 'mutation' : 'read'),
+    cell: (r) => (r.kind === 'capture'
+      ? <CaptureBadge row={r} />
+      : r.mutating
+        ? <span className="badge amber">mutation</span>
+        : <span className="badge">read</span>) },
+  { key: 'approval', header: 'Approval', width: 150, text: (r) => r.approval || '',
+    cell: (r) => <ApprovalBadge row={r} /> },
+  { key: 'status', header: 'Result', width: 120, text: (r) => r.status || '',
+    cell: (r) => <StatusBadge status={r.status} /> },
+  { key: 'sysIds', header: 'sys_ids touched', width: 260, sortable: false,
+    text: (r) => r.sysIds.join(' '),
+    cell: (r) => (r.sysIds.length === 0
+      ? <span style={{ color: 'var(--muted)' }}>—</span>
+      : <span className="mono audit-ids">{r.sysIds.join(' ')}</span>) },
+];
+
+/* The detail a row used to expand into, unchanged — same fields, same Blocks,
+   same BuildEvents. It is drawn in the drawer now rather than in a second
+   <tr>, which is the pattern every other list on this app uses. */
+function RowDetail({ row }) {
+  return (
+    <>
+      <dl className="kv" style={{ marginBottom: 10 }}>
+        <div style={{ display: 'contents' }}><dt>instance</dt>
+          <dd className="mono">{row.instance || <span className="audit-missing">not recorded</span>}</dd></div>
+        <div style={{ display: 'contents' }}><dt>account</dt>
+          <dd className="mono">{row.actor || <span className="audit-missing">not recorded</span>}</dd></div>
+        <div style={{ display: 'contents' }}><dt>session</dt>
+          <dd className="mono">{row.session || 'none — driven from a module page'}</dd></div>
+        {row.source === 'build' && (
+          <div style={{ display: 'contents' }}><dt>run</dt><dd className="mono">{row.id}</dd></div>
+        )}
+      </dl>
+      {row.dropped > 0 && (
+        <div className="note warn" style={{ marginBottom: 10 }}>
+          {row.dropped} event{row.dropped === 1 ? '' : 's'} could not be written to the audit database during this
+          run. What is below is incomplete — the server log has the reason.
+        </div>
       )}
+      <Block label="request" value={row.payload} />
+      <Block
+        label="result"
+        value={row.result}
+        missingNote={
+          row.source === 'agent'
+            ? 'Not recorded. Results were only stored from D-5 onwards, so this event predates the column — it does not mean the tool returned nothing.'
+            : 'Not recorded.'
+        }
+      />
+      {row.source === 'build' && <BuildEvents runId={row.id} />}
     </>
   );
 }
@@ -228,7 +239,9 @@ export default function Audit() {
   const [error, setError] = useState('');
   const [session, setSession] = useState('');
   const [mutatingOnly, setMutatingOnly] = useState(false);
-  const [open, setOpen] = useState({});
+  /* One selected event rather than a map of expanded ones: the detail is a
+     drawer now, and a drawer shows one record. */
+  const [detail, setDetail] = useState(null);
 
   const query = useCallback(() => {
     const p = new URLSearchParams();
@@ -300,39 +313,35 @@ export default function Audit() {
         {error && <p className="error-text">{error}</p>}
       </div>
 
-      <div className="card">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>When</th><th>Source</th><th>What</th><th>Kind</th>
-              <th>Approval</th><th>Result</th><th>sys_ids touched</th>
-            </tr>
-          </thead>
-          {loading && <SkeletonRows rows={8} cols={7} />}
-          {!loading && (
-            <tbody>
-              {rows.map((r) => (
-                <Row
-                  key={`${r.source}:${r.id}`}
-                  row={r}
-                  expanded={Boolean(open[`${r.source}:${r.id}`])}
-                  onToggle={() => setOpen((o) => ({ ...o, [`${r.source}:${r.id}`]: !o[`${r.source}:${r.id}`] }))}
-                />
-              ))}
-            </tbody>
-          )}
-        </table>
+      {/* The audit trail, on the shared glass table — same container, header,
+          rows, hover, pagination and contained horizontal scroll as every other
+          list in the app. The rows, the filters and every value drawn are the
+          ones this page always had; what a row used to expand into is in the
+          drawer below. */}
+      <div className="page-full">
+        <DataTable
+          title="Audit trail"
+          rows={rows}
+          loading={loading}
+          getRowId={(r) => `${r.source}:${r.id}`}
+          activeId={detail ? `${detail.source}:${detail.id}` : null}
+          onRowClick={setDetail}
+          filterPlaceholder="Filter loaded events…"
+          empty={session || mutatingOnly
+            ? 'Nothing matches this filter. Clear the session filter or the mutations-only toggle to see the whole trail.'
+            : 'Nothing has been done to an instance yet. Every tool the agent runs and every build driven from a module page is recorded here, with its request, its result and the sys_ids it touched.'}
+          columns={AUDIT_COLUMNS}
+        />
         {loading && <LoadingRegion label="Loading the audit trail" />}
-        {!loading && rows.length === 0 && (
-          <EmptyState
-            title={session || mutatingOnly ? 'Nothing matches this filter.' : 'Nothing has been done to an instance yet.'}
-            hint={session || mutatingOnly
-              ? 'Clear the session filter or the mutations-only toggle to see the whole trail.'
-              : 'Every tool the agent runs and every build driven from a module page is recorded here, with its request, its result and the sys_ids it touched.'}
-            actionLabel={session || mutatingOnly ? 'Clear filters' : null}
-            onAction={() => { setSession(''); setMutatingOnly(false); }}
-          />
-        )}
+
+        <RecordDrawer
+          open={Boolean(detail)}
+          onClose={() => setDetail(null)}
+          title={detail ? detail.name : 'Audit event'}
+          width={620}
+        >
+          {detail && <RowDetail row={detail} />}
+        </RecordDrawer>
       </div>
     </div>
   );

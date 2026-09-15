@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
-import { SkeletonLines, LoadingRegion, EmptyState } from '../components/states.jsx';
 import ScopeBadge from '../components/ScopeBadge.jsx';
+import DataTable from '../components/DataTable.jsx';
 
 /**
  * Applications — every scope on the instance, and which ones we manage.
@@ -26,6 +26,40 @@ const KINDS = [
   { key: 'custom', label: 'Custom' },
   { key: 'store', label: 'Store' },
   { key: 'scope', label: 'Global' },
+];
+
+/* The application list as columns. `text` is what sorting and filtering read;
+   `cell` only draws, so a scope badge stays a badge while sorting compares the
+   scope itself. */
+const APP_COLUMNS = [
+  { key: 'name', header: 'Application', width: 300, text: (a) => a.name,
+    cell: (a) => (
+      <>
+        {a.name}
+        {!a.active && <span className="badge amber" style={{ marginLeft: 8 }}>inactive</span>}
+        {a.shortDescription && (
+          <div className="mono" style={{ color: 'var(--muted)', fontSize: 11 }}>{a.shortDescription}</div>
+        )}
+      </>
+    ) },
+  { key: 'scope', header: 'Scope', width: 210, text: (a) => a.scope || '',
+    cell: (a) => <ScopeBadge scope={a.scope} name={a.name} managed={a.managed} /> },
+  { key: 'version', header: 'Version', width: 130, text: (a) => a.version || '—',
+    cell: (a) => <span className="mono">{a.version || '—'}</span> },
+  { key: 'vendor', header: 'Vendor', width: 170, text: (a) => a.vendor || '—' },
+  { key: 'managed', header: 'Managed', width: 230,
+    text: (a) => (a.managed ? 'NowHelpAssist' : '—'),
+    cell: (a) => (a.managed ? (
+      <>
+        <span className="badge green">NowHelpAssist</span>
+        {a.workspace && (
+          <div className="mono" style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>
+            {a.workspace.id} · {a.workspace.sourceCount} source{a.workspace.sourceCount === 1 ? '' : 's'}
+            {!a.workspace.installable && ' · deps missing'}
+          </div>
+        )}
+      </>
+    ) : <span style={{ color: 'var(--muted)' }}>—</span>) },
 ];
 
 export default function Applications() {
@@ -76,77 +110,42 @@ export default function Applications() {
         </div>
       )}
 
-      <div className="card">
-        <div className="spread" style={{ marginBottom: 12 }}>
-          <div className="tabs" style={{ marginBottom: 0, borderBottom: 'none' }}>
-            {KINDS.map((k) => (
-              <button
-                key={k.key || 'all'}
-                className={`tab${kind === k.key ? ' active' : ''}`}
-                onClick={() => setKind(k.key)}
-              >
-                {k.label}
-                {data && k.key && <span className="mono" style={{ marginLeft: 6, opacity: 0.6 }}>{data.counts[k.key] ?? 0}</span>}
-              </button>
-            ))}
-          </div>
-          <div className="row">
-            <label className="check">
-              <input type="checkbox" checked={managedOnly} onChange={(e) => setManagedOnly(e.target.checked)} />
-              managed only
-            </label>
-            <input
-              className="input" style={{ width: 220 }} placeholder="name or scope"
-              value={search} onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-        </div>
-
-        {loading ? <><SkeletonLines lines={6} /><LoadingRegion label="Loading applications" /></> : rows.length === 0 ? (
-          <EmptyState
-            title="No applications match"
-            hint={search ? `Nothing on this instance matches "${search}".` : 'Try another filter.'}
-          />
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Application</th>
-                <th>Scope</th>
-                <th>Version</th>
-                <th>Vendor</th>
-                <th>Managed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((a) => (
-                <tr key={a.sys_id}>
-                  <td>
-                    {a.name}
-                    {!a.active && <span className="badge amber" style={{ marginLeft: 8 }}>inactive</span>}
-                    {a.shortDescription && <div className="mono" style={{ color: 'var(--muted)', fontSize: 11 }}>{a.shortDescription}</div>}
-                  </td>
-                  <td><ScopeBadge scope={a.scope} name={a.name} managed={a.managed} /></td>
-                  <td className="mono">{a.version || '—'}</td>
-                  <td>{a.vendor || '—'}</td>
-                  <td>
-                    {a.managed ? (
-                      <>
-                        <span className="badge green">NowHelpAssist</span>
-                        {a.workspace && (
-                          <div className="mono" style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>
-                            {a.workspace.id} · {a.workspace.sourceCount} source{a.workspace.sourceCount === 1 ? '' : 's'}
-                            {!a.workspace.installable && ' · deps missing'}
-                          </div>
-                        )}
-                      </>
-                    ) : <span style={{ color: 'var(--muted)' }}>—</span>}
-                  </td>
-                </tr>
+      {/* The same list, on the shared glass table: same container, header, row
+          and hover treatment, same pagination and the same contained horizontal
+          scroll as Incidents, SLA and Catalog. The read, the local filtering and
+          every value drawn are untouched. */}
+      <div className="page-full">
+        <DataTable
+          title="Applications"
+          rows={rows}
+          loading={loading}
+          getRowId={(a) => a.sys_id}
+          filterPlaceholder="Filter loaded applications…"
+          empty={search ? `Nothing on this instance matches "${search}".` : 'No applications match. Try another filter.'}
+          columns={APP_COLUMNS}
+          toolbar={(
+            <>
+              {KINDS.map((k) => (
+                <button
+                  key={k.key || 'all'}
+                  className={`btn sm${kind === k.key ? ' primary' : ''}`}
+                  onClick={() => setKind(k.key)}
+                >
+                  {k.label}
+                  {data && k.key && <span className="mono" style={{ marginLeft: 6, opacity: 0.6 }}>{data.counts[k.key] ?? 0}</span>}
+                </button>
               ))}
-            </tbody>
-          </table>
-        )}
+              <label className="check">
+                <input type="checkbox" checked={managedOnly} onChange={(e) => setManagedOnly(e.target.checked)} />
+                managed only
+              </label>
+              <input
+                className="input dt-tool-input" placeholder="name or scope"
+                value={search} onChange={(e) => setSearch(e.target.value)}
+              />
+            </>
+          )}
+        />
       </div>
 
       {data?.visibility && (

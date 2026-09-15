@@ -190,6 +190,7 @@ export default function Sla() {
           filterPlaceholder="Filter loaded definitions…"
           empty="No SLA definitions match."
           columns={slaColumns(slaScopes)}
+          action={<button className="btn primary sm" onClick={openNew}>New SLA</button>}
           toolbar={(
             <>
               <input className="input dt-tool-input" placeholder="Search by name…"
@@ -200,7 +201,6 @@ export default function Sla() {
                 value={filters.collection}
                 onChange={(e) => setFilters({ ...filters, collection: e.target.value })}
                 onKeyDown={(e) => e.key === 'Enter' && load()} />
-              <button className="btn primary sm" onClick={openNew}>New SLA</button>
             </>
           )}
         />

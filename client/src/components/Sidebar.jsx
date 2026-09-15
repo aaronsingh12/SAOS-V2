@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   AGENT_CHATS_SLOT_ID, AGENT_SKILLS_SLOT_ID,
-  AGENT_ACTIONS_SLOT_ID, bumpNavLayout,
+  AGENT_ACTIONS_SLOT_ID, AGENT_NEWCHAT_SLOT_ID, bumpNavLayout,
 } from './agentRail.js';
 
 /*
@@ -323,6 +323,15 @@ export default function Sidebar() {
           </div>
 
           <div className="nav-scroll">
+            {/* ── NEW CHAT ─────────────────────────────────────────────── */}
+            {/* Above the Chats group, not inside it: starting a conversation is
+                the first thing offered, and it should not require opening a
+                list first. AgentChat portals its existing button in here.
+                Collapsed, the rail has no room for a labelled button and the
+                Agent row below already reaches the same page, so the slot is
+                simply not rendered. */}
+            {!collapsed && <div className="nav-slot nav-newchat" id={AGENT_NEWCHAT_SLOT_ID} />}
+
             {/* ── CHATS ────────────────────────────────────────────────── */}
             {/* One entry, no heading above it: "Chats" IS the heading. A section
                 label over a single item of the same name said it twice. */}
