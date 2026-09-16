@@ -239,10 +239,18 @@ test('B12 — the plan executor imports no recovery internals, and vice versa', 
  * ================================================================== */
 
 test('B13 — the client computes no status of its own', () => {
-  const panel = fs.readFileSync(path.join(CLIENT, 'components', 'EvidencePanel.jsx'), 'utf8');
+  const panel = fs.readFileSync(path.join(CLIENT, 'components', 'SourcesPanel.jsx'), 'utf8')
+    + fs.readFileSync(path.join(CLIENT, 'components', 'sourceModel.js'), 'utf8');
   assert.ok(!/function\s+(computeStatus|deriveStatus|decideStatus|isSuccess)\s*\(/.test(panel),
     'the client derives its own verdict, competing with the durable record');
-  assert.match(panel, /ev\.final\?\.status/, 'the client no longer renders the server status');
+  /*
+   * The "renders the server status" half went with the status header the
+   * Sources redesign removed. What replaces it is the stronger form of the same
+   * rule: every value the panel prints is passed through asText(), which
+   * returns only what the response contained and refuses anything it would have
+   * had to compose.
+   */
+  assert.match(panel, /asText\(/, 'the client prints values it did not take from the response');
   assert.ok(!/localStorage|sessionStorage|indexedDB/i.test(panel), 'the client caches evidence');
 });
 

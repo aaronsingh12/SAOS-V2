@@ -447,7 +447,7 @@ test('REGRESSION: with several explanations alive, the headline names none of th
 
 const readClient = (rel) => fs.readFileSync(new URL(`../../client/src/${rel}`, import.meta.url), 'utf8');
 
-test('§45 REGRESSION: EvidencePanel calls api.get, not api()', () => {
+test('§45 REGRESSION: the sources panel calls api.get, not api()', () => {
   /*
    * `api` is an object of verbs. Calling it directly threw TypeError on every
    * load, so the panel could never display evidence at all — and the catch
@@ -455,7 +455,9 @@ test('§45 REGRESSION: EvidencePanel calls api.get, not api()', () => {
    * indistinguishable from a task that has none. Found while wiring the Doctor
    * into the existing experience, since this panel is where a diagnosis is read.
    */
-  const src = readClient('components/EvidencePanel.jsx');
+  // Renamed with the Sources redesign; the defect it guards against is the
+  // same one, in the same fetch.
+  const src = readClient('components/SourcesPanel.jsx');
   assert.match(src, /api\.get\(/, 'the panel must call a verb on the api object');
   assert.ok(!/[^.\w]api\(/.test(src), 'api is not callable');
   const api = readClient('api.js');
