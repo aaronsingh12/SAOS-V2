@@ -406,7 +406,9 @@ test('S15 — the SSE frames the executor emits carry no raw inputs', () => {
 
 test('S16 — the client renders the server projection and adds no unredacted source', () => {
   const panel = fs.readFileSync(
-    new URL('../../client/src/components/EvidencePanel.jsx', import.meta.url), 'utf8',
+    new URL('../../client/src/components/SourcesPanel.jsx', import.meta.url), 'utf8',
+  ) + fs.readFileSync(
+    new URL('../../client/src/components/sourceModel.js', import.meta.url), 'utf8',
   );
   // It reads only the evidence object.
   assert.ok(!/\/settings|connection|password/i.test(panel), 'the panel reads configuration');

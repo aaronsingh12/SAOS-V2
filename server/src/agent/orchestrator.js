@@ -1711,7 +1711,9 @@ export async function runTurn(sessionId, userText, emit, { retry = false, signal
 
 ${skillNote}` : text);
 
-  const knowledge = await retrieveForTurn(profile.query);
+  // The profile's query is widened with the turn's capabilities; the user's
+  // own words decide what is relevant enough to cite. See retrieveForTurn.
+  const knowledge = await retrieveForTurn(profile.query, { askedAbout: userText });
   if (knowledge.retrieval) {
     emit({
       type: 'knowledge',
@@ -1724,6 +1726,41 @@ ${skillNote}` : text);
         title: h.title || h.topic, version: h.version, url: h.url, source: h.source,
       })),
     });
+
+    /*
+     * PHASE 8 — AND RECORDED, not only streamed.
+     *
+     * The frame above is SSE: it reaches the live transcript and dies with the
+     * stream. Reopen the chat and nothing remembers that documentation was
+     * retrieved, because evidence is built from durable rows and this turn
+     * wrote none — so the Sources panel could never show an automatic
+     * retrieval, only a tool the model happened to call itself.
+     *
+     * ONLY WHEN IT FOUND SOMETHING. A retrieval that returned nothing is not a
+     * source, and writing a row for it would put "ServiceNow docs" in front of
+     * a reader on the strength of an empty corpus. Zero hits stays unrecorded.
+     *
+     * The stored result is the store's own shape, so the evidence projection
+     * reads it with exactly the parser it uses for the model-invoked tool.
+     */
+    if (knowledge.retrieval.hits.length > 0) {
+      recordToolEvent(sessionId, {
+        taskId,
+        kind: 'tool_call',
+        name: 'knowledge_retrieval',
+        payload: { query: profile.query, automatic: true },
+        result: JSON.stringify({
+          query: profile.query,
+          indexed: knowledge.retrieval.indexed ?? null,
+          mode: knowledge.retrieval.mode ?? null,
+          degraded: Boolean(knowledge.retrieval.degraded),
+          hits: knowledge.retrieval.hits,
+        }),
+        resultStatus: 'ok',
+        mutating: false,
+        approval: null,
+      });
+    }
   }
   const knowledgeNote = knowledge.block;
 

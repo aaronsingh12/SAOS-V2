@@ -165,32 +165,54 @@ test('P8 — the chat route emits the task id so evidence can be asked for', () 
 });
 
 test('P9 — the client reads the AUTHORITATIVE endpoint and builds no second store', () => {
-  const panel = readClient('components/EvidencePanel.jsx');
+  const panel = readClient('components/SourcesPanel.jsx') + readClient('components/sourceModel.js');
   assert.match(panel, /\/agent\/plan\/\$\{encodeURIComponent\(taskId\)\}\/evidence/,
     'the panel does not read the existing evidence endpoint');
-  // It renders the server's status; it never computes one.
-  assert.match(panel, /ev\.final\?\.status/);
+  /*
+   * The `ev.final?.status` assertion went with the status header the Sources
+   * redesign removed — the panel reports what a turn READ, not what it did, so
+   * it shows no verdict at all. The three guarantees that still apply are here,
+   * and they are the ones that stop a second source of truth appearing: no
+   * derived status, and no cached copy of the evidence.
+   */
   assert.ok(!/function\s+(computeStatus|deriveStatus|decideStatus)/.test(panel),
     'the client computes its own final status, competing with the durable record');
   assert.ok(!/localStorage|sessionStorage|indexedDB/i.test(panel),
     'the client persists a second copy of the evidence');
 });
 
-test('P10 — the panel keeps EXECUTION, VERIFICATION, APPROVAL and RECOVERY apart', () => {
-  const panel = readClient('components/EvidencePanel.jsx');
-  for (const section of ['APPROVAL', 'EXECUTION &amp; VERIFICATION', 'RECOVERY', 'EVIDENCE QUALITY']) {
-    assert.ok(panel.includes(section), `the panel has no ${section} section`);
-  }
-  // The six recovery outcomes Phase 8 asked to be distinguishable.
-  for (const label of ['RECOVERED', 'UNRECOVERED', 'REPEATED_MUTATION', 'REPLAN_REQUIRED', 'BLOCKED', 'CANCELLED']) {
-    assert.ok(panel.includes(label), `the panel cannot show ${label}`);
-  }
-});
+/*
+ * P10 REMOVED — the four sections it named no longer exist.
+ *
+ * It asserted that the evidence panel drew APPROVAL, EXECUTION & VERIFICATION,
+ * RECOVERY and EVIDENCE QUALITY as separate sections, and could print the six
+ * recovery labels. The Sources redesign replaced that panel with one that
+ * answers a different question — what a turn READ — so there are no sections
+ * left to keep apart, and keeping this would assert that a deleted component
+ * still renders.
+ *
+ * THE SEPARATION ITSELF IS STILL GUARDED, on the side that can actually be
+ * wrong. The server keeps the four apart in the projection, and that is
+ * asserted by C1/C2/C4 in phase9-client-contract.test.js (every field present
+ * in every state), by C9 (an executed step and an unverified one are different
+ * values, never collapsed), and by C11 (the six recovery labels derived from
+ * real evidence objects). What is gone is only the assertion that a particular
+ * UI drew them — which is a presentation choice, not an evidence guarantee.
+ */
 
 test('P11 — the client is told which evidence is exact and which is correlated', () => {
-  const panel = readClient('components/EvidencePanel.jsx');
-  assert.match(panel, /c\.exact \? 'exact' : 'correlated'/,
-    'the UI presents window-matched changes as though they were proven');
+  /*
+   * The changes table that carried the exact/correlated badge is gone, but the
+   * distinction is not: a row matched by time window could belong to a
+   * concurrent plan, and presenting one as proven is the defect this guards.
+   * The Sources panel still reads `exact` and still says so in words when a
+   * source was only correlated.
+   */
+  const panel = readClient('components/SourcesPanel.jsx') + readClient('components/sourceModel.js');
+  assert.match(panel, /\.exact === false/,
+    'the UI no longer distinguishes a window-matched source from a proven one');
+  assert.match(panel, /matched by time window/,
+    'the UI presents window-matched evidence as though it were proven');
 });
 
 /* ================================================================== *

@@ -181,6 +181,57 @@ function diagnosisSection(taskRow) {
 
 const item = (value, source, extra = {}) => ({ value, source, ...extra });
 
+/* Tools whose result is a documentation search. Named explicitly: a substring
+   match would catch the next tool that merely has "search" in its name. */
+const DOC_SEARCH_TOOLS = new Set(['search_servicenow_docs', 'knowledge_retrieval']);
+
+/**
+ * PHASE 8 — the DOCUMENTS a turn actually retrieved.
+ *
+ * WHY THIS EXISTS. A tool event records that a search RAN; it says nothing
+ * about whether it found anything. The corpus can be empty — the search tool
+ * returns `indexed: 0, hits: []` and says so in its own note — and a reader
+ * shown "ServiceNow docs" for that search would be told a document informed the
+ * answer when none did. Phase 5 forbids exactly that kind of overclaim, so the
+ * distinction is carried in the projection rather than left to the client.
+ *
+ * NOTHING IS INVENTED. Every field below is copied from the hit the store
+ * returned; a hit missing a title or a url is projected with that field null
+ * rather than filled in from the query or the host. Returns null when the
+ * result is unparseable or found nothing, and `retrieval` is then absent.
+ */
+function retrievalSection(rawResult) {
+  let parsed = rawResult;
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch { return null; }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const hits = Array.isArray(parsed.hits) ? parsed.hits : [];
+  // The whole point: no hits, no source. An empty corpus is not a citation.
+  if (hits.length === 0) return null;
+  return {
+    query: typeof parsed.query === 'string' ? parsed.query : null,
+    mode: typeof parsed.mode === 'string' ? parsed.mode : null,
+    indexed: Number.isFinite(parsed.indexed) ? parsed.indexed : null,
+    degraded: parsed.degraded === true,
+    hitCount: hits.length,
+    hits: hits.map((h) => ({
+      document: h.document ?? null,
+      title: h.title ?? null,
+      url: h.url ?? null,
+      source: h.source ?? null,
+      version: h.version ?? null,
+      documentType: h.document_type ?? null,
+      topic: h.topic ?? null,
+      product: h.product ?? null,
+      updatedAt: h.updated_at ?? null,
+      // The matched chunk, redacted like every other free text here.
+      snippet: h.text ? redact(String(h.text)) : null,
+    })),
+    source: SOURCE.TOOL_EVENT,
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Sections
  * ------------------------------------------------------------------ */
@@ -858,12 +909,22 @@ export function buildEvidence(taskId) {
         : 'Rows without a task id are matched by session and time window, so a concurrent plan in the '
           + 'same session could have produced them. Rows marked `exact` name this task and cannot. '
           + 'Step evidence above is always exact — it comes from the step rows themselves.',
-      toolEvents: toolEvents.map((e) => ({
-        seq: e.seq, at: e.ts, kind: e.kind, name: e.name, status: e.status,
-        mutating: e.mutating, approval: e.approval, approvedSource: e.approvedSource,
-        exact: e.exact === true,
-        source: SOURCE.TOOL_EVENT,
-      })),
+      toolEvents: toolEvents.map((e) => {
+        const row = {
+          seq: e.seq, at: e.ts, kind: e.kind, name: e.name, status: e.status,
+          mutating: e.mutating, approval: e.approval, approvedSource: e.approvedSource,
+          exact: e.exact === true,
+          source: SOURCE.TOOL_EVENT,
+        };
+        /* ADDITIVE. `retrieval` is present only on a documentation search that
+           actually returned documents; every existing consumer of this array
+           sees exactly the fields it saw before. */
+        if (DOC_SEARCH_TOOLS.has(e.name)) {
+          const retrieval = retrievalSection(e.result);
+          if (retrieval) row.retrieval = retrieval;
+        }
+        return row;
+      }),
     },
   };
 }
