@@ -1,9 +1,13 @@
-import { TABLES, resolveTables } from './tables.js';
-import { extractEstate } from './extract.js';
-import { EstateRules, RULE_VERSION, AGENTS, isComplete } from './rules.js';
+import { TABLES, resolveTables, specHash } from './tables.js';
+import { extractEstate, extractCmdbMeta, cmdbMetaSources, instanceClient } from './extract.js';
+import { planScan, engineKeys, stampSources } from './incremental.js';
+import { EstateRules, RULE_VERSION, AGENTS, isComplete, IMPLEMENTED_CATALOGUE_RULES } from './rules.js';
+import { scoreCmdbQuality } from './cmdb-quality.js';
+import { cmdbInScope } from './cmdb-gate.js';
 import { explainFindings } from './explain.js';
 import { digest } from './digest.js';
-import { summariseScopes } from './scopes.js';
+import { summariseScopes, normaliseModules, moduleTables, MODULE_KEYS } from './scopes.js';
+import { DQ_INACTIVE_INSTALL_STATUS } from './cmdb-signals.js';
 
 /**
  * Health Assist — the run.
@@ -21,7 +25,7 @@ import { summariseScopes } from './scopes.js';
  * tables it is computed from were read completely.
  */
 
-export const MANIFEST_VERSION = '3.0.0';
+export const MANIFEST_VERSION = '5.0.0';
 
 /*
  * How many findings a run STORES.
@@ -97,6 +101,16 @@ export function clusterByRule(findings) {
  */
 export async function runHealthCheck({
   tables,
+  /* Which modules to check — CMDB, ITOM, ITSM, Platform. Nothing means all. */
+  modules,
+  /* Skip a module whose inputs have not changed since its last result. */
+  reuse = true,
+  /* Per module, what its current result was computed from (store.moduleBaselines). */
+  baselines = {},
+  /* Per table, the incremental settings (store.tableSettings). */
+  tableSettings = {},
+  /* The connected account — a different one may see different rows. */
+  user = null,
   staleDays = DEFAULT_STALE_DAYS,
   explain = true,
   limit,
@@ -104,22 +118,84 @@ export async function runHealthCheck({
   client,
   signal = null,
   now = new Date(),
+  /* Fingerprints a person marked "accepted risk" — the approved-exception
+     de-escalator. Passed in, because the rule pack never reads the database. */
+  acceptedFingerprints = [],
+  /* The same decisions with their rule ids, so each module's engine key sees only its own. */
+  acceptedRules = [],
+  /* Earlier runs' measures (duplicate-set membership) for the trend rules. */
+  measureHistory = {},
 } = {}) {
   const startedAt = Date.now();
-  const requested = resolveTables(tables);
+  const phases = {};
   const emit = async (stage, percent, detail = {}) => {
     await onProgress?.({ stage, percent, ...detail });
   };
+  /* An explicit table list is the older API: every module, read in full. */
+  const explicitTables = Array.isArray(tables) && tables.length > 0;
+  const wanted = explicitTables ? [...MODULE_KEYS] : normaliseModules(modules);
+  const keys = engineKeys({ staleDays, acceptedRules });
+  const accepted = acceptedFingerprints.length ? acceptedFingerprints : acceptedRules.map((a) => a.fingerprint);
+  const reader = client || instanceClient;
+
+  /*
+   * THE CHANGE CHECK. One stamp per input of every module that could keep its
+   * result; the modules whose inputs moved are read, the rest are verified.
+   */
+  let plan = null;
+  if (!explicitTables) {
+    await emit('checking for changes', 2);
+    plan = await planScan({ modules: wanted, client: reader, baselines, tableSettings, engineKeys: keys, user, reuse, now, signal });
+    phases.change_check_ms = plan.probe_ms;
+  }
+  const readModules = plan ? plan.read : wanted;
+  const verifiedModules = plan ? plan.reuse : [];
+
+  if (!readModules.length) {
+    /* Nothing changed anywhere that was asked about. No rows are read and no
+       findings are produced: each module keeps the result it already has. */
+    const manifest = {
+      version: MANIFEST_VERSION,
+      rule_pack_version: RULE_VERSION,
+      kind: 'verification',
+      modules: [],
+      requested_modules: wanted,
+      verified_modules: verifiedModules,
+      plan,
+      engine_keys: keys,
+      connection_user: user,
+      cutoff: null,
+      coverage: {},
+      skipped_checks: [],
+      findings_detected: 0,
+      findings_stored: 0,
+      findings_truncated: false,
+      metrics: { visible_cis: 0, visible_relationships: 0, fetched_rows: 0, cmdb_quality_score: null },
+      phases: { ...phases, total_ms: Date.now() - startedAt },
+      narrative: `No changes since the last result for ${verifiedModules.join(', ')} — those results stand, verified now.`,
+    };
+    await emit('done', 100);
+    return { status: 'completed', findings: [], manifest };
+  }
+
+  /* Read what the modules declare, plus anything their rules read last time. */
+  const priorInputs = readModules.flatMap((m) => baselines[m]?.dependencies || []).filter((t) => TABLES[t]);
+  const requested = explicitTables
+    ? resolveTables(tables)
+    : resolveTables([...new Set([...moduleTables(readModules), ...priorInputs])]);
 
   await emit('extracting', 5);
-  const { estate, coverage, cutoff } = await extractEstate(requested, {
+  let t0 = Date.now();
+  const { estate, coverage, cutoff, stamps } = await extractEstate(requested, {
     limit,
     client,
     signal,
+    stamps: true,
     onProgress: async ({ table: t, index, total }) => {
       await emit('extracting', 5 + Math.round((index * 55) / Math.max(1, total)), { table: t });
     },
   });
+  phases.extract_ms = Date.now() - t0;
 
   const fetchedRows = Object.values(estate).reduce((n, rows) => n + rows.length, 0);
 
@@ -127,16 +203,37 @@ export async function runHealthCheck({
      expensive, interruptible part is extraction, and that checks per table. */
   if (signal?.aborted) throw Object.assign(new Error('Stopped.'), { name: 'AbortError' });
 
+  /*
+   * The trust gate's bounded meta reads — class hierarchy, filter counts, job
+   * triggers, execution counts. Only when CMDB is being read; each read carries
+   * its own status, so a failure skips the rules that needed it. Their sources
+   * are stamped FIRST, for the same reason tables are.
+   */
+  const readsCmdb = readModules.includes('cmdb') && requested.includes('cmdb_ci');
+  let meta = {};
+  let metaStamps = null;
+  if (readsCmdb) {
+    await emit('reading governance', 64);
+    t0 = Date.now();
+    metaStamps = await stampSources(reader, cmdbMetaSources(estate), { now });
+    meta = await extractCmdbMeta(estate, { client, signal });
+    phases.meta_ms = Date.now() - t0;
+  }
+
   await emit('analysing', 70);
-  const rules = new EstateRules(estate, coverage, staleDays, now);
-  const all = rules.analyze();
+  t0 = Date.now();
+  const rules = new EstateRules(estate, coverage, staleDays, now, { meta, acceptedFingerprints: accepted, history: measureHistory });
+  const all = rules.analyze({ modules: readModules });
+  phases.analyse_ms = Date.now() - t0;
   const detected = all.length;
   const findings = all.slice(0, MAX_FINDINGS);
 
   let llm = { status: 'disabled', tokens_used: 0 };
   if (explain && findings.length) {
     await emit('explaining', 88);
+    t0 = Date.now();
     llm = await explainFindings(findings);
+    phases.explain_ms = Date.now() - t0;
   }
 
   /*
@@ -144,8 +241,37 @@ export async function runHealthCheck({
    * never from the stored slice. A cap may drop rows from storage; it must not
    * change what the page says was found.
    */
-  const score = qualityScore(estate, coverage, all);
-  const scopes = summariseScopes(coverage, all);
+  /*
+   * CMDB QUALITY — the two-layer model (trust gate + record scores within
+   * D1–D10). It replaces the pass rate as the CMDB number; `qualityScore` is
+   * kept only so an older stored run is not reinterpreted. A scan that did not
+   * check CMDB has no CMDB number at all, rather than one computed over the CIs
+   * it happened to read for another module.
+   */
+  /*
+   * THE DATA-QUALITY DIMENSIONS SCORE A NARROWER SET (decision 7 of 19 Sep).
+   *
+   * Completeness, correctness, uniqueness, identification and reconciliation
+   * judge records somebody is supposed to maintain, so retired, stolen and
+   * absent CIs are out of their denominator as well as out of their findings.
+   * The lifecycle dimension (D8) keeps every one of them — evaluating those
+   * statuses is what it is for.
+   */
+  const scope = readsCmdb ? cmdbInScope(rules) : { ids: [], basis: '' };
+  const inactive = new Set((estate.cmdb_ci || [])
+    .filter((c) => DQ_INACTIVE_INSTALL_STATUS.includes(String(c.install_status ?? '').trim()))
+    .map((c) => c.sys_id));
+  const dqIds = [...scope.ids].filter((id) => !inactive.has(id));
+  const dimensionScope = inactive.size
+    ? { D1: dqIds, D2: dqIds, D3: dqIds, D4: dqIds, D5: dqIds }
+    : {};
+  const cmdbQuality = readsCmdb
+    ? scoreCmdbQuality({ findings: all, kpis: rules.kpis, inScope: scope, implemented: IMPLEMENTED_CATALOGUE_RULES, measures: rules.measures, dimensionScope })
+    : null;
+  const score = cmdbQuality ? cmdbQuality.composite.score : (readModules.includes('cmdb') ? qualityScore(estate, coverage, all) : null);
+  const allScopes = summariseScopes(coverage, all, { cmdbQuality });
+  /* Only the modules this scan checked carry a summary; the others keep theirs in their own runs. */
+  const scopes = Object.fromEntries(Object.entries(allScopes).filter(([k]) => k === 'all' || readModules.includes(k)));
 
   /*
    * `partial` is the run-level honesty flag, and it is deliberately eager: any
@@ -158,12 +284,55 @@ export async function runHealthCheck({
     || detected > findings.length
     || llm.status === 'unavailable';
 
+  /*
+   * WHICH RESULTS ARE SAFE TO KEEP.
+   *
+   * A scan whose reads failed still produces findings — fewer of them, because
+   * the rules that needed those reads skipped. Measured on dev424910: a second
+   * full scan an hour after the first came back with 68 fewer findings and a
+   * CMDB score eight points higher, because the instance had slowed to the point
+   * of failing governance reads. Keeping that as a module's result for a day
+   * would report an improvement nobody made, so a degraded result is recorded as
+   * such and is never reused: the next scan reads it again.
+   *
+   * `unavailable` and `limited` are NOT degradation — a table absent on this
+   * instance, or rows an ACL hides, are stable facts the findings already state.
+   */
+  const FAILED_READ = new Set(['forbidden', 'unauthorized', 'rate_limited', 'upstream_error', 'invalid_query', 'truncated']);
+  const degraded = {};
+  for (const m of readModules) {
+    const why = (rules.dependencies?.[m] || [])
+      .filter((t) => FAILED_READ.has(coverage[t]?.status))
+      .map((t) => `${t}: ${coverage[t].status}`);
+    if (m === 'cmdb') {
+      for (const [k, r] of Object.entries(meta.cmdb?.reads || {})) if (r.status !== 'ok') why.push(`governance read ${k}: ${r.status}`);
+    }
+    if (why.length) degraded[m] = why;
+  }
+
   const manifest = {
     version: MANIFEST_VERSION,
     rule_pack_version: RULE_VERSION,
+    kind: 'scan',
+    /* What this run produced results for, and what it was asked about. */
+    modules: readModules,
+    requested_modules: wanted,
+    verified_modules: verifiedModules,
+    plan,
+    /* Modules whose result was computed with reads that failed: shown, and never reused. */
+    degraded,
+    /* What each module's result was computed from — the next change check's baseline. */
+    engine_keys: Object.fromEntries(readModules.map((m) => [m, keys[m]])),
+    connection_user: user,
+    dependencies: rules.dependencies,
+    stamps,
+    spec_hashes: Object.fromEntries(Object.keys(stamps).map((t) => [t, specHash(t)])),
+    meta_stamps: metaStamps,
     cutoff,
     coverage,
     skipped_checks: rules.skipped,
+    cmdb_quality: cmdbQuality,
+    meta_reads: meta.cmdb?.reads ?? null,
     findings_detected: detected,
     findings_stored: findings.length,
     findings_truncated: detected > findings.length,
@@ -174,10 +343,12 @@ export async function runHealthCheck({
       visible_relationships: (estate.cmdb_rel_ci || []).length,
       fetched_rows: fetchedRows,
       cmdb_quality_score: score,
-      score_definition: 'Percent of extracted CIs without a triggered CMDB rule. A Health Assist score, not ServiceNow CMDB Health.',
+      score_definition: cmdbQuality
+        ? cmdbQuality.composite.definition
+        : 'Percent of extracted CIs without a triggered CMDB rule. A Health Assist score, not ServiceNow CMDB Health.',
       /* The SPECIFIC reason, from the same function the switch uses — the old
          text named both tables whichever one had actually failed. */
-      score_withheld_because: score === null ? scopes.cmdb.score_withheld_because : null,
+      score_withheld_because: score === null ? (scopes.cmdb?.score_withheld_because ?? 'CMDB was not part of this scan.') : null,
     },
     domains: Object.entries(AGENTS).map(([agent, [domain, label]]) => ({
       agent_id: agent,
@@ -198,6 +369,7 @@ export async function runHealthCheck({
        computed once, over everything detected, and stored with the run. */
     scopes,
     llm,
+    phases: { ...phases, total_ms: Date.now() - startedAt },
     analysis_duration_ms: Date.now() - startedAt,
     consistency: 'A bounded Table REST extraction pinned to one cutoff. The Table API is not a transactionally consistent cross-table snapshot.',
     narrative: `${(estate.cmdb_ci || []).length} visible CIs examined; ${detected} deterministic findings. Review table coverage and the highest-priority evidence before acting.`,

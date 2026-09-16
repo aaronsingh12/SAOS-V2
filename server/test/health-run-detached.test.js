@@ -158,7 +158,9 @@ test('coming back AFTER it finished still learns how it finished — one termina
 test('STOP is an explicit request: it cancels the check, and the watcher sees "cancelled", not a failure', async () => {
   delayMs = 60;
   try {
-    const res = await post('/runs', { explain: false });
+    /* A full re-read: an earlier test already scanned this fake instance, and an
+       unchanged instance is now verified in moments — too fast to stop. */
+    const res = await post('/runs', { explain: false, reuse: false });
     const reading = readFrames(res, (f) => TERMINAL.has(f.type));
     const { run } = await waitFor(async () => { const r = await get('/runs/active'); return r.run ? r : null; });
     const stop = await (await post(`/runs/${run.id}/cancel`)).json();
@@ -170,4 +172,41 @@ test('STOP is an explicit request: it cancels the check, and the watcher sees "c
     const late = await post(`/runs/${run.id}/cancel`);
     assert.equal(late.status, 409, 'cancelling a finished check claimed to succeed');
   } finally { delayMs = 0; }
+});
+
+/* ── Module scans (15 Sep 2026) ─────────────────────────────────────────── */
+
+test('MODULES — an unknown module is refused before a run exists; a module scan becomes only that module\'s result', async () => {
+  const before = (await get('/runs')).runs.length;
+  const bad = await post('/runs', { modules: ['hr'], explain: false });
+  assert.equal(bad.status, 422);
+  assert.match((await bad.json()).message, /Unknown scan module: hr/);
+  assert.equal((await get('/runs')).runs.length, before, 'a refused scan left a run row behind');
+
+  const res = await post('/runs', { modules: ['itsm'], reuse: false, explain: false });
+  const frames = await readFrames(res, (f) => TERMINAL.has(f.type));
+  assert.equal(frames.at(-1).type, 'done');
+  const runId = frames[0].runId;
+  const { modules, view } = await get('/modules');
+  assert.equal(modules.itsm.runId, runId);
+  assert.notEqual(modules.cmdb.runId, runId, 'an ITSM scan became the CMDB result');
+  assert.ok(modules.cmdb.checkedAt, 'CMDB lost its own result and time');
+  assert.equal(view.composed, true);
+  assert.ok(view.manifest.scopes.itsm && view.manifest.scopes.cmdb, 'the All view is missing a module');
+  const list = await get('/modules/findings?scope=all&limit=5');
+  assert.ok(Array.isArray(list.findings));
+});
+
+test('SCAN STATE — the configuration table lists every allow-listed table; a toggle must be a boolean on a known table', async () => {
+  const { TABLES } = await import('../src/health/tables.js');
+  const state = await get('/scan-state');
+  assert.equal(state.tables.length, Object.keys(TABLES).length);
+  assert.equal(state.defaults.maxReuseHours, 24);
+  const patch = (t, body) => realFetch(`${BASE}/scan-state/${t}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  assert.equal((await patch('sys_trigger', { enabled: 'no' })).status, 422);
+  assert.equal((await patch('sys_user', { enabled: false })).status, 422, 'a table outside the allow-list was configured');
+  assert.equal((await patch('sys_trigger', { enabled: false })).status, 200);
+  assert.equal((await get('/scan-state')).tables.find((t) => t.table === 'sys_trigger').enabled, false);
 });

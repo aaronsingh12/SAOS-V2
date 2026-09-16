@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import { getDb } from '../memory/db.js';
 import { boundInstance } from '../servicenow/instance-binding.js';
 import { stateMap, QUIET_STATES } from './finding-state.js';
-import { scopeFilter, summariseScopes, SCOPE_KEYS } from './scopes.js';
+import { scopeFilter, summariseScopes, SCOPE_KEYS, MODULE_KEYS, SCOPES, moduleTables, scopeOfRule } from './scopes.js';
+import { TABLES } from './tables.js';
 
 /**
  * Durable health runs.
@@ -15,6 +16,32 @@ import { scopeFilter, summariseScopes, SCOPE_KEYS } from './scopes.js';
  */
 
 const nowIso = () => new Date().toISOString();
+
+/** The catalogue fields stored beside a finding. */
+function scoringOf(f) {
+  return {
+    base_severity: f.base_severity,
+    dimension: f.dimension ?? null,
+    gate: Boolean(f.gate),
+    escalated_to_systemic: Boolean(f.escalated_to_systemic),
+    posture: Boolean(f.posture),
+    pattern: Boolean(f.pattern),
+    deduction_severity: f.deduction_severity ?? null,
+    dedupe_key: f.dedupe_key ?? null,
+    deduction_multiplier: f.deduction_multiplier ?? null,
+    pattern_fingerprint: f.pattern_fingerprint ?? null,
+    lane: f.lane ?? null,
+    catalogue_group: f.catalogue_group ?? null,
+    modifiers: f.modifiers ?? null,
+    false_positive_guard: f.false_positive_guard ?? null,
+    materiality: f.materiality ?? null,
+  };
+}
+
+function scoringFields(stored) {
+  if (!stored) return { catalogued: false };
+  return { catalogued: true, ...stored };
+}
 
 /**
  * Is a check already running against this instance?
@@ -113,19 +140,22 @@ export function completeRun(runId, { status, manifest, findings }) {
    */
   db.exec('BEGIN');
   try {
+    /* Which modules this run holds results for. A caller that says nothing
+       (every run before modules existed) ran a full scan: NULL means all. */
+    const modules = Array.isArray(manifest?.modules) ? JSON.stringify(manifest.modules) : null;
     db.prepare(`
       UPDATE health_runs
-         SET status = ?, completed_at = ?, cutoff = ?, manifest_json = ?, error = NULL
+         SET status = ?, completed_at = ?, cutoff = ?, manifest_json = ?, error = NULL, modules_json = ?
        WHERE id = ?
-    `).run(status, nowIso(), manifest?.cutoff ?? null, JSON.stringify(manifest ?? {}), runId);
+    `).run(status, nowIso(), manifest?.cutoff ?? null, JSON.stringify(manifest ?? {}), modules, runId);
 
     db.prepare('DELETE FROM health_findings WHERE run_id = ?').run(runId);
     const insert = db.prepare(`
       INSERT INTO health_findings
         (run_id, fingerprint, rule_id, agent_id, domain, source_table, severity, priority,
          priority_score, confidence, title, description, recommendation, ai_summary,
-         target_ids, evidence_json, impact_json)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         target_ids, evidence_json, impact_json, scoring_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     for (const f of findings ?? []) {
       insert.run(
@@ -135,6 +165,7 @@ export function completeRun(runId, { status, manifest, findings }) {
         JSON.stringify(f.target_ids ?? []),
         JSON.stringify(f.evidence ?? []),
         JSON.stringify(f.impact ?? null),
+        f.base_severity ? JSON.stringify(scoringOf(f)) : null,
       );
     }
     pruneFindings(db, runId);
@@ -178,6 +209,13 @@ function pruneFindings(db, currentRunId) {
        ORDER BY started_at DESC LIMIT ?
     `).all(key, KEEP_FINDINGS_FOR_RUNS).map((r) => r.id);
     if (!keep.includes(currentRunId)) keep.push(currentRunId);
+    /* A module's CURRENT result can be many runs old when nothing changed —
+       an unchanged CMDB behind ten ITSM-only scans. Its findings are what the
+       page shows for that module, so they are never pruned. */
+    for (const m of MODULE_KEYS) {
+      const current = moduleRunRow(db, key, m);
+      if (current && !keep.includes(current.id)) keep.push(current.id);
+    }
     const marks = keep.map(() => '?').join(',');
     removed += db.prepare(`
       DELETE FROM health_findings
@@ -213,14 +251,16 @@ export function cancelRun(runId) {
 export function trend({ limit = 30 } = {}) {
   const bound = boundInstance();
   const rows = getDb().prepare(`
-    SELECT id, started_at, status, manifest_json FROM health_runs
+    SELECT id, started_at, status, manifest_json, modules_json FROM health_runs
      WHERE instance_key = ? AND status IN ('completed','partial')
      ORDER BY started_at DESC LIMIT ?
   `).all(bound.key || 'unbound', limit);
 
-  return rows.map((r) => {
+  return rows.filter((r) => r.modules_json !== '[]').map((r) => {
     let m = null;
     try { m = r.manifest_json ? JSON.parse(r.manifest_json) : null; } catch { m = null; }
+    let modules = null;
+    try { modules = r.modules_json ? JSON.parse(r.modules_json) : null; } catch { modules = null; }
     /* Per-scope scores where the run recorded them. An older run has only the
        CMDB score, so the other scopes read as `null` — a gap in their line —
        rather than being back-filled with a number nobody measured. */
@@ -232,6 +272,9 @@ export function trend({ limit = 30 } = {}) {
       runId: r.id,
       at: r.started_at,
       status: r.status,
+      /* The modules this point measured. A module's line uses only its own
+         points: an ITSM-only scan is not a gap in the CMDB line. */
+      modules: modules ?? [...MODULE_KEYS],
       score: m?.metrics?.cmdb_quality_score ?? null,
       scoreWithheld: m?.metrics?.cmdb_quality_score == null,
       scopes,
@@ -240,6 +283,30 @@ export function trend({ limit = 30 } = {}) {
       visibleCis: m?.metrics?.visible_cis ?? null,
     };
   }).reverse();
+}
+
+/**
+ * Earlier runs' CMDB measures, oldest first — the trend rules' input (CMDB-038).
+ *
+ * Read here and passed in, because the rule pack never touches the database.
+ * Only runs that recorded the measure are returned; a run from before Group 4
+ * is a gap, never a zero.
+ */
+export function cmdbMeasureHistory({ limit = 12 } = {}) {
+  const bound = boundInstance();
+  const rows = getDb().prepare(`
+    SELECT started_at, manifest_json FROM health_runs
+     WHERE instance_key = ? AND status IN ('completed','partial')
+     ORDER BY started_at DESC LIMIT ?
+  `).all(bound.key || 'unbound', limit);
+  const duplicateSets = [];
+  for (const r of rows) {
+    let m = null;
+    try { m = r.manifest_json ? JSON.parse(r.manifest_json) : null; } catch { m = null; }
+    const d = m?.cmdb_quality?.measures?.duplicate_sets;
+    if (d && Array.isArray(d.keys)) duplicateSets.push(d);
+  }
+  return { duplicate_sets: duplicateSets.reverse() };
 }
 
 /**
@@ -289,10 +356,13 @@ function hydrateRun(row) {
        the page. The findings rows beside it are still readable and still true. */
     manifest = null;
   }
+  let modules = null;
+  try { modules = row.modules_json ? JSON.parse(row.modules_json) : null; } catch { modules = null; }
   return {
     id: row.id,
     instance: row.instance_url,
     status: row.status,
+    modules: modules ?? (['completed', 'partial'].includes(row.status) ? [...MODULE_KEYS] : null),
     startedAt: row.started_at,
     completedAt: row.completed_at,
     cutoff: row.cutoff,
@@ -315,14 +385,319 @@ export function getRun(runId) {
   ).get(runId, bound.key || 'unbound'));
 }
 
-/** The most recent run that actually produced a manifest. */
+/** The most recent run that actually produced results. A verification-only run has none. */
 export function latestRun() {
   const bound = boundInstance();
   return hydrateRun(getDb().prepare(`
     SELECT * FROM health_runs
      WHERE instance_key = ? AND status IN ('completed', 'partial')
+       AND (modules_json IS NULL OR modules_json <> '[]')
      ORDER BY started_at DESC LIMIT 1
   `).get(bound.key || 'unbound'));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MODULES — each keeps its own latest result
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The newest finished run that holds results for a module. NULL `modules_json`
+ * is a run from before modules existed, which was a full scan.
+ */
+function moduleRunRow(db, instanceKey, module) {
+  return db.prepare(`
+    SELECT * FROM health_runs
+     WHERE instance_key = ? AND status IN ('completed', 'partial')
+       AND (modules_json IS NULL OR modules_json LIKE ?)
+     ORDER BY started_at DESC LIMIT 1
+  `).get(instanceKey, `%"${module}"%`);
+}
+
+export function moduleRun(module) {
+  const bound = boundInstance();
+  return hydrateRun(moduleRunRow(getDb(), bound.key || 'unbound', module));
+}
+
+function moduleStateRows(instanceKey) {
+  return Object.fromEntries(getDb().prepare('SELECT * FROM health_module_state WHERE instance_key = ?')
+    .all(instanceKey).map((r) => [r.module, r]));
+}
+
+/**
+ * For each module, what its current result was computed from — the change
+ * check's baseline. Everything comes from THAT run's manifest, so a later scan
+ * of another module that re-read a shared table cannot move it.
+ */
+export function moduleBaselines() {
+  const out = {};
+  for (const m of MODULE_KEYS) {
+    const run = moduleRun(m);
+    if (!run?.manifest) continue;
+    const man = run.manifest;
+    out[m] = {
+      runId: run.id,
+      status: run.status,
+      checkedAt: run.startedAt,
+      engineKey: man.engine_keys?.[m] ?? null,
+      user: man.connection_user ?? null,
+      dependencies: man.dependencies?.[m] ?? null,
+      degraded: man.degraded?.[m] ?? null,
+      stamps: man.stamps ?? null,
+      specHashes: man.spec_hashes ?? null,
+      metaStamps: m === 'cmdb' ? (man.meta_stamps ?? null) : undefined,
+    };
+  }
+  return out;
+}
+
+/** Per table: the incremental setting the change check honours. */
+export function tableSettings() {
+  const bound = boundInstance();
+  const rows = getDb().prepare('SELECT table_name, enabled FROM health_table_scan_state WHERE instance_key = ?')
+    .all(bound.key || 'unbound');
+  return Object.fromEntries(rows.map((r) => [r.table_name, { enabled: Boolean(r.enabled) }]));
+}
+
+/**
+ * Record what a FINISHED run established — called only after `completeRun`,
+ * so a failed or stopped scan leaves every stamp and verification as it was.
+ *
+ *   tables read completely  → last read, stamp and spec hash
+ *   tables change-checked   → last check result
+ *   modules verified        → "still true at", against the run that produced them
+ *   modules re-read         → their new result is this run; the reasons are kept
+ */
+export function recordScanOutcome(runId, { manifest } = {}) {
+  if (!manifest) return;
+  const bound = boundInstance();
+  const key = bound.key || 'unbound';
+  const at = nowIso();
+  const db = getDb();
+  db.exec('BEGIN');
+  try {
+    const upsertRead = db.prepare(`
+      INSERT INTO health_table_scan_state
+        (instance_key, table_name, spec_hash, last_read_at, last_read_run_id, last_stamp_count, last_stamp_max, last_stamp_error, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(instance_key, table_name) DO UPDATE SET
+        spec_hash = excluded.spec_hash, last_read_at = excluded.last_read_at, last_read_run_id = excluded.last_read_run_id,
+        last_stamp_count = excluded.last_stamp_count, last_stamp_max = excluded.last_stamp_max,
+        last_stamp_error = excluded.last_stamp_error, updated_at = excluded.updated_at
+    `);
+    for (const [t, st] of Object.entries(manifest.stamps || {})) {
+      upsertRead.run(key, t, manifest.spec_hashes?.[t] ?? null, at, runId,
+        st?.count ?? null, st?.max_updated ?? null, st?.error ?? null, at);
+    }
+    const upsertCheck = db.prepare(`
+      INSERT INTO health_table_scan_state
+        (instance_key, table_name, last_check_at, last_check_changed, last_check_reason, deletion_log, updated_at)
+      VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(instance_key, table_name) DO UPDATE SET
+        last_check_at = excluded.last_check_at, last_check_changed = excluded.last_check_changed,
+        last_check_reason = excluded.last_check_reason,
+        deletion_log = COALESCE(excluded.deletion_log, health_table_scan_state.deletion_log),
+        updated_at = excluded.updated_at
+    `);
+    for (const [t, c] of Object.entries(manifest.plan?.tables || {})) {
+      upsertCheck.run(key, t, at, c.changed ? 1 : 0, c.reason ?? null,
+        c.deletion_log == null ? null : (c.deletion_log ? 1 : 0), at);
+    }
+    const upsertModule = db.prepare(`
+      INSERT INTO health_module_state (instance_key, module, source_run_id, verified_at, verified_by_run_id, last_reasons_json, updated_at)
+      VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(instance_key, module) DO UPDATE SET
+        source_run_id = excluded.source_run_id, verified_at = excluded.verified_at,
+        verified_by_run_id = excluded.verified_by_run_id, last_reasons_json = excluded.last_reasons_json,
+        updated_at = excluded.updated_at
+    `);
+    for (const m of manifest.verified_modules || []) {
+      const p = manifest.plan?.modules?.[m];
+      upsertModule.run(key, m, p?.source_run_id ?? null, p?.verified_at ?? at, runId, null, at);
+    }
+    for (const m of manifest.modules || []) {
+      upsertModule.run(key, m, runId, null, null, JSON.stringify(manifest.plan?.modules?.[m]?.reasons ?? null), at);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Turn incremental checking on or off for one table. Off means: always read in full. */
+export function setTableIncremental(tableName, enabled) {
+  if (!TABLES[tableName]) {
+    throw Object.assign(new Error(`${tableName} is not in the Health Assist allow-list`), { status: 422 });
+  }
+  const bound = boundInstance();
+  getDb().prepare(`
+    INSERT INTO health_table_scan_state (instance_key, table_name, enabled, updated_at) VALUES (?,?,?,?)
+    ON CONFLICT(instance_key, table_name) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at
+  `).run(bound.key || 'unbound', tableName, enabled ? 1 : 0, nowIso());
+}
+
+/** The configuration table as the page shows it: every allow-listed table, and its modules. */
+export function scanStateTable() {
+  const bound = boundInstance();
+  const rows = Object.fromEntries(getDb().prepare('SELECT * FROM health_table_scan_state WHERE instance_key = ?')
+    .all(bound.key || 'unbound').map((r) => [r.table_name, r]));
+  return Object.keys(TABLES).map((t) => {
+    const r = rows[t] || {};
+    return {
+      table: t,
+      modules: MODULE_KEYS.filter((m) => moduleTables([m]).includes(t)),
+      enabled: r.enabled == null ? true : Boolean(r.enabled),
+      last_read_at: r.last_read_at ?? null,
+      last_read_run_id: r.last_read_run_id ?? null,
+      rows: r.last_stamp_count ?? null,
+      newest_change: r.last_stamp_max ?? null,
+      unreadable: r.last_stamp_error ?? null,
+      deletion_log: r.deletion_log == null ? null : Boolean(r.deletion_log),
+      last_check_at: r.last_check_at ?? null,
+      last_check_changed: r.last_check_changed == null ? null : Boolean(r.last_check_changed),
+      last_check_reason: r.last_check_reason ?? null,
+    };
+  });
+}
+
+/**
+ * Each module's current result, with its times.
+ *
+ *   checkedAt   when the rows behind the result were read
+ *   verifiedAt  when a later scan last confirmed nothing it depends on changed
+ */
+export function moduleResults() {
+  const bound = boundInstance();
+  const states = moduleStateRows(bound.key || 'unbound');
+  const out = {};
+  for (const m of MODULE_KEYS) {
+    const run = moduleRun(m);
+    const st = states[m];
+    let reasons = null;
+    try { reasons = st?.last_reasons_json ? JSON.parse(st.last_reasons_json) : null; } catch { reasons = null; }
+    out[m] = run ? {
+      module: m,
+      runId: run.id,
+      status: run.status,
+      degraded: run.manifest?.degraded?.[m] ?? null,
+      checkedAt: run.startedAt,
+      verifiedAt: st && st.source_run_id === run.id ? st.verified_at : null,
+      verifiedByRunId: st && st.source_run_id === run.id ? st.verified_by_run_id : null,
+      reasons,
+    } : { module: m, runId: null, status: null, checkedAt: null, verifiedAt: null, reasons: null };
+  }
+  return out;
+}
+
+/**
+ * THE ALL VIEW — composed from each module's own latest result.
+ *
+ * Nothing here is recomputed from rows: every module contributes the summary,
+ * coverage and skipped checks its own run recorded, and the All numbers are
+ * sums of those. A module with no result contributes nothing and is named.
+ */
+export function composedView() {
+  const results = moduleResults();
+  const runs = {};
+  for (const m of MODULE_KEYS) if (results[m].runId) runs[m] = getRun(results[m].runId);
+  const present = MODULE_KEYS.filter((m) => runs[m]?.manifest);
+  if (!present.length) return null;
+
+  const scopes = {};
+  const coverage = {};
+  const coverageAt = {};
+  const skipped = [];
+  const severity = {};
+  const domains = new Map();
+  let findings = 0;
+  for (const m of present) {
+    const run = runs[m];
+    const summary = scopesForRun(run)?.[m];
+    if (summary) {
+      scopes[m] = { ...summary, checked_at: results[m].checkedAt, verified_at: results[m].verifiedAt, run_id: run.id };
+      findings += summary.findings || 0;
+      for (const [k, n] of Object.entries(summary.severity_counts || {})) severity[k] = (severity[k] || 0) + n;
+      for (const d of summary.domains || []) {
+        const cur = domains.get(d.domain) || { ...d, findings: 0 };
+        cur.findings += d.findings || 0;
+        domains.set(d.domain, cur);
+      }
+    }
+    const inputs = new Set([...moduleTables([m]), ...(run.manifest.dependencies?.[m] || [])]);
+    for (const [t, c] of Object.entries(run.manifest.coverage || {})) {
+      if (!inputs.has(t) || c.status === 'not_requested') continue;
+      /* A table two modules read is shown as its most recent read. */
+      if (!coverageAt[t] || run.startedAt > coverageAt[t]) { coverage[t] = c; coverageAt[t] = run.startedAt; }
+    }
+    skipped.push(...(run.manifest.skipped_checks || []).filter((x) => scopeOfRule(x.rule) === m));
+  }
+  const cmdbRun = runs.cmdb?.manifest ? runs.cmdb : null;
+  const allScope = SCOPES.find((x) => x.key === 'all');
+  scopes.all = {
+    key: 'all', label: allScope.label, description: allScope.description,
+    score_kind: null, score: null, score_basis: null, score_definition: null, score_withheld_because: null,
+    checks: null, score_drivers: null,
+    findings,
+    severity_counts: severity,
+    gate: scopes.cmdb?.gate ?? null,
+    cmdb_quality: null,
+    domains: [...domains.values()],
+    tables: null,
+  };
+  const newest = present.map((m) => results[m].checkedAt).sort().pop();
+  return {
+    id: null,
+    composed: true,
+    status: present.some((m) => runs[m].status === 'partial') ? 'partial' : 'completed',
+    startedAt: newest,
+    modules: results,
+    missing_modules: MODULE_KEYS.filter((m) => !present.includes(m)),
+    manifest: {
+      kind: 'composed',
+      scopes,
+      coverage,
+      skipped_checks: skipped,
+      cmdb_quality: cmdbRun?.manifest?.cmdb_quality ?? null,
+      metrics: cmdbRun?.manifest?.metrics ?? {},
+      findings_detected: findings,
+      findings_stored: findings,
+      severity_counts: severity,
+      domains: [...domains.values()],
+    },
+  };
+}
+
+/**
+ * Findings across the modules' own runs — each module's findings from its own
+ * current result. Every row carries `run_id`, so opening one reads it from the
+ * run it belongs to.
+ */
+export function listModuleFindings({ scope = 'all', domain, severity, priority, rule, limit = 100, offset = 0 } = {}) {
+  const results = moduleResults();
+  const modules = scope && scope !== 'all' ? [scope] : MODULE_KEYS;
+  const pairs = modules.filter((m) => results[m]?.runId).map((m) => ({ runId: results[m].runId, module: m }));
+  if (!pairs.length) return { total: 0, limit, offset, findings: [] };
+  const clauses = [];
+  const args = [];
+  for (const p of pairs) {
+    const sf = scopeFilter(p.module);
+    clauses.push(`(run_id = ? AND ${sf.clause})`);
+    args.push(p.runId, ...sf.args);
+  }
+  const where = [`(${clauses.join(' OR ')})`];
+  if (domain) { where.push('domain = ?'); args.push(domain); }
+  if (severity) { where.push('severity = ?'); args.push(severity); }
+  if (priority) { where.push('priority = ?'); args.push(priority); }
+  if (rule) { where.push('rule_id = ?'); args.push(rule); }
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT * FROM health_findings WHERE ${where.join(' AND ')}
+     ORDER BY priority_score DESC, fingerprint ASC LIMIT ? OFFSET ?
+  `).all(...args, limit, offset);
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM health_findings WHERE ${where.join(' AND ')}`).get(...args).n;
+  const states = stateMap();
+  /* The same shape a single-run list gives, plus the run each row belongs to. */
+  return { total, limit, offset, findings: rows.map((r) => ({ ...shapeFinding(r, states), run_id: r.run_id })) };
 }
 
 /**
@@ -352,10 +727,6 @@ export function listFindings(runId, { scope, domain, severity, priority, rule, f
     `SELECT COUNT(*) AS n FROM health_findings WHERE ${where.join(' AND ')}`,
   ).get(...args).n;
 
-  const parse = (raw, fallback) => {
-    try { return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
-  };
-
   /* Lifecycle state is joined in memory rather than in SQL: it lives in a
      different table keyed by instance+fingerprint, and a LEFT JOIN here would
      make every findings query depend on that table existing. */
@@ -365,28 +736,42 @@ export function listFindings(runId, { scope, domain, severity, priority, rule, f
     total,
     limit,
     offset,
-    findings: rows.map((r) => ({
-      fingerprint: r.fingerprint,
-      rule_id: r.rule_id,
-      agent_id: r.agent_id,
-      domain: r.domain,
-      table: r.source_table,
-      severity: r.severity,
-      priority: r.priority,
-      priority_score: r.priority_score,
-      confidence: r.confidence,
-      title: r.title,
-      description: r.description,
-      recommendation: r.recommendation,
-      ai_summary: r.ai_summary,
-      target_ids: parse(r.target_ids, []),
-      impact: parse(r.impact_json, null),
-      /* `open` when nobody has said otherwise — never absent, so the UI has
-         one shape to render rather than two. */
-      lifecycle: states.get(r.fingerprint) || { state: 'open', reason: null },
-      quiet: QUIET_STATES.includes(states.get(r.fingerprint)?.state),
-      ...(withEvidence ? { evidence: parse(r.evidence_json, []) } : {}),
-    })),
+    findings: rows.map((r) => shapeFinding(r, states, withEvidence)),
+  };
+}
+
+const parseJson = (raw, fallback) => {
+  try { return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
+};
+
+/** One stored finding row, in the shape every list returns. */
+function shapeFinding(r, states, withEvidence = false) {
+  const parse = parseJson;
+  return {
+    fingerprint: r.fingerprint,
+    rule_id: r.rule_id,
+    agent_id: r.agent_id,
+    domain: r.domain,
+    table: r.source_table,
+    severity: r.severity,
+    priority: r.priority,
+    priority_score: r.priority_score,
+    confidence: r.confidence,
+    title: r.title,
+    description: r.description,
+    recommendation: r.recommendation,
+    ai_summary: r.ai_summary,
+    target_ids: parse(r.target_ids, []),
+    impact: parse(r.impact_json, null),
+    /* Present only for SAOS catalogue rules. `gate` is BASE-Systemic;
+       `escalated_to_systemic` is a record finding its context pushed there —
+       kept apart, because only the first makes the score untrustworthy. */
+    ...scoringFields(parse(r.scoring_json, null)),
+    /* `open` when nobody has said otherwise — never absent, so the UI has
+       one shape to render rather than two. */
+    lifecycle: states.get(r.fingerprint) || { state: 'open', reason: null },
+    quiet: QUIET_STATES.includes(states.get(r.fingerprint)?.state),
+    ...(withEvidence ? { evidence: parse(r.evidence_json, []) } : {}),
   };
 }
 

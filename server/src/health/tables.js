@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 /**
  * The extraction allow-list — Health Assist may read these tables and no others.
  *
@@ -58,9 +60,14 @@ function openOrRecent(cutoff) {
 const ITSM_SLICE = { filter: openOrRecent, filterLabel: `active, or updated in the last ${ITSM_WINDOW_DAYS} days` };
 
 export const TABLES = Object.freeze({
-  cmdb_ci: spec('cis', 'name,sys_class_name,serial_number,fqdn,ip_address,owned_by,managed_by,support_group,operational_status,install_status,discovery_source,last_discovered,business_criticality', true),
+  /* Group 2 (Completeness) reads mac_address, company, location, cost_center,
+     correlation_id and life_cycle_stage_status — all on cmdb_ci itself, verified on
+     dev424910. `used_for` is NOT on cmdb_ci (only on servers, applications…), so it is
+     read per class in extractCmdbMeta. `business_criticality` is not on cmdb_ci on
+     that version either; it stays requested and is reported as a missing field. */
+  cmdb_ci: spec('cis', 'name,sys_class_name,serial_number,fqdn,ip_address,mac_address,owned_by,managed_by,support_group,operational_status,install_status,discovery_source,last_discovered,business_criticality,company,location,cost_center,correlation_id,life_cycle_stage_status,sys_created_on,sys_created_by', true),
   cmdb_rel_ci: spec('relationships', 'parent,child,type,type.name', true),
-  cmdb_ci_service: spec('services', 'name,sys_class_name,owned_by,operational_status,life_cycle_stage,life_cycle_stage_status'),
+  cmdb_ci_service: spec('services', 'name,sys_class_name,owned_by,operational_status,life_cycle_stage,life_cycle_stage_status,busines_criticality,used_for'),
   service_offering: spec('offerings', 'name,parent,owned_by'),
   ecc_agent: spec('mid_servers', 'name,status,validated,last_refreshed'),
   ecc_queue: spec('ecc_queue', 'name,state,queue,agent,sys_created_on'),
@@ -102,6 +109,55 @@ export const TABLES = Object.freeze({
   cmdb_ci_service_discovered: spec('discovered_services', 'name,operational_status,service_classification,busines_criticality,owned_by,used_for'),
   cmdb_ci_outage: spec('outages', 'cmdb_ci,type,begin,end,duration,details,task_number'),
   sysauto: spec('scheduled_jobs', 'name,active,run_type,run_start,run_period,conditional,condition'),
+
+  /* ── CMDB HEALTH GOVERNANCE — the trust gate (SAOS Group 1) ─────────────
+   * Verified on dev424910, 15 Sep 2026. `cmdb_health_inclusion_rule` does not
+   * exist: inclusion rules are `cmdb_health_config`, weights are
+   * `cmdb_health_metric_pref`, configured attributes are
+   * `cmdb_recommended_fields`, principal classes are `cmdb_class_info`. All are
+   * small configuration tables. `sysauto_script` is read only for the CMDB
+   * Health jobs, and the filter goes into the count so "complete" still means
+   * every matching row. */
+  cmdb_health_config: spec('health_inclusion_rules', 'applies_to,active_record_condition,metric,sys_overrides,sys_created_on'),
+  cmdb_health_metric: spec('health_metrics', 'name,friendly_name,parent'),
+  cmdb_health_metric_pref: spec('health_metric_weights', 'metric,active,weighted_average_contribution,failure_threshold,sys_mod_count,sys_created_on'),
+  cmdb_class_info: spec('class_info', 'class,principal_class'),
+  cmdb_recommended_fields: spec('recommended_fields', 'table,recommended,active'),
+  cmdb_data_management_policy: spec('data_manager_policies', 'name,table,policy_execution_job,cmdb_policy_type,sys_created_on'),
+  cmdb_policy_scheduled_job: spec('data_manager_jobs', 'name,active,run_type,run_period'),
+  /* Group 2 (Completeness) and CMDB-140 (identity attributes). */
+  cmn_location: spec('locations', 'name,parent'),
+  core_company: spec('companies', 'name,parent'),
+  cmdb_identifier: spec('identification_rules', 'name,applies_to,active,independent'),
+  cmdb_identifier_entry: spec('identification_entries', 'identifier,table,attributes,order,allow_null_attribute,active'),
+  life_cycle_stage_status: spec('lifecycle_statuses', 'name,life_cycle_stage'),
+  /* Group 3 (Correctness). life_cycle_mapping is the instance's own mapping of
+     install_status / operational_status onto lifecycle stages — the "permitted
+     set" CMDB-023 reads instead of hardcoding one. */
+  life_cycle_mapping: spec('lifecycle_mappings', 'table,legacy_field_name,legacy_field_value,legacy_subfield_name,legacy_subfield_value,life_cycle_control,active,priority'),
+  life_cycle_control: spec('lifecycle_controls', 'table,life_cycle_stage,life_cycle_stage_status,display_name,active'),
+  cmdb_reconciliation_definition: spec('reconciliation_rules', 'name,applies_to,discovery_source,attributes,priority,active'),
+  cmdb_datasource_attribute_value: spec('source_attribute_values', 'ci,class,attribute,value,discovery_source,updated_on'),
+  /* Group 5 (Identification and reconciliation). Verified present on dev424910,
+     19 Sep 2026: this version keeps NO `cmdb_ire_error` table — per-run counters
+     live in cmdb_ire_output_aggregate_stats, and per-CI source attribution (the
+     only trace of IRE having run) in sys_object_source. */
+  sys_object_source: spec('ci_source_attribution', 'name,source_feed,target_table,target_sys_id,last_scan,id,sys_created_on'),
+  cmdb_datasource_precedence: spec('source_precedence', 'name,applies_to,discovery_source,order,fall_back,active'),
+  cmdb_datasource_last_update: spec('source_last_write', 'discovery_source,class,attribute,record,updated_on'),
+  cmdb_datasource_staleness: spec('source_staleness', 'name,applies_to,discovery_source,duration,active'),
+  cmdb_ire_output_aggregate_stats: spec('ire_run_stats', 'run_id,run_table,errors,warnings,inserted,updated,unchanged,partial,incomplete,distinct_error_codes,distinct_warning_codes,expected_target_table,sys_created_on'),
+  cmdb_metadata_hosting: spec('hosting_metadata', 'parent_type,child_type,rel_type,is_reverse'),
+  cmdb_metadata_containment: spec('containment_metadata', 'ci_type,parent_id,rel_type,always_include,is_reverse'),
+
+  /* Group 4 (Uniqueness). The CMDB de-duplication tasks, and the CIs each one
+     covers (duplicate_audit_result.follow_on_task → the task). */
+  reconcile_duplicate_task: spec('dedup_tasks', 'number,active,state,opened_at,sys_created_on,assignment_group,duplicate_count'),
+  duplicate_audit_result: spec('dedup_task_cis', 'follow_on_task,duplicate_ci,table'),
+  sysauto_script: spec('health_jobs', 'name,active,run_type,run_period,run_time,run_dayofweek,run_dayofmonth', false, {
+    filter: () => 'nameLIKECMDB Health',
+    filterLabel: "scheduled scripts named like 'CMDB Health'",
+  }),
 });
 
 /** The tables a run reads unless the caller narrows it. Required ones are never droppable. */
@@ -129,4 +185,50 @@ export function resolveTables(requested) {
     );
   }
   return [...new Set([...REQUIRED_TABLES, ...requested])];
+}
+
+/**
+ * The encoded-query slice a table is read with, at a cutoff.
+ *
+ * ONE definition, used by the read and by the change check. If the two built
+ * their slice separately, a table would be compared against a different set of
+ * rows than it was read with, and would look changed on every run — or worse,
+ * unchanged when it was not.
+ */
+export function sliceOf(tableName, cutoff) {
+  const spec = TABLES[tableName];
+  if (!spec) return '';
+  return typeof spec.filter === 'function' ? spec.filter(cutoff) : (spec.filter || '');
+}
+
+/**
+ * The whole encoded query a table is read with at a cutoff — the slice AND the
+ * cutoff bound.
+ *
+ * The bound is part of the slice, not an implementation detail of the read.
+ * Measured on dev424910: one change request carries `sys_updated_on` of
+ * 2035-08-22. The read never saw it (it reads up to the run's cutoff) while a
+ * change check without the bound counted it, so `change_request` looked changed
+ * on every run for ever — and CMDB and ITSM could never be kept. Both sides now
+ * ask the same question, each at its own moment.
+ */
+export function sliceWhere(tableName, cutoff) {
+  const narrowing = sliceOf(tableName, cutoff);
+  return `sys_updated_on<=${cutoff}${narrowing ? `^${narrowing}` : ''}`;
+}
+
+/**
+ * What a table's read ASKS FOR — its fields and its slice definition.
+ *
+ * Stored beside the last successful read. A group that adds a field to a spec
+ * changes this, and the table is read in full again: rows saved before the
+ * field existed cannot answer a rule that needs it.
+ */
+export function specHash(tableName) {
+  const spec = TABLES[tableName];
+  if (!spec) return null;
+  const filter = typeof spec.filter === 'function' ? `fn:${spec.filter.toString()}` : (spec.filter || '');
+  return crypto.createHash('sha256')
+    .update(JSON.stringify({ fields: spec.fields, filter, label: spec.filterLabel || null }))
+    .digest('hex').slice(0, 16);
 }

@@ -1,4 +1,13 @@
 import crypto from 'node:crypto';
+import { catalogueRule, effectiveBand, POPULATION_MODIFIERS, GATING_KINDS } from './cmdb-quality.js';
+import { cmdbGateRules, GATE_RULES, cmdbInScope } from './cmdb-gate.js';
+import { cmdbCorrectnessRules, CORRECTNESS_RULES } from './cmdb-correctness.js';
+import { cmdbCompletenessRules, COMPLETENESS_RULES } from './cmdb-completeness.js';
+import { cmdbUniquenessRules, UNIQUENESS_RULES } from './cmdb-uniqueness.js';
+import { cmdbIdentificationRules, IDENTIFICATION_RULES } from './cmdb-identification.js';
+import { buildSignals, materialityFor } from './cmdb-signals.js';
+import { TABLES } from './tables.js';
+import { scopeOf, scopeOfRule, MODULE_KEYS, moduleTables } from './scopes.js';
 
 /**
  * The deterministic rule pack — Health Assist's findings engine.
@@ -26,6 +35,7 @@ export const RULE_VERSION = '2.0.0';
 /** domain key → [DOMAIN, human label]. The closed vocabulary for grouping. */
 export const AGENTS = Object.freeze({
   cmdb_agent: ['CMDB', 'CMDB quality'],
+  cmdb_governance_agent: ['CMDB_GOVERNANCE', 'CMDB health governance'],
   relationship_agent: ['RELATIONSHIP', 'Relationship integrity'],
   csdm_agent: ['CSDM', 'Service model completeness'],
   customization_agent: ['CUSTOMIZATION', 'Business rule review'],
@@ -53,7 +63,14 @@ export const AGENTS = Object.freeze({
   problem_agent: ['PROBLEM', 'Problem hygiene'],
 });
 
-const SEVERITY_RANK = Object.freeze({ CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 });
+const SEVERITY_RANK = Object.freeze({ SYSTEMIC: 6, CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 });
+
+/**
+ * The catalogue rules this build evaluates. Everything else in the SAOS
+ * catalogue is not built yet, and a dimension with no built rule is reported as
+ * NOT MEASURED — never as a clean 100.
+ */
+export const IMPLEMENTED_CATALOGUE_RULES = Object.freeze(new Set([...GATE_RULES, ...COMPLETENESS_RULES, ...CORRECTNESS_RULES, ...UNIQUENESS_RULES, ...IDENTIFICATION_RULES]));
 
 /**
  * The severity vocabulary, with the words a person reads.
@@ -68,11 +85,17 @@ const SEVERITY_RANK = Object.freeze({ CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, I
  * top of the scale legible to a colourblind reader.
  */
 export const SEVERITIES = Object.freeze([
-  { key: 'CRITICAL', label: 'Critical', rank: 5, tone: 'critical', glyph: '▲', blurb: 'Fix now — this is actively harmful.' },
-  { key: 'HIGH', label: 'Major', rank: 4, tone: 'major', glyph: '▲', blurb: 'Fix soon — real risk to operations.' },
-  { key: 'MEDIUM', label: 'Moderate', rank: 3, tone: 'moderate', glyph: '●', blurb: 'Plan it in — data quality and hygiene.' },
-  { key: 'LOW', label: 'Low', rank: 2, tone: 'low', glyph: '●', blurb: 'Review when convenient.' },
-  { key: 'INFO', label: 'Info', rank: 1, tone: 'info', blurb: 'For awareness only.' },
+  /* SYSTEMIC is not a findings section. A BASE-Systemic finding is a trust-gate
+     blocker shown above the score; a finding ESCALATED to Systemic zeroes its
+     record but does not gate. `gate: true` tells the page to render it that way. */
+  { key: 'SYSTEMIC', label: 'Systemic', rank: 6, weight: 100, tone: 'systemic', glyph: '◆', gate: true, blurb: 'The governance mechanism that should prevent defects is itself broken. One finding explains thousands.' },
+  { key: 'CRITICAL', label: 'Critical', rank: 5, weight: 40, tone: 'critical', glyph: '▲', blurb: 'Causes operational blindness, silently corrupts data, or makes a dependent capability return a wrong answer.' },
+  /* Key stays HIGH so stored runs keep their meaning; the word is the Schema's. */
+  { key: 'HIGH', label: 'High', rank: 4, weight: 15, tone: 'major', glyph: '▲', blurb: 'Materially degrades trust or blocks a capability. The system does not lie, it cannot help.' },
+  /* Key stays MEDIUM for the same reason; the Schema calls it Moderate. */
+  { key: 'MEDIUM', label: 'Moderate', rank: 3, weight: 5, tone: 'moderate', glyph: '●', blurb: 'Real defect, contained blast radius, bulk-fixable, no immediate operational consequence.' },
+  { key: 'LOW', label: 'Low', rank: 2, weight: 1, tone: 'low', glyph: '●', blurb: 'Hygiene and completeness. Matters in aggregate, not individually.' },
+  { key: 'INFO', label: 'Info', rank: 1, weight: 0, tone: 'info', blurb: 'For awareness only.' },
 ]);
 
 /** Serial values that are placeholders rather than identities. */
@@ -133,13 +156,74 @@ export class EstateRules {
    * @param {Record<string, object>}   coverage table → coverage descriptor
    * @param {number} staleDays                  age at which a CI is a review signal
    */
-  constructor(estate, coverage, staleDays = 90, now = new Date()) {
+  constructor(estate, coverage, staleDays = 90, now = new Date(), { meta = {}, gateOptions = {}, acceptedFingerprints = [], history = {} } = {}) {
     this.estate = estate || {};
     this.coverage = coverage || {};
     this.staleDays = staleDays;
     this.findings = [];
     this.skipped = [];
     this.now = now;
+    /* Bounded non-table reads (class hierarchy, filter counts, job triggers)
+       made by extract.js. The rule pack stays pure: it only reads this. */
+    this.meta = meta || {};
+    this.gateOptions = gateOptions;
+    this.gate = null;
+    /* Percentage rules measure; they do not deduct per record. */
+    this.kpis = [];
+    this.signals = null;
+    /* "Accepted risk" lifecycle decisions — the approved-exception de-escalator. */
+    this.accepted = new Set(acceptedFingerprints);
+    /* Measures recorded on every run (duplicate-set membership, open de-dup
+       tasks) and the same measures from earlier runs — the trend rules' input. */
+    this.measures = {};
+    this.history = history || {};
+  }
+
+  /**
+   * Record a finding for a SAOS catalogue rule.
+   *
+   * The catalogue decides the base band, the dimension and whether the rule is a
+   * trust-gate rule; the caller supplies only the context modifiers it could
+   * evaluate. The effective band is computed, never passed in, so a rule cannot
+   * quietly assert its own severity.
+   */
+  addCatalogued(ruleId, tableName, records, fields, description, {
+    title = null, evidence = [], escalators = [], deEscalators = [], notEvaluated = [],
+    guard = null, confidence = 1.0, recommendation, agent = 'cmdb_governance_agent',
+  } = {}) {
+    const rule = catalogueRule(ruleId);
+    if (!rule) throw new Error(`${ruleId} is not in the SAOS catalogue`);
+    this.add(agent, ruleId, tableName, records, fields, title || rule.title, description, {
+      severity: rule.base,
+      confidence,
+      recommendation: recommendation || rule.remediationLane || undefined,
+    });
+    const f = this.findings[this.findings.length - 1];
+    /* The approved exception is known only once the fingerprint exists. It is a
+       de-escalator on the SAME fingerprint, so accepting a finding can never
+       change which finding it is. */
+    if (this.accepted.has(f.fingerprint) && !deEscalators.includes('approved_exception')) {
+      deEscalators = [...deEscalators, 'approved_exception'];
+    }
+    const severity = effectiveBand(rule.base, { escalators, deEscalators });
+    f.severity = severity;
+    f.evidence.push(...evidence);
+    Object.assign(f, {
+      base_severity: rule.base,
+      /* What the record is CHARGED. Only the CI's own context moves it; the
+         materiality pass may later move `severity` but never this. */
+      deduction_severity: severity,
+      dimension: rule.dimension,
+      /* Systemic gates only when it invalidates what the composite means (18 Sep). */
+      gate: rule.base === 'SYSTEMIC' && GATING_KINDS.has(rule.systemicKind),
+      posture: rule.base === 'SYSTEMIC' && !GATING_KINDS.has(rule.systemicKind),
+      escalated_to_systemic: rule.base !== 'SYSTEMIC' && severity === 'SYSTEMIC',
+      lane: rule.lane,
+      catalogue_group: rule.group,
+      modifiers: { escalators, de_escalators: deEscalators, not_evaluated: notEvaluated },
+      false_positive_guard: { text: rule.falsePositiveGuard, evaluated: Boolean(guard?.evaluated), note: guard?.note || null },
+    });
+    return f;
   }
 
   /** See `isComplete` — the one place the completeness question is answered. */
@@ -231,15 +315,171 @@ export class EstateRules {
     });
   }
 
-  analyze() {
-    this.cmdbRules();
-    this.relationshipRules();
-    this.serviceRules();
-    this.platformRules();
-    this.itomRules();
-    this.itsmRules();
-    this.synthesize();
+  /**
+   * Run the rule families for the modules asked for — every module by default.
+   *
+   * A family runs when ANY module it can report for is wanted: the platform
+   * family also raises three ITOM rules (MID-DOWN, EVENT-UNBOUND, PERF-ECC-AGE),
+   * so it runs for either. What leaves is filtered by module afterwards —
+   * findings by their scope, skipped checks by their rule — so a module-limited
+   * scan never reports on a module it did not check.
+   *
+   * WHAT EACH MODULE READ. The estate and the coverage are watched while a
+   * family runs, and every table it touched is recorded against that family's
+   * modules as `this.dependencies`. A module's result is reusable only while
+   * those tables are unchanged, and the list comes from what the rules actually
+   * read rather than from a list somebody has to keep in step with them.
+   */
+  analyze({ modules = null } = {}) {
+    const want = new Set(modules && modules.length ? modules : MODULE_KEYS);
+    const raw = { estate: this.estate, coverage: this.coverage };
+    const touched = {};
+    let current = [];
+    /*
+     * A family that reports for more than one module charges each table to the
+     * module that declares it. Measured: the platform family reads `sys_script`
+     * for Platform and `ecc_queue` for ITOM, and charging both to both made ITOM
+     * re-read whenever a business rule changed. A table no module in the family
+     * declares is charged to all of them — never to none.
+     */
+    const note = (prop) => {
+      if (typeof prop !== 'string' || !TABLES[prop]) return;
+      const owners = current.length > 1 ? current.filter((m) => moduleTables([m]).includes(prop)) : current;
+      for (const m of (owners.length ? owners : current)) (touched[m] ||= new Set()).add(prop);
+    };
+    this.estate = new Proxy(raw.estate, { get: (t, p) => { note(p); return t[p]; } });
+    this.coverage = new Proxy(raw.coverage, { get: (t, p) => { note(p); return t[p]; } });
+    const family = (mods, fn) => {
+      const run = mods.filter((m) => want.has(m));
+      if (!run.length) return;
+      current = run;
+      try { fn(); } finally { current = []; }
+    };
+    try {
+      family(['cmdb'], () => {
+        this.signals = buildSignals(this);
+        this.gate = cmdbGateRules(this, this.gateOptions);
+        cmdbCompletenessRules(this);
+        cmdbCorrectnessRules(this);
+        cmdbUniquenessRules(this);
+        cmdbIdentificationRules(this);
+        this.applyMateriality();
+        this.cmdbRules();
+        this.relationshipRules();
+        this.serviceRules();
+      });
+      family(['platform', 'itom'], () => this.platformRules());
+      family(['itom'], () => this.itomRules());
+      family(['itsm'], () => this.itsmRules());
+      this.findings = this.findings.filter((f) => want.has(scopeOf(f)));
+      this.skipped = this.skipped.filter((x) => want.has(scopeOfRule(x.rule)));
+      /* Impact is traced through the CI graph, and only CMDB findings name CIs,
+         so what synthesis reads is a CMDB dependency and nobody else's. */
+      current = want.has('cmdb') ? ['cmdb'] : [];
+      try { this.synthesize(); } finally { current = []; }
+    } finally {
+      this.estate = raw.estate;
+      this.coverage = raw.coverage;
+    }
+    this.dependencies = Object.fromEntries([...want].map((m) => [m, [...(touched[m] || [])].sort()]));
     return this.findings;
+  }
+
+  /**
+   * MATERIALITY — decision 3 of 17 Sep, split by decision 1 of 18 Sep.
+   *
+   * Per rule, per class, over the in-scope CIs: a rule affecting at least 20% of
+   * a class AND at least 10 CIs is a pattern, not an exception; one affecting
+   * fewer than max(5, 1% of the class) is below the materiality floor.
+   *
+   * Both are properties of the CLASS, not of a CI, so neither changes what a
+   * record is charged:
+   *   - a pattern surfaces as ONE finding for the class, one band above the
+   *     rule's base (a Critical rule's pattern is Systemic). Each affected record
+   *     keeps its own finding and its own deduction.
+   *   - below the floor lowers where a record finding is REPORTED, never its
+   *     deduction — the same asymmetry in reverse, so the score cannot be moved
+   *     by class size alone.
+   * Only record rules in a scored dimension, never a gate rule.
+   */
+  applyMateriality() {
+    const scope = new Set(cmdbInScope(this).ids);
+    const ciById = new Map((this.estate.cmdb_ci || []).filter((c) => scope.has(c.sys_id)).map((c) => [c.sys_id, c]));
+    const eligible = this.findings.filter((f) => {
+      const r = catalogueRule(f.rule_id);
+      return r && r.kind === 'record' && r.track === 'dimension' && r.base !== 'SYSTEMIC' && !f.pattern && !f.unscored_reason && (f.target_ids || []).length && f.modifiers;
+    });
+    const verdicts = materialityFor(eligible, ciById);
+    const patterns = new Map();                    // rule|class -> { rule, cls, ids:Set, classSize, agent }
+    for (const f of eligible) {
+      const m = f.modifiers;
+      m.not_evaluated = (m.not_evaluated || []).filter((k) => !POPULATION_MODIFIERS.includes(k));
+      m.escalators = m.escalators.filter((k) => !POPULATION_MODIFIERS.includes(k));
+      m.de_escalators = m.de_escalators.filter((k) => !POPULATION_MODIFIERS.includes(k));
+      const rule = catalogueRule(f.rule_id);
+      const own = effectiveBand(rule.base, { escalators: m.escalators, deEscalators: m.de_escalators });
+      f.deduction_severity = own;
+      f.escalated_to_systemic = own === 'SYSTEMIC';
+      const v = verdicts.get(f.fingerprint);
+      if (!v) {
+        m.not_evaluated.push('class_defect_rate', 'below_materiality');
+        f.severity = own;
+        continue;
+      }
+      f.materiality = { class: v.cls, affected: v.affected, class_size: v.classSize };
+      if (v.deEscalate) m.de_escalators.push('below_materiality');
+      f.severity = effectiveBand(rule.base, { escalators: m.escalators, deEscalators: m.de_escalators });
+      if (v.escalate) {
+        const key = `${f.rule_id}|${v.cls}`;
+        if (!patterns.has(key)) patterns.set(key, { rule, cls: v.cls, ids: new Set(), classSize: v.classSize, agent: f.agent_id, table: f.table });
+        for (const id of f.target_ids) if (ciById.get(id)?.sys_class_name === v.cls) patterns.get(key).ids.add(id);
+      }
+    }
+    for (const [key, p] of patterns) {
+      const fingerprint = crypto.createHash('sha256').update(`pattern|${key}`).digest('hex');
+      const de = this.accepted.has(fingerprint) ? ['approved_exception'] : [];
+      const severity = effectiveBand(p.rule.base, { escalators: ['class_defect_rate'], deEscalators: de });
+      const ids = [...p.ids];
+      const pct = p.classSize ? ((100 * ids.length) / p.classSize).toFixed(1) : '0';
+      for (const f of eligible) if (`${f.rule_id}|${f.materiality?.class}` === key) f.pattern_fingerprint = fingerprint;
+      this.findings.push({
+        fingerprint,
+        agent_id: p.agent,
+        rule_id: p.rule.id,
+        domain: AGENTS[p.agent][0],
+        table: p.table,
+        target_ids: ids,
+        title: `${p.rule.title} — class-wide pattern in ${p.cls}`,
+        description: `${ids.length} of ${p.classSize} in-scope ${p.cls} CIs (${pct}%) fail ${p.rule.id}. At this rate it is a pattern in how the class is populated, not a set of exceptions: fix the source, not the records. Each record keeps its own finding and its own ${p.rule.base} deduction; this finding changes no score.`,
+        severity,
+        confidence: 1.0,
+        estate_wide: false,
+        affected_ci_ids: p.table === 'cmdb_ci' ? ids : [],
+        affected_service_ids: [],
+        evidence: [{
+          source: 'Health Assist materiality pass',
+          sn_table: p.table,
+          sn_sys_id: ids[0] || null,
+          field_name: 'sys_class_name',
+          field_value: p.cls,
+          reason: `${ids.length} affected of ${p.classSize} in class (threshold: ≥20% and ≥10 CIs)`,
+          collected_at: this.now.toISOString(),
+        }],
+        recommendation: p.rule.remediationLane || undefined,
+        pattern: true,
+        base_severity: p.rule.base,
+        deduction_severity: null,
+        dimension: p.rule.dimension,
+        gate: false,
+        posture: false,
+        escalated_to_systemic: false,
+        lane: p.rule.lane,
+        catalogue_group: p.rule.group,
+        modifiers: { escalators: ['class_defect_rate'], de_escalators: de, not_evaluated: [] },
+        materiality: { class: p.cls, affected: ids.length, class_size: p.classSize },
+        false_positive_guard: { text: p.rule.falsePositiveGuard, evaluated: true, note: 'Population rule: the rate is computed over in-scope CIs of the class only.' },
+      });
+    }
   }
 
   /**

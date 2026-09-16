@@ -652,19 +652,19 @@ test('T13 — migration 23 is the latest, and re-running migrations is a no-op',
     // PHASE 8 appended migration 23 (task correlation on the two audit tables).
     // The guard itself is unchanged: the shipped migrations must be untouched
     // and only the newest phase may append.
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 26,
-      'the schema is not at exactly 26 migrations — the shipped ones must be untouched and only the '
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 28,
+      'the schema is not at exactly 28 migrations — the shipped ones must be untouched and only the '
       + 'newest phase may append');
 
     // Idempotent: migrating an already-current database changes nothing.
     migrate(db);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 26);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 28);
 
     // And migration 21 is self-contained: a database at 20 gains exactly the
     // two new tables and nothing else has to be re-run.
     db.exec('DROP TABLE agent_task_steps; DROP TABLE agent_tasks; PRAGMA user_version = 20;');
     migrate(db);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 26);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 28);
     for (const t of ['agent_tasks', 'agent_task_steps']) {
       const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t);
       assert.ok(row, `migration 21 did not recreate ${t}`);

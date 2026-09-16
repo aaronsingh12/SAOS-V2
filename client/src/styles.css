@@ -1694,6 +1694,7 @@ body:has(.agent-host:not([hidden])) .dock { bottom: 104px; }
    would double-encode bar length as hue and spend the only free channel on
    information the chart already shows.                                        */
 :root {
+  --hs-systemic: #a77bd8;
   --hs-critical: #e4645c;
   --hs-major:    #e0a458;
   --hs-moderate: #6ca5da;
@@ -1712,6 +1713,7 @@ body:has(.agent-host:not([hidden])) .dock { bottom: 104px; }
 }
 
 /* Tone fills. One place, so a tone cannot drift between a bar and a tag. */
+.tone-systemic { --hs-tone: var(--hs-systemic); }
 .tone-critical { --hs-tone: var(--hs-critical); }
 .tone-major    { --hs-tone: var(--hs-major); }
 .tone-moderate { --hs-tone: var(--hs-moderate); }
@@ -2041,3 +2043,49 @@ body:has(.agent-host:not([hidden])) .dock { bottom: 104px; }
   .hs-driver { grid-template-columns: minmax(0, 1fr) 90px; }
   .hs-driver .hs-bar-track { display: none; }
 }
+
+
+/* ── Trust gate (SAOS CMDB Quality, Layer 1) ─────────────────────────────── */
+.hs-gate { border-left: 4px solid var(--hs-systemic); }
+.hs-gate.is-clear { border-left-color: var(--line); }
+.hs-gate-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.hs-gate-item {
+  width: 100%; text-align: left; background: transparent; color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; font: inherit;
+}
+.hs-gate-item:hover, .hs-gate-item.is-active { border-color: var(--hs-systemic); }
+.hs-gate-item code { color: var(--hs-systemic); margin-right: 6px; }
+.hs-gate-chip {
+  display: inline-block; font-size: 11px; line-height: 1; padding: 3px 6px; margin-right: 6px;
+  border-radius: 999px; border: 1px solid var(--hs-systemic); color: var(--hs-systemic); white-space: nowrap;
+}
+.hs-gate-chip.sm { font-size: 10px; padding: 2px 5px; }
+.hs-dims { margin-top: 14px; }
+.hs-dims .table td, .hs-dims .table th { padding: 5px 8px; }
+.hs-dim-off td { color: var(--muted); }
+.hs-articulation th { width: 150px; vertical-align: top; color: var(--muted); font-weight: 600; }
+.hs-articulation td { white-space: normal; }
+.hs-guard-open { color: var(--hs-major); margin-top: 4px; }
+
+.hs-escalated { border-left: 4px dashed var(--hs-systemic); padding-top: 10px; padding-bottom: 10px; }
+.hs-escalated .hs-sub { margin-top: 0; color: var(--hs-systemic); }
+.hs-chain { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+
+/* ── Scan options, module times, scan state ────────────────────────────── */
+.hs-scanopts {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  margin: 12px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.hs-scanopts legend { padding: 0 4px; font-size: 12px; }
+.hs-scanopts[disabled] { opacity: .6; }
+.hs-scanopt { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.hs-scanopt input { accent-color: var(--verdigris); }
+.hs-scanopt.is-full { font-weight: 600; }
+.hs-scanopt.is-reuse { margin-left: auto; color: var(--muted); }
+.hs-modtimes { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.hs-modtime b { color: var(--text); font-weight: 600; }
+.hs-modtime em { font-style: normal; }
+.hs-tile-when { font-size: 11px; color: var(--muted); }
+.hs-scanstate td, .hs-scanstate th { font-size: 12px; vertical-align: top; }
+@media (max-width: 640px) { .hs-scanopt.is-reuse { margin-left: 0; } }
+.hs-degraded { color: var(--amber); font-style: normal; }

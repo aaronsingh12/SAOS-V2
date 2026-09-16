@@ -1073,6 +1073,287 @@ keep their own records and are never pruned.
 
 ---
 
+### 16.8 CMDB Quality — the trust gate and the two-layer score
+
+The CMDB number is no longer a pass rate. It follows the SAOS rule catalogue
+(`SAOS_Health_Rules_Tracker_v3.xlsx`), loaded as data from
+`health/catalogue/cmdb.json` — 139 CMDB rules, each with its ten articulation
+fields, and the CMDB Quality model's ten dimensions (D1–D10, weights summing to
+100) from the data-quality tab.
+
+| layer | what it is | how it is computed |
+|---|---|---|
+| **1 — trust gate** | findings whose **base** severity is Systemic *and* whose `systemicKind` gates (config_absence, measured_kpi); Systemic *posture* is shown apart and never gates | never enter the number; while one is live the composite and every dimension score are **"Provisional — not trustworthy"** and the blockers are shown above the score |
+| **2 — record scores** | every other catalogued finding, in its dimension | `record = max(0, 100 − Σ w)`, `dimension = mean over in-scope records`, `composite = Σ weight × dimension`, with w = Critical 40 · High 15 · Moderate 5 · Low 1 |
+
+**Severity is base + context.** `effective = clamp(base + escalators −
+de-escalators, Low, Systemic)`, stacking, from the Schema tab's modifier lists.
+The finding's section is its effective band. A finding **escalated** to Systemic
+zeroes its record (w = 100) and does **not** trip the gate — `gate` and
+`escalated_to_systemic` are separate fields end to end.
+
+**What the engine refuses to invent.** A dimension with no built rule is *not
+measured* (never 100). A composite over fewer than ten dimensions states how much
+of the 100 weight it covers. A finding below Systemic that names no records is
+reported and left out of the arithmetic until how such findings score is decided.
+Weighted defect density per 100 records is kept as a secondary trend metric only.
+
+**Group 1 against the real platform** (verified on dev424910, 15 Sep 2026):
+`cmdb_health_inclusion_rule` does not exist — inclusion rules are
+`cmdb_health_config` (no `active` field), weights are `cmdb_health_metric_pref`,
+configured attributes are `cmdb_recommended_fields`, principal classes are
+`cmdb_class_info.principal_class`. The rules need a few non-table reads — the
+class hierarchy, each inclusion filter's match count, job triggers, policy
+execution counts, whether weights are audited — and `extractCmdbMeta` makes them
+as bounded queries, each with its own status, so a rule whose read failed skips
+with that reason. A rule whose False Positive Guard cannot be checked by machine
+says so on the finding (`false_positive_guard.evaluated = false`).
+
+With no principal class designated, principal-scoped rules fall back to every
+populated class and name the fallback; CMDB-139 reports the absence itself. On a
+PDI, rules whose evidence needs Event Management, Discovery schedules or Service
+Graph Connectors are marked *Not testable on PDI* in the tracker — an absent
+plugin is not a rule defect.
+
+**Routing by kind and track (16 Sep).** The composite is a *data-quality*
+score, so only `track: dimension` findings move it. Group 9 (governance posture),
+Group 13 (platform indicator), Group 14 (drift and regression) and Group 11
+outside its consumption-blocking rules (CSDM maturity) are counted in their own
+panels. Within a dimension, a **record** rule deducts from records, a **kpi**
+(percentage) rule contributes its passing % as a sub-score — blended 70/30 with
+the record average when both exist — and a **context** rule is shown, never
+scored. A base-Systemic percentage rule both scores (its measurement) and gates
+(its breach): CMDB-141, the impact-analysis headline, is named in the gate
+narrative. The kind and track of every rule are columns in tracker v3.
+
+**Two provisional states, never merged.** `gate_provisional` ("Score not
+trustworthy") and `coverage_provisional` ("Provisional — x of 100 weight
+measured"). Findings escalated to Systemic are listed in their own band with
+their chain (base band → Systemic, and the modifier reasons), apart from the gate.
+
+**Context signals** (`cmdb-signals.js`) decide the modifiers per record and say
+which could not be evaluated: Business Critical support (relationships traced
+downward from a "1 - most critical" service), production / non-production
+(`used_for`, which exists only on some child classes), shared infrastructure (by
+class), retiring (lifecycle status) and approved exception ("accepted risk" on the
+same fingerprint). Materiality modifiers stay unevaluated until thresholds are set.
+
+**Group 2 against the platform** (dev424910, 16 Sep): `used_for` and
+`business_criticality` are not on `cmdb_ci`; `core_company` has no `active` field;
+`cmdb_ci` is not audited. Four rules follow their false-positive guard where the
+literal detection logic would flood: CMDB-020 is scoped to physical classes,
+CMDB-022 skips when no CI allocates cost, CMDB-021 skips when the CMDB is not
+audited, CMDB-018 counts companies in use. Live counts cross-checked against the
+Aggregate API: CMDB-012 152, CMDB-013 871, CMDB-018 1,889, CMDB-020 15, CMDB-022 124.
+
+**Group 3 and the decisions of 17 Sep.** Every Systemic rule carries a
+`systemicKind`: a *config_absence* (CMDB-001, 044, 045) gates only; a
+*measured_kpi* (CMDB-046, 057, 070, 141) gates on breach **and** contributes its
+sub-score — two outputs of one measurement. Materiality is applied after every
+rule has run, per rule and per class over the in-scope CIs: escalate at ≥ 20% of
+the class **and** ≥ 10 CIs, de-escalate below max(5, 1% of the class). The
+production escalator fires only on *explicit* production (a used_for value that
+differs from the class default, or an audit row showing it was set) or independent
+evidence (configured production ranges or discovery sources, or an explicitly
+production parent service) — never on the OOB default. CMDB-141 counts only
+service-bound changes. CMDB-023 reads its permitted set from the instance's
+`life_cycle_mapping` (legacy status value → lifecycle stage); nothing is hardcoded.
+
+**Corrections of 18 Sep.** *Systemic is not the same as gate.* `systemicKind`
+also takes *posture* (CMDB-038, 056, 091, 104, 112, 131): Systemic, shown in its
+own panel, never gating and never scored. CMDB-002 and 003 keep gating; CMDB-116
+is shown only. *A record is charged for its own context, never its class's.* Every
+catalogued record finding carries two bands: `severity` (where it is reported)
+and `deduction_severity` (what its records are charged). Per-CI escalators
+(Business Critical support, production, shared infrastructure…) move both, and at
+Systemic zero that record. The class-defect-rate escalator is a property of the
+class: it surfaces **one** pattern finding per rule and class (`pattern: true`,
+base + 1, deducting nothing) and leaves every record at its own deduction. Below
+materiality moves reporting only, the same asymmetry in reverse. CMDB-023 flags
+only one field in a RUNNING stage against the other in a NOT-RUNNING stage
+(configurable sets), so Installed + Non-Operational — Operational + Design on the
+OOB mapping, "installed but down" — is valid without naming the pair. CMDB-030
+is a conservative subset and logs, every run, that it under-detects serials
+until a manufacturer pattern library is built from the estate's own formats.
+
+**Confirmations and corrections of 19 Sep.** *Two modifier families, encoded as
+such.* `MODIFIER_FAMILY` marks every modifier `per_ci` or `population`. A per-CI
+fact (Business Critical support, production, shared infrastructure, an approved
+exception) changes what the record is CHARGED and at Systemic zeroes it; a
+population fact (the class defect rate, the materiality floor) changes only where
+the finding is REPORTED, and `POPULATION_MODIFIERS` is derived from the family so
+the two can never drift. A class-wide pattern is one finding at base + one band.
+*The 5× lands on the defect, not the victim*: CMDB-033 carries
+`deduction_multiplier_by_record`, charging the twin with no relationships five
+times its band — which zeroes it — while the populated twin pays an ordinary
+duplicate charge. *Frequency guards are defaults that must be argued with*: when
+the serial (> 10 CIs) or name (> 5 CIs of one class) guard fires it prints the
+estate's own frequency histogram beside it. *CMDB-037* no longer blanket-skips
+cross-source `correlation_id` collisions — those are usually the IRE merge that
+did not happen — and skips only where every source involved is registered in
+`independentKeySpaces`; anything else is reported at 0.7 confidence. *CMDB-034*
+replaces "same branch only" with an allowlist of permitted class pairs: a printer
+and a software package sharing a name is reported (an event resolving that name
+by text can bind to either) at 0.75 confidence with the branches named, instead
+of being suppressed.
+
+**The data-quality slice is per dimension (decision 7 of 19 Sep).** Completeness,
+correctness, uniqueness, identification and reconciliation judge records somebody
+is supposed to maintain, so Retired (7), Stolen (8) and Absent (100) CIs are out
+of both their findings and their denominator — `dqActive` in `cmdb-signals.js`,
+and `dimensionScope` on the score, which reports `records_scored` and a
+`scope_note` per dimension. The lifecycle dimension (D8, CMDB-085/087) keeps every
+one of them: evaluating those statuses is what it is for. A CI with an EMPTY
+install_status stays in scope — it is not retired, it is unmaintained — and is
+counted in `measures.cis_without_install_status` until a lifecycle rule owns it.
+A rule whose SUBJECT is a dead CI still sees them: CMDB-024 looks the dead end of
+a relationship up from the full estate and charges the live CI.
+
+**CMDB-023 derives its permitted set, and names no stage (19 Sep).** For each
+class, the instance's own `life_cycle_mapping` says which stages `install_status`
+can reach and which `operational_status` can reach. A stage BOTH can reach is a
+claim either field is able to make; two such claims that differ are a
+contradiction. Measured on dev424910 for `cmdb_ci`: install reaches Operational,
+Purchase, Deploy, Inventory, End of Life, Missing; operational reaches
+Operational, Design, Inventory, End of Life — so the shared set is Operational,
+Inventory, End of Life. In Stock + Operational contradicts; Installed +
+Non-Operational (Operational + Design) does not, because only the operational
+field can say Design — "installed but down". `Defective`, `End of Operation` and
+`To Be Determined` exist as lifecycle controls on that instance but **no legacy
+value maps to them**, so they are stages the instance genuinely does not map and
+can never take part.
+
+**Group 5 — Identification and reconciliation (D4/D5).** CMDB-044…055, in
+`cmdb-identification.js`. D4 asks whether IRE can tell two CIs apart; D5 whether
+the right source wins each attribute. Verified on dev424910: `cmdb_identifier`
+(409) and `cmdb_identifier_entry` (471) carry real configuration;
+`cmdb_metadata_hosting`/`_containment` (88/145) say which classes are dependent by
+design, which is CMDB-047's guard; `sys_object_source`,
+`cmdb_datasource_precedence`, `cmdb_datasource_last_update`,
+`cmdb_datasource_staleness` and `cmdb_ire_output_aggregate_stats` all exist and
+are empty; **there is no `cmdb_ire_error` table on this version**. The inference
+the group rests on is stated on every run: ServiceNow keeps no per-CI "processed
+by IRE" flag, so CMDB-046/050 infer a bypass from a missing `sys_object_source`
+row — and when that table holds no rows at all, they SKIP rather than report a
+100% bypass rate, because "we cannot see the machinery" and "the machinery is off"
+are different facts. Configuration findings (CMDB-044/045/047/048/049/051/052/
+054/055) name config records and carry an `unscored_reason`: they gate or are
+reported, and never charge the CIs they govern — one misconfigured identifier
+would otherwise zero a whole class.
+
+**Group 4 — Uniqueness (D3).** CIs sharing one exact identity value (serial, IP,
+MAC, FQDN, correlation_id) form a duplicate set; sets sharing a member are one
+identity cluster, and every finding about a cluster carries it as `dedupe_key`,
+so a record caught by several rules pays one charge — the heaviest. CMDB-033
+(one member related, another not) charges 5× and replaces the symmetric charge
+through that key. CMDB-039 reports per discovery-source pair with an
+`unscored_reason`. Guards are frequency-based where the catalogue says so: a
+serial on more than 10 active CIs is a bad default, a name on more than 5 CIs of one class is
+generic; address sets exclude loopback, link-local, 0.0.0.0, configured VIP ranges
+and cluster / load-balancer / NAT / VM-object classes; CMDB-034 compares classes
+in one branch under `cmdb_ci` (which itself extends `cmdb` on a real instance)
+and skips directly related CIs. "Active" is `install_status` ≠ 7 in code: the
+platform's `install_status!=7` query also drops CIs with an empty status (117 on
+dev424910), so Aggregate cross-checks add `^ORinstall_statusISEMPTY`. De-duplication tasks
+are `reconcile_duplicate_task`, their CIs `duplicate_audit_result.follow_on_task`.
+CMDB-038 (posture) needs three snapshots of duplicate-set membership: each run
+records `measures.duplicate_sets` in its manifest, and the route passes earlier
+runs' measures in (`cmdbMeasureHistory`) — the rule pack stays pure. CMDB-043 is a
+measure (`measures.open_dedup_tasks`), never a finding.
+
+**Measured cost.** Each meta read records its duration. On dev424910 the identity
+reads took 545 s of a 20-minute run because they covered every identification
+entry; they are now limited to identifiers applying to a populated class's
+lineage — the same run then took 690 s (from 1,184 s) with identical findings.
+
+Findings carry the catalogue fields in `health_findings.scoring_json`
+(migration 27, replay-safe). Runs recorded before it keep their pass-rate score.
+
+### 16.9 Module scans and the incremental change check
+
+**A scan names its modules.** CMDB, ITOM, ITSM, Platform — or Full System Scan,
+which is all four. Each module keeps its own latest result and time:
+`health_runs.modules_json` says which modules a run holds results for (NULL for
+runs recorded before this, which were full scans; `[]` for a run that only
+verified). A module's current result is simply the newest finished run that
+covers it, so an ITSM-only scan never replaces the CMDB result. The All view is
+composed from the four (`GET /modules`), and its findings list reads each
+module's findings from that module's own run, every row carrying its `run_id`.
+A module-limited scan reads that module's declared tables plus `cmdb_ci` and
+`cmdb_rel_ci`, runs only the rule families that can report for it, and drops
+findings and skipped checks of modules it did not check. The CMDB governance
+reads run only when CMDB is being read, and a scan without CMDB has no CMDB
+number rather than one computed over the CIs it read for another module.
+
+**Why not "fetch only `sys_updated_on > last scan`".** The rules judge whole
+tables (duplicates, class sizes, relationship walks, the mean over every CI), and
+no local copy of the records is kept — a decision of 15 Sep 2026. Changed rows
+alone would be judged against nothing. So the unit of reuse is the module:
+
+| step | what happens |
+|---|---|
+| rule out | no earlier result · rules, catalogue, settings or the module's accepted risks changed (engine key) · a different account · result older than 24 h · full re-read asked for |
+| check | every input table of the module (declared, plus what its rules actually read last time — recorded while they ran, and charged to the module that declares the table when a rule family reports for several): one Aggregate call, row count + newest `sys_updated_on`; CMDB also checks its governance sources (`cmdbMetaSources`) |
+| decide | all unchanged → the result stands, verified now, nothing read · anything changed → that module is read in full |
+
+An insert or update moves the newest timestamp; a delete moves the count. For
+tables the instance keeps a deletion log for (audited collections and
+`glide.ui.audit_deleted_tables` — read from the instance each run) the check also
+counts `sys_audit_delete` rows since the stamp. On dev424910 that is 16 of the 44
+tables; `cmdb_ci` is not among them, so the count is compared for every table.
+
+**The check asks the read's own question.** `sliceWhere` builds the whole
+encoded query — the table's slice AND the cutoff bound — and the read and the
+check both use it, each at its own moment. Measured on dev424910: one change
+request carries `sys_updated_on` of 2035-08-22; a check that left the bound out
+counted a record the read never saw, and `change_request` looked changed on every
+run for ever, which kept CMDB and ITSM from ever being reused.
+
+**Stamps are taken before the read and belong to the result.** The stamp is the
+read's own count call (`changeStamp` returns the count and the newest update in
+one request), made immediately before the page walk, so anything that changes
+afterwards moves it — a false "changed" costs a re-read and a false "unchanged"
+cannot happen. A module is compared against the stamps in the manifest of the
+run that PRODUCED its result, never against a shared per-table timestamp: an
+ITSM-only scan re-reads `cmdb_ci` too, and moving a shared stamp would let the
+next CMDB check reuse a result computed from older rows. A read cut off by the
+row limit carries no stamp; a read that walked to its end is stamped even when
+row-level ACLs hide some rows (on dev424910 `sys_script` shows 5,729 of 5,796
+every time — requiring completeness made Platform unreusable). A log table has no
+`sys_updated_on` (`discovery_log` extends `syslog`), so its newest `sys_created_on`
+is used. A table that failed is stamped with how it failed, so
+"invalid table" on a PDI without Event Management stays unchanged until it stops.
+Stamps, checks and verifications are recorded only after `completeRun` — a failed
+or stopped scan leaves every earlier baseline exactly as it was.
+
+**The configuration table.** `health_table_scan_state` (migration 28) holds, per
+instance and table, whether change checking is on (off = always read in full),
+the last complete read, its stamp, whether deletions are logged and the last
+check's result — shown as *Scan state* on the page, toggled with
+`PATCH /scan-state/:table`. `health_module_state` records when a module's result
+was last verified unchanged and by which run. Pruning never removes a module's
+current result, however many scans of other modules follow it.
+
+**A degraded result is never kept.** A scan whose reads failed still produces
+findings — fewer of them, because the rules that needed those reads skipped.
+Measured on dev424910: a second full scan came back with 68 fewer findings and a
+CMDB score eight points higher, because the instance had slowed to the point of
+failing governance reads. Each module's result records which of its reads failed
+(`manifest.degraded`), and a module with any is re-read rather than reused, so a
+bad hour cannot be kept as good news. A table that is absent on the instance, or
+whose rows an ACL hides, is not degradation — those are stable facts the findings
+already state.
+
+**What cannot be seen.** Time alone changes some findings (a CI crosses 90 days
+untouched) with no row changing — hence the 24-hour limit. A record changed by a
+script that suppresses system fields does not move `sys_updated_on`. Row-level
+visibility changes for the same account are caught only when they move a count.
+Each run's manifest carries per-phase and per-table timings, so the cost is
+measured rather than guessed: on dev424910 a 500-row page of `cmdb_ci` takes about
+8 s and a change check about 1.5 s.
+
+---
+
 ## 17. The things that must stay true
 
 If a change would break one of these, it is the wrong change:

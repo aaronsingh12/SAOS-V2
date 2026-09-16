@@ -1244,6 +1244,79 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_health_finding_state_rule
     ON health_finding_state(instance_key, rule_id);
   `,
+
+  // 27 — CMDB QUALITY SCORING on each finding.
+  //
+  // The SAOS catalogue gives every rule a BASE band, and the finding's context
+  // modifiers move it to an EFFECTIVE band. `severity` keeps meaning what the
+  // page filters and counts by — the effective band — and this column carries
+  // what the two-layer score needs beside it: the base band, the dimension,
+  // whether it is a trust-gate rule, which modifiers applied or could not be
+  // evaluated, and whether the rule's False Positive Guard was checked.
+  //
+  // A COLUMN, not a table: it is one value per finding, read with the finding,
+  // and pruned with it. NULL for legacy rules and for runs recorded before it.
+  //
+  // Guarded like migration 23, because a bare ALTER is not replay-safe — the
+  // replay suite rewinds user_version and runs it again.
+  (db) => {
+    const has = db.prepare('PRAGMA table_info(health_findings)').all().some((c) => c.name === 'scoring_json');
+    if (!has) db.exec('ALTER TABLE health_findings ADD COLUMN scoring_json TEXT');
+  },
+
+  // 28 — MODULE SCANS AND INCREMENTAL CHANGE CHECKS.
+  //
+  // A health scan can now be limited to CMDB, ITOM, ITSM or Platform, and each
+  // module keeps its own latest result. `health_runs.modules_json` says which
+  // modules a run produced results for: NULL for every run recorded before this
+  // (they were full scans), `[]` for a run that only verified nothing changed.
+  //
+  // `health_table_scan_state` is the per-table configuration and the last read
+  // and change check of each allow-listed table, per instance: whether
+  // incremental checking is on for it, when it was last read completely, and
+  // what the last check found. It is NOT what a module's reuse is compared
+  // against — that is the stamp set stored in the manifest of the run that
+  // produced the module's result (see health/incremental.js for why).
+  //
+  // `health_module_state` records when a module's current result was last
+  // VERIFIED unchanged, and by which run. The result itself is always the
+  // newest run that covered the module; this only adds "still true at".
+  //
+  // Guarded like 23 and 27: the ALTER is not replay-safe on its own.
+  (db) => {
+    const has = db.prepare('PRAGMA table_info(health_runs)').all().some((c) => c.name === 'modules_json');
+    if (!has) db.exec('ALTER TABLE health_runs ADD COLUMN modules_json TEXT');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS health_table_scan_state (
+        instance_key        TEXT NOT NULL,
+        table_name          TEXT NOT NULL,
+        enabled             INTEGER NOT NULL DEFAULT 1,   -- 0: always read in full
+        spec_hash           TEXT,                          -- fields + slice at the last complete read
+        last_read_at        TEXT,                          -- set only after a run finished
+        last_read_run_id    TEXT,
+        last_stamp_count    INTEGER,
+        last_stamp_max      TEXT,                          -- newest sys_updated_on at that read
+        last_stamp_error    TEXT,                          -- how the table failed, when it did
+        deletion_log        INTEGER,                       -- 1 logged, 0 not, NULL unknown
+        last_check_at       TEXT,
+        last_check_changed  INTEGER,
+        last_check_reason   TEXT,
+        updated_at          TEXT NOT NULL,
+        PRIMARY KEY (instance_key, table_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS health_module_state (
+        instance_key        TEXT NOT NULL,
+        module              TEXT NOT NULL,                 -- cmdb | itom | itsm | platform
+        source_run_id       TEXT,                          -- the run whose result was verified
+        verified_at         TEXT,
+        verified_by_run_id  TEXT,
+        last_reasons_json   TEXT,                          -- why it was last re-read, if it was
+        updated_at          TEXT NOT NULL,
+        PRIMARY KEY (instance_key, module)
+      );
+    `);
+  },
 ];
 
 /**

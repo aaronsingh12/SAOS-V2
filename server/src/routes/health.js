@@ -15,12 +15,15 @@ import {
 } from '../health/proposal-store.js';
 import {
   openRun, completeRun, failRun, cancelRun, runInFlight, trend, scopesForRun,
-  listRuns, getRun, latestRun, listFindings, getFinding, deleteRun, abandonOrphanedRuns,
+  listRuns, getRun, latestRun, listFindings, getFinding, deleteRun, abandonOrphanedRuns, cmdbMeasureHistory,
+  moduleBaselines, tableSettings, recordScanOutcome, setTableIncremental, scanStateTable, moduleResults,
+  composedView, listModuleFindings,
 } from '../health/store.js';
 import {
   setFindingState, clearFindingState, stateMap, STATE_VOCABULARY,
 } from '../health/finding-state.js';
-import { scopeVocabulary, normaliseScope, scopeOf as scopeOfFinding } from '../health/scopes.js';
+import { scopeVocabulary, normaliseScope, normaliseModules, MODULE_KEYS, scopeOf as scopeOfFinding } from '../health/scopes.js';
+import { INCREMENTAL_DEFAULTS } from '../health/incremental.js';
 
 export const healthRouter = Router();
 
@@ -56,6 +59,9 @@ healthRouter.get('/meta', (req, res) => {
     findingStates: STATE_VOCABULARY,
     // And for the CMDB / ITOM / ITSM / Platform switch.
     scopes: scopeVocabulary(),
+    // The modules a scan can be limited to, and how unchanged modules are reused.
+    modules: MODULE_KEYS,
+    incremental: { ...INCREMENTAL_DEFAULTS, basis: 'row count and newest sys_updated_on per input table, compared with the run that produced each module\'s result' },
     domains: Object.entries(AGENTS).map(([agent, [domain, label]]) => ({ agent_id: agent, domain, label })),
     tables: Object.entries(TABLES).map(([name, spec]) => ({
       table: name,
@@ -162,8 +168,30 @@ function publish(entry, event) {
 async function executeRun(entry, { emit, auditRun, options }) {
   const { runId, controller } = entry;
   try {
-    const result = await runHealthCheck({ ...options, signal: controller.signal, onProgress: async (p) => emit({ type: 'progress', ...p }) });
+    /* "Accepted risk" decisions are the Schema's approved-exception de-escalator.
+       Read here, because the rule pack never touches the database. */
+    const acceptedRules = [...stateMap().values()].filter((st) => st.state === 'accepted')
+      .map((st) => ({ fingerprint: st.fingerprint, ruleId: st.ruleId }));
+    const measureHistory = cmdbMeasureHistory();
+    /* What each module's current result was computed from, and the per-table
+       settings — read here, because the run itself never touches the database. */
+    const result = await runHealthCheck({
+      ...options,
+      acceptedRules,
+      measureHistory,
+      baselines: moduleBaselines(),
+      tableSettings: tableSettings(),
+      user: boundInstance().username,
+      signal: controller.signal,
+      onProgress: async (p) => emit({ type: 'progress', ...p }),
+    });
     completeRun(runId, result);
+    /* Stamps, checks and verifications are recorded only now — after the run
+       finished and its results are stored. A failed or stopped scan never gets
+       here, so every earlier baseline stays exactly as it was. */
+    try { recordScanOutcome(runId, result); } catch (err) {
+      log.warn('health', `run ${runId.slice(0, 8)} finished but its scan state was not recorded — ${err.message}; the next scan re-reads what it cannot compare`);
+    }
     emit({ type: 'done', runId, status: result.status, manifest: result.manifest });
     finishBuildRun(auditRun, {
       status: result.status === 'failed' ? 'error' : 'ok',
@@ -172,6 +200,8 @@ async function executeRun(entry, { emit, auditRun, options }) {
         status: result.status,
         findings: result.manifest.findings_stored,
         score: result.manifest.metrics.cmdb_quality_score,
+        modules: result.manifest.modules,
+        verified: result.manifest.verified_modules,
       },
     });
   } catch (err) {
@@ -236,11 +266,16 @@ healthRouter.post('/runs', (req, res) => {
     });
   }
 
-  const { tables, staleDays, explain = true, limit } = req.body || {};
+  const { tables, staleDays, explain = true, limit, modules: requestedModules, reuse = true } = req.body || {};
+  /* Refused before a run row exists: an unknown module is a bad request, not a failed scan. */
+  let modules;
+  try { modules = normaliseModules(requestedModules); } catch (err) {
+    return res.status(err.status || 422).json({ message: err.message });
+  }
   const auditRun = startBuildRun({
     kind: 'health_check',
     label: bound.url,
-    request: { tables: tables ?? null, staleDays: staleDays ?? null, explain },
+    request: { tables: tables ?? null, staleDays: staleDays ?? null, explain, modules, reuse: reuse !== false },
   });
 
   const runId = openRun();
@@ -264,6 +299,8 @@ healthRouter.post('/runs', (req, res) => {
     auditRun,
     options: {
       tables,
+      modules,
+      reuse: reuse !== false,
       explain,
       limit: Number(limit) || undefined,
       staleDays: Number(staleDays) || undefined,
@@ -330,6 +367,62 @@ healthRouter.get('/runs', (req, res, next) => {
   try {
     res.json({ runs: listRuns({ limit: Math.min(Number(req.query.limit) || 20, 100) }) });
   } catch (err) { next(err); }
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MODULES — each keeps its own latest result and time
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * GET /api/health/modules — every module's current result, and the All view
+ * composed from them. `checkedAt` is when a module's rows were read;
+ * `verifiedAt` is when a later scan last confirmed none of its inputs changed.
+ */
+healthRouter.get('/modules', (req, res, next) => {
+  try {
+    const view = composedView();
+    res.json({ modules: moduleResults(), view: view ? withScopes(view) : null });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/health/modules/findings — findings from each module's own current result. */
+healthRouter.get('/modules/findings', (req, res, next) => {
+  try {
+    res.json(listModuleFindings({
+      scope: normaliseScope(req.query.scope),
+      domain: req.query.domain || undefined,
+      severity: req.query.severity || undefined,
+      priority: req.query.priority || undefined,
+      rule: req.query.rule || undefined,
+      limit: Math.min(Number(req.query.limit) || 100, 500),
+      offset: Number(req.query.offset) || 0,
+    }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/health/scan-state — the incremental configuration table: every
+ * allow-listed table, whether change checking is on for it, its last complete
+ * read and its last change check.
+ */
+healthRouter.get('/scan-state', (req, res, next) => {
+  try {
+    res.json({ tables: scanStateTable(), modules: moduleResults(), defaults: INCREMENTAL_DEFAULTS });
+  } catch (err) { next(err); }
+});
+
+/** PATCH /api/health/scan-state/:table — `{ enabled }`. Off means that table is always read in full. */
+healthRouter.patch('/scan-state/:table', (req, res, next) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(422).json({ message: '`enabled` must be true or false.' });
+    }
+    setTableIncremental(req.params.table, req.body.enabled);
+    return res.json({ ok: true, table: req.params.table, enabled: req.body.enabled });
+  } catch (err) {
+    if (err.status === 422) return res.status(422).json({ message: err.message });
+    return next(err);
+  }
 });
 
 /** GET /api/health/runs/latest — what the page shows before you run anything. */
@@ -738,20 +831,49 @@ healthRouter.get('/trend', (req, res, next) => {
  * `-` or `@` (trap #38), and these carry rule text and model-authored
  * summaries.
  */
+function exportFilters(req) {
+  return {
+    scope: normaliseScope(req.query.scope),
+    domain: req.query.domain || undefined,
+    severity: req.query.severity || undefined,
+    rule: req.query.rule || undefined,
+    /* The run's own storage cap, not a smaller one of our own: an export that
+       silently stopped at 10,000 of 12,194 would be a different report. */
+    limit: MAX_FINDINGS,
+  };
+}
+
+/** GET /api/health/modules/export.csv — the All view's export: each module from its own result. */
+healthRouter.get('/modules/export.csv', (req, res, next) => {
+  try {
+    const { findings } = listModuleFindings(exportFilters(req));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="health-modules-${new Date().toISOString().slice(0, 10)}.csv"`);
+    return res.send(findingsCsv(findings, { withRun: true }));
+  } catch (err) { return next(err); }
+});
+
+function findingsCsv(findings, { withRun = false } = {}) {
+  const columns = ['scope', 'severity', 'priority', 'domain', 'rule', 'title', 'table',
+    'records', 'sys_ids', 'state', 'state_reason', 'confidence', 'recommendation', ...(withRun ? ['run_id'] : [])];
+  const lines = [columns.join(',')];
+  for (const f of findings) {
+    lines.push([
+      scopeOfFinding(f), f.severity, f.priority, f.domain, f.rule_id, f.title, f.table,
+      (f.target_ids || []).length, (f.target_ids || []).join(' '),
+      f.lifecycle?.state || 'open', f.lifecycle?.reason || '',
+      f.confidence, f.recommendation || '', ...(withRun ? [f.run_id] : []),
+    ].map(csvCell).join(','));
+  }
+  return lines.join('\n');
+}
+
 healthRouter.get('/runs/:runId/export.csv', (req, res, next) => {
   try {
     const run = getRun(req.params.runId);
     if (!run) return res.status(404).json({ message: 'No such run on the bound instance.' });
 
-    const { findings } = listFindings(req.params.runId, {
-      scope: normaliseScope(req.query.scope),
-      domain: req.query.domain || undefined,
-      severity: req.query.severity || undefined,
-      rule: req.query.rule || undefined,
-      /* The run's own storage cap, not a smaller one of our own: an export that
-         silently stopped at 10,000 of 12,194 would be a different report. */
-      limit: MAX_FINDINGS,
-    });
+    const { findings } = listFindings(req.params.runId, exportFilters(req));
 
     const columns = ['scope', 'severity', 'priority', 'domain', 'rule', 'title', 'table',
       'records', 'sys_ids', 'state', 'state_reason', 'confidence', 'recommendation'];

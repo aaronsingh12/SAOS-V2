@@ -398,6 +398,22 @@ end date re-opens itself when it expires.
   "latest", so the page would show one run's coverage beside the other's
   findings. A check interrupted by the server stopping is closed as
   *interrupted* the moment you come back — it never blocks the next one.
+- **CMDB Quality, the SAOS way.** The CMDB number follows the SAOS rule catalogue: a *trust gate* of governance
+  findings (no inclusion rule, dead health jobs…) shown above the score — while one is open the score is marked
+  *Provisional — not trustworthy* — and a score built from ten weighted dimensions (Completeness, Correctness,
+  Uniqueness, Identification, Reconciliation, Relationships, Freshness, Lifecycle, Ownership, Consumption), where a
+  record loses 40/15/5/1 points per Critical/High/Moderate/Low finding. A dimension with no built rule says *not
+  measured*; it never counts as a clean 100. Findings are grouped as Critical, High, Moderate and Low by their severity
+  after context (production, business-critical service, approved exception…). A record is charged only for its own
+  context: a defect that runs through a whole class shows up as one *class-wide pattern* finding and never zeroes
+  the records. Systemic *posture* (trends, governance percentages) is shown on its own and neither gates nor scores.
+  Duplicates are grouped into identity clusters, so a CI caught by several duplicate rules is charged once.
+- **Scan what you need.** Tick CMDB, ITOM, ITSM or Platform — or Full System Scan. Each module keeps its own
+  latest result and time, so scanning ITSM leaves the CMDB result where it was.
+- **Skips what has not changed.** Before reading a module, each of its tables is asked for its row count and newest
+  update (and its deletion log, where the instance keeps one). A module with no changes keeps its last result, marked
+  as verified; a changed module is read in full. Nothing is stored in ServiceNow, and no copy of your records is
+  kept — the *Scan state* table shows every table's last read and last check, and lets you switch checking off for one.
 - **Keeps running when you leave.** Go to another page, another window, or
   reload the tab: the check carries on in the server, and Health Assist picks it
   back up with its progress when you return.

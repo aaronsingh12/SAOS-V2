@@ -400,3 +400,16 @@ test('the scorecard shows what is pulling the score down, and each driver filter
   assert.match(PAGE, /if \(next\.rule\) qs\.set\('rule', next\.rule\)/, 'the rule filter never reaches the server');
   assert.match(PAGE, /do not add up/, 'the page does not say driver shares overlap');
 });
+
+test('module scans: the page sends the ticked modules and reads each module from its own result', () => {
+  /* Each module keeps its own latest result (15 Sep 2026). A page that still
+     read one "latest run" would show an ITSM-only scan's empty CMDB as the CMDB. */
+  assert.match(PAGE, /startHealthRun\(\{ modules: full \? 'all' : list, reuse \}\)/, 'the scan does not say which modules it covers');
+  assert.match(PAGE, /Full System Scan/);
+  assert.match(PAGE, /api\.get\('\/health\/modules'\)/, 'the page does not load each module\'s own result');
+  assert.match(PAGE, /\/health\/modules\/findings\?/, 'the findings list does not come from each module\'s own run');
+  assert.match(PAGE, /findings\.find\(\(x\) => x\.fingerprint === fingerprint\)\?\.run_id/, 'a finding is not opened from the run that produced it');
+  assert.match(PAGE, /runId=\{detailRunId\}/, 'remediation is not bound to the finding\'s own run');
+  assert.equal(/api\.get\('\/health\/runs\/latest'\)/.test(PAGE), false, 'the page still reads a single latest run');
+  assert.match(PAGE, /\/health\/scan-state/, 'the scan-state configuration table is not shown');
+});

@@ -1356,7 +1356,7 @@ test('T89 — §66: a test result is stored on the existing task row, with no ne
 
   /* And the schema is unchanged. */
   const version = getDb().prepare('PRAGMA user_version').get();
-  assert.equal(Object.values(version)[0], 26, 'the database version moved');
+  assert.equal(Object.values(version)[0], 28, 'the database version moved');
   const tables = getDb().prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
   assert.equal(tables.some((t) => /nowtest|test_run|flow_test/i.test(t)), false, 'a NowTest table was created');
 });

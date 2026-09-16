@@ -38,12 +38,201 @@ import {
  * would drift the first time a rule changed severity. This is only the
  * fallback order for rendering before meta has loaded.                       */
 const SEVERITY_FALLBACK = [
+  { key: 'SYSTEMIC', label: 'Systemic', tone: 'systemic', glyph: '◆', gate: true },
   { key: 'CRITICAL', label: 'Critical', tone: 'critical', glyph: '▲' },
-  { key: 'HIGH', label: 'Major', tone: 'major', glyph: '▲' },
+  { key: 'HIGH', label: 'High', tone: 'major', glyph: '▲' },
   { key: 'MEDIUM', label: 'Moderate', tone: 'moderate', glyph: '●' },
   { key: 'LOW', label: 'Low', tone: 'low', glyph: '●' },
   { key: 'INFO', label: 'Info', tone: 'info', glyph: '·' },
 ];
+
+/**
+ * THE TRUST GATE — shown ABOVE the score, never as a findings section.
+ *
+ * A finding whose BASE severity is Systemic says the governance mechanism the
+ * score depends on is broken (no inclusion rule, a dead health job) — or, for
+ * the impact-analysis headline, that the CMDB is not doing its job at all.
+ * While one is live the score is not trustworthy, and the page says so before
+ * it shows the number.
+ */
+function TrustGate({ gate, activeRule, onPick }) {
+  if (!gate) return null;
+  const headline = gate.headline;
+  if (gate.trustworthy && !headline) return null;
+  return (
+    <div className={`card hs-gate${gate.trustworthy ? ' is-clear' : ''}`}>
+      {!gate.trustworthy && (
+        <>
+          <div className="card-title">
+            <span className="hs-sev-tag tone-systemic"><span aria-hidden="true">◆</span> Systemic</span>{' '}
+            {gate.label} until these are fixed
+          </div>
+          <p className="hs-lead">
+            These findings mean the mechanism that should keep the CMDB honest is itself broken. They do not deduct
+            points — they decide whether the score can be believed.
+          </p>
+          <ul className="hs-gate-list">
+            {gate.blockers.map((b) => (
+              <li key={b.fingerprint}>
+                <button type="button" className={`hs-gate-item${activeRule === b.rule_id ? ' is-active' : ''}`}
+                  onClick={() => onPick(b.rule_id)}>
+                  <code>{b.rule_id}</code> {b.title}{b.headline ? <span className="hs-gate-chip sm">headline measure</span> : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {headline && (
+        <p className="hs-fine">
+          <b>Headline — impact analysis:</b> affected services are found for {headline.numerator} of {headline.denominator}{' '}
+          ({Number(headline.pass_pct).toFixed(1)}%) {headline.basis}. {headline.alerts}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * SYSTEMIC POSTURE (18 Sep). Systemic, but neither gating nor scored: a trend
+ * or a governance percentage that says where the estate is heading. Shown
+ * beside the gate, never inside it.
+ */
+function PosturePanel({ posture = [], activeRule, onPick }) {
+  if (!posture.length) return null;
+  return (
+    <div className="card hs-escalated">
+      <div className="hs-sub">Systemic posture · {posture.length} finding{posture.length === 1 ? '' : 's'}</div>
+      <ul className="hs-gate-list">
+        {posture.map((p) => (
+          <li key={p.fingerprint}>
+            <button type="button" className={`hs-gate-item${activeRule === p.rule_id ? ' is-active' : ''}`} onClick={() => onPick(p.rule_id)}>
+              <code>{p.rule_id}</code> {p.title}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="hs-fine">Where the estate is heading, not whether today's score can be believed: these do not gate and do not deduct.</p>
+    </div>
+  );
+}
+
+/**
+ * ESCALATED — SYSTEMIC. Findings whose OWN context pushed them to Systemic. They
+ * COUNTED (each zeroed its record), so they are not gate blockers; they head the
+ * findings, apart from the gate, with the chain that got them there.
+ *
+ * CLASS-WIDE PATTERNS sit beside them, labelled apart: a defect rate is a
+ * property of the class, so a pattern raises where it is reported and never
+ * what a record is charged.
+ */
+function EscalatedBand({ escalated = [], patterns = [], activeRule, onPick, sevByKey }) {
+  if (!escalated.length && !patterns.length) return null;
+  const groups = new Map();
+  for (const e of escalated) {
+    const g = groups.get(e.rule_id) || { ...e, count: 0, records: 0 };
+    g.count += 1;
+    g.records += e.records;
+    groups.set(e.rule_id, g);
+  }
+  return (
+    <div className="card hs-escalated">
+      {escalated.length > 0 && (
+      <>
+      <div className="hs-sub">Escalated — Systemic · {escalated.length} finding{escalated.length === 1 ? '' : 's'}</div>
+      <ul className="hs-gate-list">
+        {[...groups.values()].map((g) => (
+          <li key={g.rule_id}>
+            <button type="button" className={`hs-gate-item${activeRule === g.rule_id ? ' is-active' : ''}`} onClick={() => onPick(g.rule_id)}>
+              <code>{g.rule_id}</code> {g.title} · {g.count}
+              <span className="hs-chain">
+                {sevByKey[g.chain.base]?.label || g.chain.base} → Systemic
+                {g.chain.escalators.length ? ` · ↑ ${g.chain.escalators.map((m) => m.label).join(' · ↑ ')}` : ''}
+                {g.chain.de_escalators.length ? ` · ↓ ${g.chain.de_escalators.map((m) => m.label).join(' · ↓ ')}` : ''}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="hs-fine">Each one zeroed its record in its dimension. They are not gate blockers.</p>
+      </>
+      )}
+      {patterns.length > 0 && (
+        <>
+          <div className="hs-sub">Class-wide patterns · {patterns.length}</div>
+          <ul className="hs-gate-list">
+            {patterns.map((p) => (
+              <li key={p.fingerprint}>
+                <button type="button" className={`hs-gate-item${activeRule === p.rule_id ? ' is-active' : ''}`} onClick={() => onPick(p.rule_id)}>
+                  <code>{p.rule_id}</code> {p.title}
+                  <span className="hs-gate-chip sm">pattern — does not zero records</span>
+                  <span className="hs-chain">
+                    {sevByKey[p.severity]?.label || p.severity} · {p.affected} of {p.class_size ?? '?'} in {p.class}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="hs-fine">A defect rate is a property of the class. Each affected record keeps its own finding and its own base deduction.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** D1–D10: weight, how many of the dimension's rules are built, and the score or why there is none. */
+const TRACK_LABEL = {
+  'gate-config': 'health configuration', governance: 'governance posture', platform: 'platform indicator',
+  trend: 'drift & regression', 'csdm-maturity': 'CSDM maturity', context: 'context (shown, not scored)', pending: 'awaiting a scoring decision',
+  posture: 'Systemic posture (not gated, not scored)',
+};
+
+function Dimensions({ q }) {
+  if (!q?.dimensions?.length) return null;
+  const tracks = Object.entries(q.tracks || {}).filter(([, n]) => n > 0);
+  return (
+    <div className="hs-dims">
+      <div className="hs-sub">CMDB Quality by dimension</div>
+      <div className="table-wrap">
+        <table className="table">
+          <thead><tr><th>Dimension</th><th>Weight</th><th>Rules built</th><th>Score</th><th>How</th></tr></thead>
+          <tbody>
+            {q.dimensions.map((d) => (
+              <tr key={d.key} className={d.measured ? '' : 'hs-dim-off'}>
+                <td><b>{d.key}</b> {d.label}</td>
+                <td className="mono">{d.weight}</td>
+                <td className="mono">{d.rules_built} of {d.rules_total}</td>
+                <td>{d.measured
+                  ? <><b>{d.score}</b>{q.gate && !q.gate.trustworthy ? <span className="hs-muted"> · not trustworthy</span> : null}</>
+                  : <span className="hs-muted">not measured</span>}
+                </td>
+                <td className="hs-muted">
+                  {d.measured && d.blend && `records ${d.record_part} × ${d.blend.record * 100}% + KPI ${d.kpi_part} × ${d.blend.kpi * 100}%`}
+                  {d.measured && !d.blend && (d.kpi_part != null ? `KPI only (${d.kpis.map((k) => `${k.rule_id} ${k.pass_pct}%`).join(', ')})` : 'record average')}
+                  {!d.measured && d.not_measured_because}
+                  {d.caveats?.map((c) => <div key={c} className="hs-guard-open">{c}</div>)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="hs-fine">
+        A dimension with no built rule is not measured — it is never counted as a clean 100. The trust gate (Group 1)
+        sits outside the 100. {q.in_scope?.basis ? `In scope: ${q.in_scope.basis}.` : ''}
+        {q.density?.defects_per_100_records != null
+          ? ` Secondary: ${q.density.defects_per_100_records} defects and ${q.density.weighted_per_100_records} weighted points per 100 in-scope records.`
+          : ''}
+      </p>
+      {tracks.length > 0 && (
+        <p className="hs-fine">
+          Not part of this data-quality score:{' '}
+          {tracks.map(([t, n]) => `${n} ${TRACK_LABEL[t] || t}`).join(' · ')}.
+        </p>
+      )}
+    </div>
+  );
+}
 
 /* Fallback scope list for the moment before meta arrives. The server's list
    replaces it immediately; this only stops the switch from flashing empty. */
@@ -138,7 +327,9 @@ function Bar({ glyph, label, value, max, tone, onClick, active, hint }) {
 function Trend({ points: raw, scope = 'cmdb', label = 'CMDB' }) {
   /* One line per scope. An older run recorded only the CMDB score, so the other
      scopes read `null` there — a real gap, not a back-filled number. */
-  const points = (raw || []).map((p) => ({
+  /* A module's line uses only the scans that measured it: an ITSM-only scan
+     is not a gap in the CMDB line, it is simply not a CMDB point. */
+  const points = (raw || []).filter((p) => !p.modules || scope === 'all' || p.modules.includes(scope)).map((p) => ({
     ...p,
     score: p.scopes ? (p.scopes[scope] ?? null) : (scope === 'cmdb' ? p.score : null),
   }));
@@ -266,6 +457,148 @@ function ScopeSwitch({ scopes, value, onChange, counts }) {
   );
 }
 
+/* ── Scan options ──────────────────────────────────────────────────────────
+ * Which modules the next scan checks, remembered per browser. Full System Scan
+ * is simply every module; unticking one of them unticks it.                  */
+const SCAN_PREFS = 'nha.healthScan';
+const MODULE_FALLBACK = ['cmdb', 'itom', 'itsm', 'platform'];
+
+function loadScanPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SCAN_PREFS) || 'null');
+    const modules = Array.isArray(raw?.modules) ? raw.modules.filter((m) => MODULE_FALLBACK.includes(m)) : MODULE_FALLBACK;
+    return { modules: modules.length ? modules : MODULE_FALLBACK, reuse: raw?.reuse !== false };
+  } catch {
+    return { modules: MODULE_FALLBACK, reuse: true };
+  }
+}
+
+function saveScanPrefs(prefs) {
+  try { localStorage.setItem(SCAN_PREFS, JSON.stringify(prefs)); } catch { /* a convenience, not state */ }
+}
+
+function ScanOptions({ scopes, modules, selected, onChange, reuse, onReuse, disabled }) {
+  const all = modules.every((m) => selected.includes(m));
+  const label = (m) => scopes.find((x) => x.key === m)?.label || m.toUpperCase();
+  const toggle = (m) => onChange(selected.includes(m) ? selected.filter((x) => x !== m) : modules.filter((x) => x === m || selected.includes(x)));
+  return (
+    <fieldset className="hs-scanopts" disabled={disabled}>
+      <legend className="hs-muted">Scan</legend>
+      <label className="hs-scanopt is-full">
+        <input type="checkbox" checked={all} onChange={() => onChange(all ? [] : [...modules])} />
+        <span>Full System Scan</span>
+      </label>
+      {modules.map((m) => (
+        <label key={m} className="hs-scanopt">
+          <input type="checkbox" checked={selected.includes(m)} onChange={() => toggle(m)} />
+          <span>{label(m)}</span>
+        </label>
+      ))}
+      <label className="hs-scanopt is-reuse" title="Each module is first checked for changes (row counts and newest update per table). A module with no changes keeps its last result instead of being read again.">
+        <input type="checkbox" checked={reuse} onChange={(e) => onReuse(e.target.checked)} />
+        <span>Skip modules with no changes</span>
+      </label>
+    </fieldset>
+  );
+}
+
+/** When each module's current result was read, and when it was last verified unchanged. */
+function ModuleTimes({ info, scopes, only = null }) {
+  if (!info) return null;
+  const label = (m) => scopes.find((x) => x.key === m)?.label || m.toUpperCase();
+  const keys = Object.keys(info).filter((m) => !only || m === only);
+  return (
+    <div className="hs-modtimes">
+      {keys.map((m) => {
+        const x = info[m];
+        return (
+          <span key={m} className="hs-modtime" title={x?.reasons?.length ? `Last re-read because: ${x.reasons.join('; ')}` : ''}>
+            <b>{label(m)}</b>
+            {x?.checkedAt
+              ? <> checked {new Date(x.checkedAt).toLocaleString()}{x.verifiedAt ? <em> · no changes as of {new Date(x.verifiedAt).toLocaleString()}</em> : null}</>
+              : <em> not scanned yet</em>}
+            {x?.degraded?.length ? <em className="hs-degraded"> · {x.degraded.length} read(s) failed — it will be read again</em> : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * THE SCAN STATE — the incremental configuration table, per allow-listed
+ * table: whether change checking is on, its last complete read, whether the
+ * instance logs its deletions, and what the last change check found.
+ */
+function ScanStateCard({ open, onToggle }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState('');
+  useEffect(() => {
+    if (!open || data) return;
+    api.get('/health/scan-state').then(setData).catch((e) => setErr(e.message));
+  }, [open, data]);
+  const flip = async (row) => {
+    setBusy(row.table);
+    try {
+      await api.patch(`/health/scan-state/${encodeURIComponent(row.table)}`, { enabled: !row.enabled });
+      setData((cur) => ({ ...cur, tables: cur.tables.map((t) => (t.table === row.table ? { ...t, enabled: !row.enabled } : t)) }));
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(''); }
+  };
+  const when = (v) => (v ? new Date(v).toLocaleString() : '—');
+  return (
+    <div className="card">
+      <div className="card-title hs-findings-head">
+        <span>Scan state</span>
+        <button type="button" className="btn ghost sm" onClick={onToggle} aria-expanded={open}>{open ? 'Hide' : 'Show'}</button>
+      </div>
+      <p className="hs-lead">
+        Before reading a module, each of its tables is asked for its row count and newest update. A module whose tables
+        and governance reads are all unchanged keeps its last result. Switching a table off means it is always read in full.
+      </p>
+      {open && err && <p className="error-text">{err}</p>}
+      {open && !data && !err && <SkeletonLines lines={4} />}
+      {open && data && (
+        <div className="table-wrap">
+          <table className="table hs-scanstate">
+            <thead>
+              <tr>
+                <th>Table</th><th>Modules</th><th>Change check</th><th>Last complete read</th><th>Rows</th>
+                <th>Newest update</th><th>Deletion log</th><th>Last check</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.tables.map((t) => (
+                <tr key={t.table}>
+                  <td className="mono">{t.table}</td>
+                  <td>{t.modules.join(', ') || '—'}</td>
+                  <td>
+                    <label className="hs-scanopt">
+                      <input type="checkbox" checked={t.enabled} disabled={busy === t.table} onChange={() => flip(t)} />
+                      <span>{t.enabled ? 'on' : 'off'}</span>
+                    </label>
+                  </td>
+                  <td>{when(t.last_read_at)}</td>
+                  <td className="mono">{t.unreadable ? 'unreadable' : (t.rows ?? '—')}</td>
+                  <td className="mono">{t.newest_change || '—'}</td>
+                  <td>{t.deletion_log == null ? 'unknown' : (t.deletion_log ? 'logged' : 'count check')}</td>
+                  <td>
+                    {t.last_check_at
+                      ? <>{t.last_check_changed ? 'changed' : 'unchanged'}<span className="hs-muted"> · {when(t.last_check_at)}</span>
+                        {t.last_check_reason && <div className="hs-fine">{t.last_check_reason}</div>}</>
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * One tile per scope, for the All view.
  *
@@ -289,6 +622,7 @@ function ScopeTiles({ summaries, scopes, onPick }) {
               {v ? v.word : (sum?.score_kind === 'none' ? 'No score for this area' : 'No score this run')}
             </span>
             <span className="hs-tile-count">{(sum?.findings ?? 0).toLocaleString()} found</span>
+            {sum?.checked_at && <span className="hs-tile-when">checked {new Date(sum.checked_at).toLocaleString()}</span>}
           </button>
         );
       })}
@@ -303,7 +637,16 @@ export default function HealthAssist() {
   const [params, setParams] = useSearchParams();
 
   const [meta, setMeta] = useState(null);
-  const [run, setRun] = useState(null);
+  /* Each module keeps its own latest result. `modulesInfo` says which run holds
+     it and when; `composed` is the All view built from all four; `moduleRun` is
+     the run behind the module tab on screen. */
+  const [modulesInfo, setModulesInfo] = useState(null);
+  const [composed, setComposed] = useState(null);
+  const [moduleRun, setModuleRun] = useState(null);
+  const [detailRunId, setDetailRunId] = useState(null);
+  const [scanModules, setScanModules] = useState(() => loadScanPrefs().modules);
+  const [reuse, setReuse] = useState(() => loadScanPrefs().reuse);
+  const [showScanState, setShowScanState] = useState(false);
   const [findings, setFindings] = useState([]);
   const [total, setTotal] = useState(0);
   /* The run lives in an app-wide store, not in this component — leaving the
@@ -336,14 +679,15 @@ export default function HealthAssist() {
     let alive = true;
     (async () => {
       try {
-        const [m, latest, tr] = await Promise.all([
-          api.get('/health/meta'), api.get('/health/runs/latest'),
+        const [m, mods, tr] = await Promise.all([
+          api.get('/health/meta'), api.get('/health/modules'),
           api.get('/health/trend').catch(() => ({ points: [] })),
         ]);
         if (!alive) return;
         setMeta(m);
         setPoints(tr.points || []);
-        if (latest.run) { setRun(latest.run); setFindings(latest.findings || []); setTotal(latest.total || 0); }
+        setModulesInfo(mods.modules || null);
+        setComposed(mods.view || null);
       } catch (e) { if (alive) setError(e.message); }
       finally { if (alive) setLoading(false); }
     })();
@@ -352,6 +696,31 @@ export default function HealthAssist() {
 
   const scopeList = meta?.scopes?.length ? meta.scopes : SCOPE_FALLBACK;
   const scope = scopeList.some((x) => x.key === params.get('scope')) ? params.get('scope') : 'all';
+  const moduleKeys = meta?.modules?.length ? meta.modules : MODULE_FALLBACK;
+  /* The All tab shows the composed view; a module tab shows that module's own run. */
+  const moduleRunId = scope === 'all' ? null : (modulesInfo?.[scope]?.runId ?? null);
+  /* Never the previous tab's run while this tab's is still loading. */
+  const run = scope === 'all' ? composed : (moduleRun && moduleRun.id === moduleRunId ? moduleRun : null);
+
+  const reloadModules = useCallback(async () => {
+    const mods = await api.get('/health/modules');
+    setModulesInfo(mods.modules || null);
+    setComposed(mods.view || null);
+    return mods;
+  }, []);
+
+  /* A module tab loads the run that holds that module's current result. */
+  useEffect(() => {
+    if (scope === 'all') return;
+    if (!moduleRunId) { setModuleRun(null); return; }
+    if (moduleRun?.id === moduleRunId) return;
+    let alive = true;
+    api.get(`/health/runs/${moduleRunId}`)
+      .then((r) => { if (alive) setModuleRun(r.run); })
+      .catch((e) => { if (alive) setError(e.message); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, moduleRunId]);
 
   const severities = meta?.severities?.length ? meta.severities : SEVERITY_FALLBACK;
   const sevByKey = useMemo(
@@ -359,14 +728,15 @@ export default function HealthAssist() {
     [severities],
   );
 
-  const loadFindings = useCallback(async (runId, next, scopeKey) => {
+  /* Findings come from each module's own current result; every row names its run. */
+  const loadFindings = useCallback(async (next, scopeKey) => {
     const qs = new URLSearchParams();
     if (scopeKey && scopeKey !== 'all') qs.set('scope', scopeKey);
     if (next.domain) qs.set('domain', next.domain);
     if (next.rule) qs.set('rule', next.rule);
     if (next.severity) qs.set('severity', next.severity);
     qs.set('limit', '200');
-    const data = await api.get(`/health/runs/${runId}/findings?${qs}`);
+    const data = await api.get(`/health/modules/findings?${qs}`);
     setFindings(data.findings || []);
     setTotal(data.total || 0);
   }, []);
@@ -374,7 +744,7 @@ export default function HealthAssist() {
   const applyFilter = async (patch) => {
     const next = { ...filter, ...patch };
     setFilter(next);
-    if (run) { try { await loadFindings(run.id, next, scope); } catch (e) { setError(e.message); } }
+    if (run) { try { await loadFindings(next, scope); } catch (e) { setError(e.message); } }
   };
 
   /*
@@ -394,11 +764,12 @@ export default function HealthAssist() {
 
   /* The list follows the scope. Keyed on the run too, so a fresh check reloads
      the view you were on rather than dropping back to All. */
+  const viewKey = scope === 'all' ? `all:${composed?.startedAt ?? ''}:${Object.values(modulesInfo || {}).map((x) => x.runId).join(',')}` : `${scope}:${moduleRunId ?? ''}`;
   useEffect(() => {
-    if (!run?.id) return;
-    loadFindings(run.id, { ...filter, domain: '', rule: '' }, scope).catch((e) => setError(e.message));
+    if (!run) { setFindings([]); setTotal(0); return; }
+    loadFindings({ ...filter, domain: '', rule: '' }, scope).catch((e) => setError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, run?.id]);
+  }, [viewKey, Boolean(run)]);
 
   /* Opening the page picks up a check that is already running — started
      before a refresh, from another tab, or before you went elsewhere. */
@@ -415,8 +786,12 @@ export default function HealthAssist() {
       try {
         const fresh = (await api.get(`/health/runs/${runId}`)).run;
         if (status === 'completed') {
-          setRun(fresh);
-          await loadFindings(runId, filter, scope);
+          await reloadModules();
+          const verified = fresh?.manifest?.verified_modules || [];
+          if (verified.length) {
+            const names = verified.map((m) => scopeList.find((x) => x.key === m)?.label || m).join(', ');
+            toast.success(`No changes in ${names} since the last scan — ${verified.length === 1 ? 'that result stands' : 'those results stand'}, verified now.`);
+          }
           try { setPoints((await api.get('/health/trend')).points || []); } catch { /* the trend is not load-bearing */ }
         } else if (status === 'failed') {
           setError(message || fresh?.error || 'The health check did not finish.');
@@ -428,9 +803,14 @@ export default function HealthAssist() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [healthRun.finishedSeq]);
 
-  const start = () => {
+  const chooseModules = (list) => { setScanModules(list); saveScanPrefs({ modules: list, reuse }); };
+  const chooseReuse = (on) => { setReuse(on); saveScanPrefs({ modules: scanModules, reuse: on }); };
+  const start = (only = null) => {
+    const list = Array.isArray(only) ? only : scanModules;
+    if (!list.length) { setError('Tick at least one module to scan.'); return; }
     setError(''); setOpenFinding(null); setDetail(null);
-    startHealthRun();
+    const full = moduleKeys.every((m) => list.includes(m));
+    startHealthRun({ modules: full ? 'all' : list, reuse });
   };
 
   /** Change a finding's lifecycle state. Presentation only — nothing is deleted. */
@@ -449,12 +829,16 @@ export default function HealthAssist() {
   };
 
   const openDetail = async (fingerprint) => {
+    /* A finding is read from the run that produced it — in the All view the
+       modules' results can come from different scans. */
+    const rid = findings.find((x) => x.fingerprint === fingerprint)?.run_id || run?.id;
+    setDetailRunId(rid);
     setOpenFinding(fingerprint);
     setDetail(null);
     setDetailBusy(true);
     setTab('ai');
     try {
-      setDetail(await api.get(`/health/runs/${run.id}/findings/${fingerprint}`));
+      setDetail(await api.get(`/health/runs/${rid}/findings/${fingerprint}`));
     } catch (e) { setError(e.message); setOpenFinding(null); }
     finally { setDetailBusy(false); }
   };
@@ -467,7 +851,7 @@ export default function HealthAssist() {
    * instance, and handing over a prompt must not become a way around that.
    */
   const askAgent = () => {
-    navigate(`/agent?health=${encodeURIComponent(run.id)}:${encodeURIComponent(openFinding)}`);
+    navigate(`/agent?health=${encodeURIComponent(detailRunId)}:${encodeURIComponent(openFinding)}`);
   };
 
   const manifest = run?.manifest;
@@ -482,8 +866,10 @@ export default function HealthAssist() {
   const sevCounts = summary?.severity_counts || manifest?.severity_counts || {};
   const score = scope === 'all' ? null : (summary ? summary.score : metrics.cmdb_quality_score);
   const v = verdict(score);
-  const scopeCounts = manifest?.scopes
-    ? Object.fromEntries(Object.entries(manifest.scopes).map(([k, x]) => [k, x.findings]))
+  /* Tab counts come from the composed view, so every tab shows its own module's latest count. */
+  const countSource = composed?.manifest?.scopes || manifest?.scopes;
+  const scopeCounts = countSource
+    ? Object.fromEntries(Object.entries(countSource).map(([k, x]) => [k, x.findings]))
     : null;
 
   const coverageRows = useMemo(
@@ -515,14 +901,24 @@ export default function HealthAssist() {
       const qs = new URLSearchParams(Object.entries(filter).filter(([, x]) => x));
       if (scope !== 'all') qs.set('scope', scope);
       const q = qs.toString();
-      return `/api/health/runs/${run.id}/export.csv${q ? `?${q}` : ''}`;
+      return run.id
+        ? `/api/health/runs/${run.id}/export.csv${q ? `?${q}` : ''}`
+        : `/api/health/modules/export.csv${q ? `?${q}` : ''}`;
     })()
     : '#';
   const unreadable = coverageRows.filter((c) => !USABLE.includes(c.status));
 
+  /* Systemic is a gate, not a section: the four sections are the effective
+     bands. Info appears only when something is in it. */
   const sevRows = severities
+    .filter((s) => !s.gate)
     .map((s) => ({ ...s, count: sevCounts[s.key] || 0 }))
     .filter((s) => s.count > 0 || ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(s.key));
+  const gate = summary?.gate ?? null;
+  const cmdbQ = summary?.cmdb_quality ?? manifest?.cmdb_quality ?? null;
+  /* Two states, never merged: the gate (not trustworthy) and coverage (not every dimension measured). */
+  const provisional = Boolean(gate && !gate.trustworthy);
+  const coverageLabel = cmdbQ?.composite?.coverage_label ?? null;
   const sevMax = Math.max(1, ...sevRows.map((s) => s.count));
 
   const domainRows = (summary?.domains || manifest?.domains || []).filter((d) => d.findings > 0)
@@ -557,6 +953,22 @@ export default function HealthAssist() {
                 <span><b>{f.target_ids?.length ?? 0}</b> record{(f.target_ids?.length ?? 0) === 1 ? '' : 's'} affected</span>
                 <span>rule <code>{f.rule_id}</code></span>
                 <span>table <code>{f.table}</code></span>
+                {f.catalogued && (
+                  <>
+                    {f.base_severity !== f.severity && (
+                      <span>base <b>{sevByKey[f.base_severity]?.label || f.base_severity}</b> → effective <b>{sev.label}</b></span>
+                    )}
+                    {f.gate && <span className="hs-gate-chip">trust gate — outside the score</span>}
+                    {f.escalated_to_systemic && <span className="hs-gate-chip">escalated to Systemic — zeroes its record, does not gate</span>}
+                    {f.posture && <span className="hs-gate-chip">Systemic posture — does not gate, does not score</span>}
+                    {f.pattern && <span className="hs-gate-chip">class-wide pattern — does not zero records</span>}
+                    {!f.pattern && f.deduction_severity && f.deduction_severity !== f.severity && (
+                      <span>charged as <b>{sevByKey[f.deduction_severity]?.label || f.deduction_severity}</b></span>
+                    )}
+                    <span>{f.dimension ? `dimension ${f.dimension}` : `Group ${f.catalogue_group}`}</span>
+                    {f.lane && <span>lane {f.lane}</span>}
+                  </>
+                )}
               </div>
             </div>
 
@@ -603,6 +1015,41 @@ export default function HealthAssist() {
                     <b>AI summary.</b> {f.ai_summary}{' '}
                     <em>Written from the finding above; the finding itself is deterministic.</em>
                   </div>
+                )}
+
+                {r.catalogue && (
+                  <>
+                    <div className="hs-sub">How this rule works (SAOS catalogue)</div>
+                    <table className="table hs-articulation">
+                      <tbody>
+                        <tr><th>Source tables</th><td>{r.catalogue.sourceTables}</td></tr>
+                        <tr><th>Detection logic</th><td className="mono">{r.catalogue.detectionLogic}</td></tr>
+                        <tr><th>Threshold</th><td>{r.catalogue.threshold}</td></tr>
+                        <tr><th>Confidence basis</th><td>{r.catalogue.confidenceBasis}</td></tr>
+                        <tr>
+                          <th>False-positive guard</th>
+                          <td>
+                            {r.catalogue.falsePositiveGuard}
+                            {f.false_positive_guard && (
+                              <div className={f.false_positive_guard.evaluated ? 'hs-muted' : 'hs-guard-open'}>
+                                {f.false_positive_guard.evaluated ? 'Checked: ' : 'Not checked by machine: '}
+                                {f.false_positive_guard.note}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                        {f.modifiers && (f.modifiers.escalators?.length > 0 || f.modifiers.de_escalators?.length > 0) && (
+                          <tr>
+                            <th>Modifiers applied</th>
+                            <td>
+                              {[...(f.modifiers.escalators || []).map((m) => `↑ ${m}`), ...(f.modifiers.de_escalators || []).map((m) => `↓ ${m}`)].join(' · ')}
+                            </td>
+                          </tr>
+                        )}
+                        <tr><th>Cross-domain link</th><td>{r.catalogue.crossDomainLink}</td></tr>
+                      </tbody>
+                    </table>
+                  </>
                 )}
 
                 <div className="hs-sub">Evidence · {f.evidence?.length ?? 0} field read(s)</div>
@@ -732,7 +1179,7 @@ export default function HealthAssist() {
               */}
             <RemediationDrawer
               open={remediating}
-              runId={run.id}
+              runId={detailRunId}
               finding={f}
               onClose={() => setRemediating(false)}
             />
@@ -748,8 +1195,8 @@ export default function HealthAssist() {
       <div className="card">
         <div className="card-title">Health Assist</div>
         <div className="row">
-          <button className="btn primary" onClick={start} aria-busy={running} disabled={running}>
-            {running ? 'Checking…' : run ? 'Check again' : 'Run health check'}
+          <button className="btn primary" onClick={() => start()} aria-busy={running} disabled={running || !scanModules.length}>
+            {running ? 'Checking…' : modulesInfo && Object.values(modulesInfo).some((x) => x.runId) ? 'Check again' : 'Run health check'}
           </button>
           {running && (
             /* An explicit request, not a disconnect: leaving the page no longer
@@ -760,12 +1207,22 @@ export default function HealthAssist() {
               Stop
             </button>
           )}
-          {run && (
+          {run && scope !== 'all' && (
             <span className="mono hs-muted">
               last checked {new Date(run.startedAt).toLocaleString()}
             </span>
           )}
         </div>
+        <ScanOptions
+          scopes={scopeList}
+          modules={moduleKeys}
+          selected={scanModules}
+          onChange={chooseModules}
+          reuse={reuse}
+          onReuse={chooseReuse}
+          disabled={running}
+        />
+        <ModuleTimes info={modulesInfo} scopes={scopeList} only={scope === 'all' ? null : scope} />
         {/* This used to say "it never writes, and it has no tool that could",
             which stopped being true when remediation shipped. The words now
             come from the server, which states both halves. */}
@@ -782,23 +1239,54 @@ export default function HealthAssist() {
         {error && <p className="error-text">{error}</p>}
       </div>
 
-      {run && (
+      {(composed || moduleRun) && (
         <ScopeSwitch scopes={scopeList} value={scope} onChange={pickScope} counts={scopeCounts} />
       )}
 
-      {!run && !running && !error && (
+      {!run && !running && !error && (scope === 'all' ? !composed : !moduleRunId) && (
         <div className="card">
-          <EmptyState
-            title="No health check has run against this instance."
-            hint="A check reads your CMDB, services, integrations and platform tables, then reports what it found. Nothing is written."
-            actionLabel="Run health check"
-            onAction={start}
-          />
+          {scope === 'all' || !composed ? (
+            <EmptyState
+              title="No health check has run against this instance."
+              hint="A check reads your CMDB, services, integrations and platform tables, then reports what it found. Nothing is written."
+              actionLabel="Run health check"
+              onAction={() => start()}
+            />
+          ) : (
+            <EmptyState
+              title={`${scopeInfo?.label} has not been scanned on this instance yet.`}
+              hint="Each module keeps its own result. Scanning this one leaves the others as they are."
+              actionLabel={`Scan ${scopeInfo?.label}`}
+              onAction={() => start([scope])}
+            />
+          )}
         </div>
       )}
 
       {run && (
         <>
+          <TrustGate
+            gate={gate}
+            activeRule={filter.rule}
+            onPick={(rule) => applyFilter({ rule: filter.rule === rule ? '' : rule })}
+          />
+          {(scope === 'cmdb' || scope === 'all') && (
+            <PosturePanel
+              posture={cmdbQ?.posture || []}
+              activeRule={filter.rule}
+              onPick={(rule) => applyFilter({ rule: filter.rule === rule ? '' : rule })}
+            />
+          )}
+          {(scope === 'cmdb' || scope === 'all') && (
+            <EscalatedBand
+              escalated={cmdbQ?.escalated || []}
+              patterns={cmdbQ?.patterns || []}
+              activeRule={filter.rule}
+              sevByKey={sevByKey}
+              onPick={(rule) => applyFilter({ rule: filter.rule === rule ? '' : rule })}
+            />
+          )}
+
           {/* ── SCORECARD. The score is a hero number, not a chart — one
                  number does not need eight colours. In the All view it is one
                  tile per scope instead, never an average of them. ─────────── */}
@@ -827,8 +1315,11 @@ export default function HealthAssist() {
                   </>
                 ) : (
                   <>
-                    <div className={`hs-score tone-${v.tone}`}>{score}<span className="hs-score-pct">%</span></div>
-                    <div className={`hs-score-word tone-${v.tone}`}>{v.word}</div>
+                    <div className={`hs-score tone-${provisional ? 'systemic' : v.tone}`}>{score}<span className="hs-score-pct">%</span></div>
+                    <div className={`hs-score-word tone-${provisional ? 'systemic' : v.tone}`}>
+                      {provisional ? gate.label : v.word}
+                    </div>
+                    {coverageLabel && <div className="hs-score-cap">{coverageLabel}</div>}
                   </>
                 )}
                 <div className="hs-score-cap">{scopeInfo?.label} score</div>
@@ -874,9 +1365,13 @@ export default function HealthAssist() {
                     person can act on; "3,233 CIs have no owner" does. Shares
                     overlap — one record can fail several rules — so they are
                     not meant to add up, and the caption says so. */}
+                <Dimensions q={cmdbQ} />
+
                 {summary?.score_drivers?.length > 0 && (
                   <div className="hs-drivers">
-                    <div className="hs-sub">What is pulling the score down</div>
+                    <div className="hs-sub">
+                      {cmdbQ ? 'Legacy CMDB checks — not yet part of the CMDB Quality score' : 'What is pulling the score down'}
+                    </div>
                     {summary.score_drivers.map((d) => {
                       const tone = sevByKey[d.severity]?.tone || 'info';
                       const top = summary.score_drivers[0].records || 1;
@@ -990,7 +1485,7 @@ export default function HealthAssist() {
                 instance and one this account may not read are different problems — hover a chip to see which.
               </p>
             )}
-            {run.error && <p className="error-text">{run.error}</p>}
+            {run?.error && <p className="error-text">{run.error}</p>}
 
             {skipped.length > 0 && (
               <>
@@ -1018,6 +1513,8 @@ export default function HealthAssist() {
               </>
             )}
           </div>
+
+          <ScanStateCard open={showScanState} onToggle={() => setShowScanState((v) => !v)} />
 
           {/* ── FINDINGS. Also the charts' table-view twin. ────────────────── */}
           <div className="card">
@@ -1088,6 +1585,8 @@ export default function HealthAssist() {
                           </span>
                         </td>
                         <td>
+                          {f.gate && <span className="hs-gate-chip sm">gate</span>}
+                          {f.escalated_to_systemic && <span className="hs-gate-chip sm">escalated</span>}
                           {f.title}
                           {f.lifecycle?.reason && (
                             <span className="hs-muted"> · {f.lifecycle.reason}</span>

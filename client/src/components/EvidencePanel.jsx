@@ -154,7 +154,7 @@ export default function EvidencePanel({ taskId, onClose }) {
             <Field label="Goal">{dash(ev.plan?.goal ?? ev.task?.goal)}</Field>
             <Field label="Asked for">{dash(ev.request?.text)}</Field>
             <Field label="Plan status">
-              {dash(ev.plan?.state ?? ev.task?.state)}
+              {dash(ev.plan?.state ?? ev.task?.state?.value)}
               {ev.plan?.stepCount != null && <span className="muted"> · {ev.plan.stepCount} step(s)</span>}
             </Field>
             {ev.plan?.capabilities?.length > 0 && (

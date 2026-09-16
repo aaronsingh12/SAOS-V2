@@ -1,4 +1,5 @@
 import { TABLES } from './tables.js';
+import { catalogueRule } from './cmdb-quality.js';
 
 /**
  * The remediation catalogue — what a finding means, and what to do about it.
@@ -985,12 +986,50 @@ export function referencedTables(finding, entry) {
   return out;
 }
 
+const LANE_STEP = Object.freeze({
+  1: 'Lane 1 — direct apply. The change is reversible data: correct the records named in the evidence and keep their before-values.',
+  2: 'Lane 2 — staged update set. Make the configuration change in a sub-production instance, capture it in an update set, test it there, then promote it.',
+  3: 'Lane 3 — guided human decision. The right answer is a judgement; the owner decides, using the evidence below.',
+});
+
+/**
+ * Guidance for a SAOS catalogue rule, built from its own articulation.
+ *
+ * The catalogue already states what the defect is, why it matters, how it is
+ * detected, how it is fixed and when the rule is wrong. Writing a second,
+ * hand-made paraphrase would be a copy that drifts; this reads the source.
+ */
+function fromCatalogue(rule) {
+  return {
+    headline: rule.title,
+    problem: rule.whatItMeans,
+    why: rule.whyItMatters,
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      `Confirm it in your own instance — the detection logic is re-runnable: ${rule.detectionLogic}`,
+      `Rule out the known wrong case first: ${rule.falsePositiveGuard}`,
+      LANE_STEP[rule.lane] || rule.remediationLane,
+    ],
+    verify: `Re-run the health check: ${rule.id} should no longer fire.`,
+    effort: MIN(15, 5, 'No per-rule estimate has been written for this catalogue rule yet; this is a generic placeholder.'),
+    catalogue: {
+      id: rule.id, group: rule.group, groupName: rule.groupName, base: rule.base, dimension: rule.dimension, lane: rule.lane,
+      sourceTables: rule.sourceTables, detectionLogic: rule.detectionLogic, threshold: rule.threshold,
+      confidenceBasis: rule.confidenceBasis, evidenceToShow: rule.evidenceToShow,
+      falsePositiveGuard: rule.falsePositiveGuard, remediationLane: rule.remediationLane, crossDomainLink: rule.crossDomainLink,
+    },
+  };
+}
+
 /** Everything the detail view needs for one finding. */
 export function remediationFor(finding) {
-  const entry = REMEDIATION[finding.rule_id] || FALLBACK;
+  const rule = catalogueRule(finding.rule_id);
+  const entry = REMEDIATION[finding.rule_id] || (rule ? fromCatalogue(rule) : FALLBACK);
   return {
     ruleId: finding.rule_id,
-    known: Boolean(REMEDIATION[finding.rule_id]),
+    known: Boolean(REMEDIATION[finding.rule_id] || rule),
+    catalogue: entry.catalogue ?? (rule ? fromCatalogue(rule).catalogue : null),
     headline: entry.headline,
     problem: entry.problem,
     why: entry.why,

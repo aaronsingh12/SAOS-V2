@@ -378,6 +378,49 @@ export const table = {
     });
     return Number(data?.result?.stats?.count ?? 0);
   },
+
+  /**
+   * Aggregate API — the row count AND the newest `sys_updated_on`, in one call.
+   *
+   * Health Assist's change check. An insert or an update moves the newest
+   * timestamp; a delete moves the count. If neither moved since the last read,
+   * nothing in that slice changed.
+   *
+   * A log table has no `sys_updated_on` at all — measured on dev424910:
+   * `discovery_log` extends `syslog`, and asking for its newest update answers
+   * `400 Aggregate Query Failed`. Log rows are only ever inserted, so the newest
+   * `sys_created_on` is the exact equivalent there, and `basis` says which one
+   * was used.
+   */
+  async changeStamp(t, query) {
+    const ask = (field) => snowFetch(`/api/now/stats/${encodeURIComponent(t)}`, {
+      params: { sysparm_count: 'true', sysparm_max_fields: field, sysparm_query: query },
+    });
+    let basis = 'sys_updated_on';
+    let data;
+    try {
+      data = await ask(basis);
+    } catch (err) {
+      if (err?.status !== 400) throw err;
+      basis = 'sys_created_on';
+      data = await ask(basis);
+    }
+    const stats = data?.result?.stats || {};
+    return { count: Number(stats.count ?? 0), maxUpdated: stats.max?.[basis] || null, basis };
+  },
+
+  /** Aggregate API — counts grouped by one field, as `{ value: count }`. */
+  async countBy(t, query, groupBy) {
+    const data = await snowFetch(`/api/now/stats/${encodeURIComponent(t)}`, {
+      params: { sysparm_count: 'true', sysparm_group_by: groupBy, sysparm_query: query },
+    });
+    const out = {};
+    for (const r of data?.result || []) {
+      const value = r?.groupby_fields?.[0]?.value;
+      if (value != null) out[value] = Number(r?.stats?.count ?? 0);
+    }
+    return out;
+  },
 };
 
 export async function testConnection() {

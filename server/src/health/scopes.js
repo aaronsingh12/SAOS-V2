@@ -36,7 +36,7 @@ import { REMEDIATION } from './remediation.js';
  * the MID server table" must not score as "the MID servers are fine".
  */
 
-const CMDB_DOMAINS = ['CMDB', 'RELATIONSHIP', 'CSDM'];
+const CMDB_DOMAINS = ['CMDB', 'CMDB_GOVERNANCE', 'RELATIONSHIP', 'CSDM'];
 const ITOM_DOMAINS = ['DISCOVERY', 'CREDENTIALS', 'MID_SERVER', 'SERVICE_MAPPING', 'EVENT_MANAGEMENT', 'AVAILABILITY'];
 const ITSM_DOMAINS = ['INCIDENT', 'CHANGE', 'PROBLEM'];
 const PLATFORM_DOMAINS = ['CUSTOMIZATION', 'INTEGRATION', 'PERFORMANCE', 'UPGRADE', 'SECURITY'];
@@ -64,7 +64,13 @@ export const SCOPES = Object.freeze([
     label: 'CMDB',
     description: 'Are the configuration records themselves right — owned, current, related and unique?',
     domains: CMDB_DOMAINS,
-    tables: ['cmdb_ci', 'cmdb_rel_ci', 'cmdb_ci_service', 'service_offering'],
+    tables: ['cmdb_ci', 'cmdb_rel_ci', 'cmdb_ci_service', 'service_offering', 'cmdb_health_config', 'cmdb_health_metric',
+      'cmdb_health_metric_pref', 'cmdb_class_info', 'cmdb_recommended_fields', 'cmdb_data_management_policy',
+      'cmdb_policy_scheduled_job', 'sysauto_script', 'cmn_location', 'core_company', 'cmdb_identifier', 'cmdb_identifier_entry',
+      'life_cycle_stage_status', 'svc_ci_assoc', 'change_request', 'life_cycle_mapping', 'life_cycle_control',
+      'cmdb_reconciliation_definition', 'cmdb_datasource_attribute_value', 'reconcile_duplicate_task', 'duplicate_audit_result',
+      'sys_object_source', 'cmdb_datasource_precedence', 'cmdb_datasource_last_update', 'cmdb_datasource_staleness',
+      'cmdb_ire_output_aggregate_stats', 'cmdb_metadata_hosting', 'cmdb_metadata_containment'],
     scoreKind: 'records',
   },
   {
@@ -97,6 +103,52 @@ export const SCOPES = Object.freeze([
 
 export const SCOPE_KEYS = Object.freeze(SCOPES.map((s) => s.key));
 const byKey = Object.fromEntries(SCOPES.map((s) => [s.key, s]));
+
+/**
+ * MODULES — the scopes a scan can be limited to. `all` is a view, not a module.
+ *
+ * A scan names the modules it checks; each module then keeps its own latest
+ * result and timestamp, so an ITSM-only scan leaves the CMDB result where the
+ * last CMDB scan put it.
+ */
+export const MODULE_KEYS = Object.freeze(SCOPES.filter((s) => s.domains).map((s) => s.key));
+
+/** A requested module list, validated. Nothing, `all` or an empty list means every module. */
+export function normaliseModules(input) {
+  if (input == null || input === 'all' || (Array.isArray(input) && input.length === 0)) return [...MODULE_KEYS];
+  const list = (Array.isArray(input) ? input : [input]).map((m) => String(m).toLowerCase());
+  const unknown = list.filter((m) => !MODULE_KEYS.includes(m));
+  if (unknown.length) {
+    throw Object.assign(new Error(`Unknown scan module: ${unknown.join(', ')}. Choose from ${MODULE_KEYS.join(', ')}.`), { status: 422 });
+  }
+  return MODULE_KEYS.filter((m) => list.includes(m));
+}
+
+/** The tables a set of modules reads — each module's declared list, united. */
+export function moduleTables(modules) {
+  return [...new Set(normaliseModules(modules).flatMap((m) => byKey[m].tables || []))];
+}
+
+/**
+ * Which module a RULE belongs to, from its id alone.
+ *
+ * A finding carries its domain, so `scopeOf` answers for findings. A skipped
+ * check carries only its rule id, and a module-limited scan must drop the skips
+ * of modules it did not check — otherwise an ITSM-only scan would report every
+ * CMDB rule as "not run". The prefixes mirror the domains each family emits;
+ * a test holds the two answers equal for every rule the pack can produce.
+ */
+const RULE_PREFIX_SCOPE = Object.freeze([
+  [/^(CMDB|REL|CSDM)-/, 'cmdb'],
+  [/^(MID|DISC|CRED|SM|EVENT|OUTAGE)-/, 'itom'],
+  [/^ITSM-/, 'itsm'],
+]);
+export function scopeOfRule(ruleId) {
+  const override = RULE_SCOPE[ruleId];
+  if (override) return override;
+  for (const [re, key] of RULE_PREFIX_SCOPE) if (re.test(String(ruleId || ''))) return key;
+  return 'platform';
+}
 
 /** Which scope a finding belongs to. A rule override outranks its domain. */
 export function scopeOf(finding) {
@@ -178,7 +230,28 @@ const fmt = (n) => Number(n).toLocaleString('en-US');
 
 /* ── Record scores ─────────────────────────────────────────────────────────── */
 
-/** CMDB: the existing definition, unchanged, so the trend line stays continuous. */
+/**
+ * CMDB under the SAOS CMDB Quality model: the composite over measured
+ * dimensions. Provisional while a trust-gate blocker is live; withheld, with
+ * the reason, while no dimension is measured.
+ */
+function cmdbQualityScore(q, coverage, findings) {
+  const legacyDrivers = cmdbScore(coverage, findings).drivers ?? null;
+  const c = q.composite;
+  const measured = q.dimensions.filter((d) => d.measured);
+  return {
+    score: c.score,
+    basis: c.score == null ? null
+      : `${measured.length} of ${q.dimensions.length} dimensions measured (${c.measured_weight} of 100 weight) over ${q.in_scope.records.toLocaleString()} in-scope CIs — ${q.in_scope.basis}`,
+    definition: c.definition,
+    withheld: c.score == null
+      ? `${c.not_measured_because} ${q.rules.built} of ${q.rules.catalogued} catalogue rules are built; the ones built so far are the trust gate, which sits outside the 100.`
+      : null,
+    drivers: legacyDrivers,
+  };
+}
+
+/** CMDB: the pass-rate definition, kept for runs recorded before CMDB Quality. */
 function cmdbScore(coverage, findings) {
   const ci = coverage?.cmdb_ci;
   if (!ci || ci.records == null) {
@@ -327,7 +400,7 @@ function itomScore(coverage, findings) {
  * truncated set exists — an older run — `truncated` withholds the scores rather
  * than computing them from a fraction.
  */
-export function summariseScopes(coverage, findings, { truncated = false } = {}) {
+export function summariseScopes(coverage, findings, { truncated = false, cmdbQuality = null } = {}) {
   const out = {};
   for (const scope of SCOPES) {
     const own = findings.filter((f) => inScope(f, scope.key));
@@ -343,7 +416,8 @@ export function summariseScopes(coverage, findings, { truncated = false } = {}) 
       }));
 
     let scored = { score: null, withheld: null };
-    if (scope.scoreKind === 'records') scored = scope.key === 'cmdb' ? cmdbScore(coverage, findings) : itsmScore(coverage, findings);
+    if (scope.key === 'cmdb' && cmdbQuality) scored = cmdbQualityScore(cmdbQuality, coverage, findings);
+    else if (scope.scoreKind === 'records') scored = scope.key === 'cmdb' ? cmdbScore(coverage, findings) : itsmScore(coverage, findings);
     else if (scope.scoreKind === 'checks') scored = itomScore(coverage, findings);
     else if (scope.scoreKind === 'none') {
       scored = {
@@ -375,6 +449,10 @@ export function summariseScopes(coverage, findings, { truncated = false } = {}) 
       score_drivers: scored.drivers ?? null,
       findings: own.length,
       severity_counts: countBy(own, (f) => f.severity),
+      /* The trust gate belongs to CMDB, and is shown on All too: a blocker on
+         the CMDB base is a caveat on everything that reads the CMDB. */
+      gate: ['cmdb', 'all'].includes(scope.key) && cmdbQuality ? cmdbQuality.gate : null,
+      cmdb_quality: scope.key === 'cmdb' ? cmdbQuality : null,
       domains,
       tables: scope.tables,
     };
