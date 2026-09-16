@@ -35,7 +35,8 @@ test('an EMPTY discovery_status that was read completely means Discovery never r
   const { findings } = run({ discovery_status: [] }, { discovery_status: COMPLETE(0) });
   const f = findings.find((x) => x.rule_id === 'DISC-NEVER-RAN');
   assert.ok(f, 'an empty Discovery table produced no finding');
-  assert.equal(f.severity, 'HIGH');
+  assert.equal(f.severity, 'CRITICAL');
+  assert.equal(f.measurement_rule_id, 'ITOM-003');
   assert.equal(f.estate_wide, true);
 });
 
@@ -106,7 +107,10 @@ test('a failed Discovery run is reported; a completed one is not', () => {
   const { findings } = run(estate, { discovery_status: COMPLETE(3) });
   const failed = findings.filter((f) => f.rule_id === 'DISC-FAILED');
   assert.equal(failed.length, 2);
-  assert.equal(failed[0].severity, 'HIGH');
+  assert.deepEqual(Object.fromEntries(failed.map((f) => [f.target_ids[0], f.severity])), {
+    a: 'CRITICAL',
+    c: 'MEDIUM',
+  });
   assert.deepEqual(failed.map((f) => f.target_ids[0]).sort(), ['a', 'c']);
 });
 
@@ -152,7 +156,7 @@ test('an inactive credential is reported, and ALL inactive is a separate, worse 
   assert.equal(findings.filter((f) => f.rule_id === 'CRED-INACTIVE').length, 2);
   const all = findings.find((f) => f.rule_id === 'CRED-ALL-INACTIVE');
   assert.ok(all, 'every-credential-off was not called out separately');
-  assert.equal(all.severity, 'HIGH');
+  assert.equal(all.severity, 'CRITICAL');
 
   // One active credential means the estate-level finding must NOT fire.
   const some = run({
@@ -313,7 +317,7 @@ test('a preset fills the value without consulting a model at all', async () => {
   let asked = false;
   const p = await buildProposal({
     fingerprint: 'f', rule_id: 'CRED-INACTIVE', table: 'discovery_credentials',
-    severity: 'MEDIUM', title: 'Credential is inactive: win', description: 'off',
+    severity: 'CRITICAL', title: 'Credential is inactive: win', description: 'off',
     target_ids: ['c1'], evidence: [],
   }, {
     readRecord: async () => ({ sys_id: { value: 'c1' }, name: { value: 'win' }, active: { value: 'false' } }),
@@ -329,7 +333,7 @@ test('a preset fills the value without consulting a model at all', async () => {
 test('a rule with no field fix proposes nothing to apply and says why', async () => {
   const p = await buildProposal({
     fingerprint: 'f', rule_id: 'MID-NONE', table: 'ecc_agent',
-    severity: 'HIGH', title: 'No MID server is configured', description: 'none',
+    severity: 'CRITICAL', title: 'No MID server is configured', description: 'none',
     target_ids: [], evidence: [],
   }, { readRecord: async () => null, generate: async () => '{}' });
   assert.equal(p.llm.status, 'no_field_fix');
