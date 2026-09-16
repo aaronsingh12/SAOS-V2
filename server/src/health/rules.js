@@ -98,6 +98,102 @@ export const SEVERITIES = Object.freeze([
   { key: 'INFO', label: 'Info', rank: 1, weight: 0, tone: 'info', blurb: 'For awareness only.' },
 ]);
 
+/*
+ * ITOM measurement source map.
+ *
+ * The workbook (`Book1.xlsx`, ITOM section) is a catalogue of the impacts to
+ * measure. The engine below only implements the rows it has enough extracted
+ * evidence to evaluate; this map ties those implemented checks back to the
+ * workbook row and uses the workbook's severity band for the finding.
+ */
+const ITOM_MEASUREMENTS = Object.freeze({
+  'DISC-NEVER-RAN': {
+    id: 'ITOM-003',
+    group: '1A. Schedule configuration',
+    title: 'No discovery schedule exists for a datacentre or region present in CMDB',
+  },
+  'DISC-FAILED': {
+    id: 'ITOM-032',
+    group: '1C. Execution outcome',
+    title: 'Run completing with error count above threshold',
+  },
+  'DISC-STALE': {
+    id: 'ITOM-006',
+    group: '1A. Schedule configuration',
+    title: 'Schedule last successful run beyond its own interval',
+  },
+  'DISC-DEVICE-ISSUE': {
+    id: 'ITOM-035',
+    group: '1C. Execution outcome',
+    title: 'Devices discovered but producing no CI (sensor failure)',
+  },
+  'DISC-LOG-ERROR': {
+    id: 'ITOM-038',
+    group: '1C. Execution outcome',
+    title: 'Discovery log error volume trending up',
+  },
+  'CRED-NONE': {
+    id: 'ITOM-016',
+    group: '1B. Credentials',
+    title: 'No credential of the required type exists for a range containing devices of that type',
+  },
+  'CRED-INACTIVE': {
+    id: 'ITOM-018',
+    group: '1B. Credentials',
+    title: 'Credential expired or inactive but still referenced by a schedule',
+  },
+  'CRED-ALL-INACTIVE': {
+    id: 'ITOM-016',
+    group: '1B. Credentials',
+    title: 'No credential of the required type exists for a range containing devices of that type',
+  },
+  'MID-NONE': {
+    id: 'ITOM-051',
+    group: 'MID Server',
+    title: 'Single MID with no cluster carrying a production-critical range',
+  },
+  'MID-DOWN': {
+    id: 'ITOM-053',
+    group: 'MID Server',
+    title: 'MID down or in a degraded state',
+  },
+  'MID-NOT-VALIDATED': {
+    id: 'ITOM-055',
+    group: 'MID Server',
+    title: 'MID validation not completed',
+  },
+  'MID-NO-CAPABILITY': {
+    id: 'ITOM-062',
+    group: 'MID Server',
+    title: 'MID with no assigned capabilities but referenced by schedules',
+  },
+  'MID-ISSUE': {
+    id: 'ITOM-059',
+    group: 'MID Server',
+    title: 'MID issue count rising',
+  },
+  'SM-NOT-IN-USE': {
+    id: 'ITOM-067',
+    group: 'Service Mapping',
+    title: 'Percentage of Business Critical services with no map at all',
+  },
+  'SM-UNMAPPED': {
+    id: 'ITOM-076',
+    group: 'Service Mapping',
+    title: 'Map incomplete - traversal terminating before reaching infrastructure tier',
+  },
+  'EVENT-UNBOUND': {
+    id: 'ITOM-098',
+    group: '4B. CI binding - the router demo core',
+    title: 'Events failing to bind to any CI',
+  },
+  'OUTAGE-OPEN': {
+    id: 'ITOM-117',
+    group: '4C. Alerts and impact',
+    title: 'Alert closure not tied to event resolution (manual close backlog)',
+  },
+});
+
 /** Serial values that are placeholders rather than identities. */
 const NON_SERIALS = new Set(['unknown', 'none', 'null', 'n/a', '0', 'to be filled by o.e.m.']);
 
@@ -296,10 +392,14 @@ export class EstateRules {
       }
     }
     const identity = `${rule}|${tableName}|${records.map((r) => r.sys_id).sort().join('|')}`;
+    const itomMeasurement = ITOM_MEASUREMENTS[rule] || null;
     this.findings.push({
       fingerprint: crypto.createHash('sha256').update(identity).digest('hex'),
       agent_id: agent,
       rule_id: rule,
+      measurement_rule_id: itomMeasurement?.id,
+      measurement_group: itomMeasurement?.group,
+      measurement_title: itomMeasurement?.title,
       domain: AGENTS[agent][0],
       table: tableName,
       target_ids: records.map((r) => r.sys_id),
@@ -715,14 +815,15 @@ export class EstateRules {
       if (String(r.status).toLowerCase() === 'down') {
         this.add('mid_server_agent', 'MID-DOWN', 'ecc_agent', [r], ['name', 'status', 'last_refreshed'],
           `MID server is down: ${r.name || r.sys_id}`,
-          'ServiceNow reports this MID server as Down.', { severity: 'HIGH' });
+          'ServiceNow reports this MID server as Down.', { severity: 'CRITICAL' });
       }
     }
     for (const r of this.rows('em_alert', ['cmdb_ci', 'state'], { rule: 'EVENT-UNBOUND' })) {
       if (!r.cmdb_ci && ['open', 'reopen'].includes(String(r.state).toLowerCase())) {
         this.add('event_management_agent', 'EVENT-UNBOUND', 'em_alert', [r], ['number', 'cmdb_ci', 'state'],
           `Open alert has no CI binding: ${r.number || r.sys_id}`,
-          'An open or reopened alert has an empty cmdb_ci reference.');
+          'An open or reopened alert has an empty cmdb_ci reference.',
+          { severity: 'CRITICAL' });
       }
     }
   }
@@ -751,7 +852,7 @@ export class EstateRules {
         'Discovery has never run on this instance',
         'The Discovery status table was read completely and is empty. No Discovery schedule has ever executed, so nothing in the CMDB is being refreshed automatically.',
         {
-          severity: 'HIGH',
+          severity: 'CRITICAL',
           recommendation: 'Confirm whether Discovery is meant to be in use here. If it is, a MID server, credentials and a schedule are all required before it can run — check them in that order.',
         });
     });
@@ -768,7 +869,7 @@ export class EstateRules {
           `Discovery run ended in ${state}: ${r.scan_type || r.sys_id}`,
           `The run finished with state "${state}". CIs it would have created or refreshed were not, so the CMDB is missing whatever that scan covered.`,
           {
-            severity: 'HIGH',
+            severity: state === 'error' ? 'CRITICAL' : 'MEDIUM',
             recommendation: 'Open the run and read its Discovery log before re-running. A run that failed once on credentials or a firewall will fail again the same way.',
           });
       }
@@ -788,6 +889,7 @@ export class EstateRules {
           `No Discovery completion for ${days} days: ${r.scan_type || r.sys_id}`,
           `The most recent completion of this run is more than ${this.staleDays} days old. Anything it discovers has been drifting since.`,
           {
+            severity: 'CRITICAL',
             confidence: 0.8,
             recommendation: 'Check whether the schedule is still active and whether its MID server is up. A schedule that stopped silently is the usual cause.',
           });
@@ -804,6 +906,7 @@ export class EstateRules {
           `Discovery reported ${issues} issue(s) on ${r.source || r.sys_id}`,
           'The device was reached but the scan recorded issues against it, so the CI it produced may be incomplete.',
           {
+            severity: 'HIGH',
             confidence: 0.9,
             recommendation: 'Open the device history record and read the issue list. Credentials and permission gaps are the common causes and are fixed once, for every device that shares them.',
           });
@@ -837,7 +940,7 @@ export class EstateRules {
         'No Discovery credentials are configured',
         'The credentials table was read completely and is empty. Discovery can reach a device but cannot authenticate to it, so it can only ever record what an unauthenticated scan reveals.',
         {
-          severity: 'HIGH',
+          severity: 'CRITICAL',
           recommendation: 'Add the credentials Discovery needs for each platform in scope. Credentials are also what most "CI has almost no attributes" findings turn out to be.',
         });
     });
@@ -851,7 +954,7 @@ export class EstateRules {
           `Credential is inactive: ${c.name || c.sys_id}`,
           'The credential exists but is switched off, so Discovery will not try it.',
           {
-            severity: 'MEDIUM',
+            severity: 'CRITICAL',
             confidence: 0.85,
             recommendation: 'Confirm it is inactive on purpose. A credential disabled during an incident and never re-enabled is a common cause of a Discovery that quietly stopped working.',
           });
@@ -867,7 +970,7 @@ export class EstateRules {
         `All ${creds.length} Discovery credentials are inactive`,
         'Every credential on the instance is switched off. Discovery cannot authenticate to anything.',
         {
-          severity: 'HIGH',
+          severity: 'CRITICAL',
           recommendation: 'This is almost always accidental. Re-enable the credentials that should be live before investigating individual Discovery failures.',
         });
     }
@@ -886,7 +989,7 @@ export class EstateRules {
         'No MID server is configured',
         'The MID server table was read completely and is empty. Discovery, Service Mapping, Orchestration and any integration configured to use a MID cannot run at all.',
         {
-          severity: 'HIGH',
+          severity: 'CRITICAL',
           recommendation: 'If ITOM is meant to be in use here, install and validate a MID server first — every other ITOM finding is downstream of this one.',
         });
     });
@@ -902,7 +1005,7 @@ export class EstateRules {
           `MID server is up but not validated: ${m.name || m.sys_id}`,
           'The MID reports a status other than Down, but the instance has not validated it. An unvalidated MID does not pick up work, and the status alone reads as healthy.',
           {
-            severity: 'HIGH',
+            severity: 'CRITICAL',
             confidence: 0.9,
             recommendation: 'Open the MID server record and run Validate. A MID that will not validate usually has a certificate, user-role or version mismatch.',
           });
@@ -922,6 +1025,7 @@ export class EstateRules {
             `MID server has no capabilities: ${m.name || m.sys_id}`,
             'No capability record references this MID in the complete capability extract, so the instance has nothing it can select this MID to do.',
             {
+              severity: 'HIGH',
               confidence: 0.8,
               recommendation: 'Capabilities are normally populated automatically once a MID validates. A MID with none is usually one that has never completed validation.',
             });
@@ -969,7 +1073,7 @@ export class EstateRules {
         `${discovered.length} discovered service(s) exist, and none is mapped to any CI`,
         'The service-to-CI association table was read completely and is empty, while discovered services do exist. Nothing connects those services to the infrastructure underneath them.',
         {
-          severity: 'HIGH',
+          severity: 'CRITICAL',
           recommendation: 'Service Mapping produces these associations. If it is licensed and expected here, check whether any mapping has ever run; if not, the services need their CIs associated another way before impact analysis means anything.',
         });
       return;
@@ -982,6 +1086,7 @@ export class EstateRules {
           `Service is not mapped to any CI: ${s.name || s.sys_id}`,
           'No association in the complete service-to-CI extract references this service, so nothing downstream of it is known.',
           {
+            severity: 'HIGH',
             confidence: 0.85,
             recommendation: 'Run or repair the mapping for this service. Until it has CIs, impact analysis and change risk report nothing against it.',
           });
