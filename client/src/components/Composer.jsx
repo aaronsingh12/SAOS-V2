@@ -90,6 +90,7 @@ export default function Composer({
   model = null,
   onOpenEvidence = null,
   hasEvidence = false,
+  sourcesOpen = false,
 }) {
   const taRef = useRef(null);
   const menuRef = useRef(null);
@@ -291,8 +292,8 @@ export default function Composer({
           {hasEvidence && (
             <button type="button" role="menuitem" className="composer-menu-item"
               onClick={() => { setCmdOpen(false); onOpenEvidence(); }}>
-              <b>Evidence</b>
-              <em>What ran, what was verified, and who approved it.</em>
+              <b>Sources</b>
+              <em>What this turn read: chat memory, online docs and files.</em>
             </button>
           )}
           {running && (
@@ -449,8 +450,9 @@ export default function Composer({
 
           {hasEvidence && (
             <button type="button" className="composer-chip" onClick={onOpenEvidence}
-              title="What actually ran, what was verified, who approved it, and what is still uncertain.">
-              Evidence
+              aria-pressed={sourcesOpen}
+              title="What this turn read: chat memory, online documentation and files.">
+              Sources
             </button>
           )}
 
