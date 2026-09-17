@@ -1,0 +1,135 @@
+{
+  "engine": "composite",
+  "rules": {
+    "ITSM-007": {
+      "requires_objects": [
+        "autoclose_configuration"
+      ],
+      "notes": "The auto-close duration lives in a system property whose name is not in the workbook (UNDEFINED); business-day arithmetic against the instance calendar is also UNDEFINED. minimum_autoclose_days (3) is declared."
+    },
+    "ITSM-077": {
+      "inputs": [
+        "ITSM-054"
+      ],
+      "combine": {
+        "name": "cluster_to_problem_latency",
+        "args": {
+          "input": "ITSM-054",
+          "link_field": "problem_id",
+          "time_field": "sys_created_on",
+          "problem_table": "problem"
+        }
+      },
+      "notes": "Reports the distribution (no threshold, per the workbook). Runs only once ITSM-054's thresholds are configured."
+    },
+    "ITSM-084": {
+      "requires_objects": [
+        "conflict_detection"
+      ],
+      "notes": "Conflict-detection configuration is UNDEFINED (candidate table \"conflict\", schema not given)."
+    },
+    "ITSM-117": {
+      "requires_objects": [
+        "standard_change_template"
+      ],
+      "expected_fields": {
+        "standard_change_template": [
+          "std_change_proposal",
+          "state"
+        ]
+      },
+      "notes": "Template scope (the fields defining what a template covers) is UNDEFINED."
+    },
+    "ITSM-124": {
+      "inputs": [
+        "ITSM-123"
+      ],
+      "combine": {
+        "name": "rate_by_dimension",
+        "args": {
+          "input": "ITSM-123",
+          "dimensions": [
+            "assignment_group",
+            "type"
+          ],
+          "side": "right_row"
+        }
+      },
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Rates by group and by type from ITSM-123's pairs. \"By CI class\" needs a cmdb_ci read per correlated CI (not performed); the minimum volume per dimension the guard asks for is UNDEFINED; the workbook gives no threshold, so the distribution is reported without a judgement."
+      }
+    },
+    "ITSM-125": {
+      "inputs": [
+        "ITSM-123"
+      ],
+      "combine": {
+        "name": "pairs_by_key",
+        "args": {
+          "input": "ITSM-123",
+          "key": "key",
+          "min": {
+            "$param": "occurrences"
+          },
+          "table": "cmdb_ci"
+        }
+      },
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "CIs at or above N correlated pairs are reported; the guard's normalisation by change volume is not applied."
+      }
+    },
+    "ITSM-129": {
+      "inputs": [
+        "ITSM-016",
+        "ITSM-094",
+        "ITSM-067"
+      ],
+      "combine": {
+        "name": "all_breach",
+        "args": {
+          "thresholds": {
+            "ITSM-067": {
+              "op": "gt",
+              "value": {
+                "$param": "problem_reference_threshold"
+              }
+            }
+          }
+        }
+      },
+      "notes": "The workbook names \"CI and service reference rates across incident, problem and change_request\" with per-process thresholds. Incident and change carry their own (ITSM-016 40 %, ITSM-094 30 %). The problem reference rate is ITSM-067's ratio (\"problems with both CI and service references empty; report as a ratio\"), which the workbook gives no threshold for — problem_reference_threshold is UNDEFINED, so the rule is UNCONFIGURED until it is set. It fires only when all three breach."
+    },
+    "ITSM-132": {
+      "undefined_dependencies": [
+        "the ITOM cause (ITOM-147) that a CI's staleness must trace to — the ITOM catalogue is not in scope"
+      ],
+      "inputs": [
+        "ITSM-054"
+      ]
+    },
+    "ITSM-134": {
+      "engine": "composite",
+      "inputs": [
+        "ITSM-018",
+        "ITSM-065",
+        "ITSM-101"
+      ],
+      "combine": {
+        "name": "shared_offenders",
+        "args": {
+          "field": "assignment_group",
+          "min_inputs": 2,
+          "table": "sys_user_group"
+        }
+      }
+    },
+    "ITSM-138": {
+      "requires_objects": [
+        "conflict_detection"
+      ],
+      "notes": "Conflict-detection results are UNDEFINED; the overlapping-changes evidence the workbook demands cannot be produced without them."
+    }
+  }
+}

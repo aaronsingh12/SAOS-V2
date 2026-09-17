@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TABLES, sliceWhere, specHash } from './tables.js';
 import { MODULE_KEYS, moduleTables, normaliseModules, scopeOfRule } from './scopes.js';
+import { itsmEngineKey } from './itsm/engine-key.js';
 
 /**
  * INCREMENTAL SCANNING — skip a module whose inputs have not changed.
@@ -95,8 +96,11 @@ export function engineKeys({ staleDays = null, acceptedRules = [] } = {}) {
   const out = {};
   for (const m of MODULE_KEYS) {
     const accepted = acceptedRules.filter((a) => scopeOfRule(a.ruleId) === m).map((a) => a.fingerprint).sort();
+    /* DECISION 8: the ITSM module's key also covers the catalogue rules' definitions,
+       parameters, engine versions, configuration and dependency state. Only ITSM's. */
+    const itsm = m === 'itsm' ? itsmEngineKey().key : undefined;
     out[m] = crypto.createHash('sha256')
-      .update(JSON.stringify({ source, staleDays, accepted }))
+      .update(JSON.stringify({ source, staleDays, accepted, ...(itsm ? { itsm } : {}) }))
       .digest('hex').slice(0, 16);
   }
   return out;

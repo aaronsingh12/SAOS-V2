@@ -1,0 +1,566 @@
+{
+  "engine": "linkage",
+  "rules": {
+    "ITSM-039": {
+      "from": {
+        "table": "incident",
+        "query": "priority=1",
+        "fields": [
+          "number",
+          "priority",
+          "close_code"
+        ]
+      },
+      "to": {
+        "table": "problem",
+        "query": "",
+        "fields": []
+      },
+      "link": {
+        "kind": "reference",
+        "field": "problem_id",
+        "direction": "outbound"
+      },
+      "expect": "absent",
+      "report_ratio": true,
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "evidence_fields": [
+        "number",
+        "priority",
+        "close_code",
+        "problem_id"
+      ]
+    },
+    "ITSM-046": {
+      "requires_objects": [
+        "major_incident",
+        "communication_plan"
+      ],
+      "notes": "Major-incident identification and the communication plan / task object are UNDEFINED."
+    },
+    "ITSM-047": {
+      "requires_objects": [
+        "major_incident",
+        "post_incident_review"
+      ],
+      "notes": "Major-incident identification and the PIR object are UNDEFINED."
+    },
+    "ITSM-048": {
+      "requires_objects": [
+        "major_incident"
+      ],
+      "notes": "Major-incident identification is UNDEFINED."
+    },
+    "ITSM-055": {
+      "requires_objects": [
+        "major_incident"
+      ],
+      "notes": "\"Major incident\" is UNDEFINED; the P1 half of this rule is ITSM-039."
+    },
+    "ITSM-057": {
+      "from": {
+        "table": "incident",
+        "query": "",
+        "fields": [
+          "number"
+        ]
+      },
+      "to": {
+        "table": "problem",
+        "query": "",
+        "fields": [
+          "state",
+          "known_error"
+        ]
+      },
+      "link": {
+        "kind": "reference",
+        "field": "problem_id",
+        "direction": "outbound"
+      },
+      "expect": "absent",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "problem_id"
+      ],
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Reported as a ratio (no threshold in the workbook); the split by problem state is not broken out."
+      }
+    },
+    "ITSM-060": {
+      "from": {
+        "table": "problem",
+        "query": "",
+        "fields": [
+          "number",
+          "state"
+        ]
+      },
+      "to": {
+        "table": "incident",
+        "query": "problem_idISNOTEMPTY",
+        "fields": []
+      },
+      "link": {
+        "kind": "reference",
+        "field": "problem_id",
+        "direction": "inbound"
+      },
+      "expect": "absent",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "state"
+      ]
+    },
+    "ITSM-063": {
+      "from": {
+        "table": "problem",
+        "query": "workaroundISEMPTY",
+        "fields": [
+          "number",
+          "workaround"
+        ]
+      },
+      "to": {
+        "table": "incident",
+        "query": "active=true^problem_idISNOTEMPTY",
+        "fields": []
+      },
+      "link": {
+        "kind": "reference",
+        "field": "problem_id",
+        "direction": "inbound"
+      },
+      "expect": "any_in_state",
+      "state_test": {
+        "always": true
+      },
+      "evidence_fields": [
+        "number",
+        "workaround",
+        "state"
+      ]
+    },
+    "ITSM-064": {
+      "from": {
+        "table": "problem",
+        "query": "active=false^known_error=false",
+        "fields": [
+          "number",
+          "state",
+          "rfc",
+          "known_error",
+          "fix_notes"
+        ]
+      },
+      "to": {
+        "table": "change_request",
+        "query": "",
+        "fields": []
+      },
+      "link": {
+        "kind": "reference",
+        "field": "rfc",
+        "direction": "outbound"
+      },
+      "expect": "absent",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "state",
+        "rfc",
+        "known_error"
+      ],
+      "partial": {
+        "kind": "false_positive_risk",
+        "not_covered": "Closed problems with no linked change and no known error are reported. The accepted-risk record is UNDEFINED, so a problem closed under an accepted-risk decision would be reported although the workbook excludes it."
+      }
+    },
+    "ITSM-066": {
+      "requires_objects": [
+        "knowledge_link"
+      ],
+      "expected_fields": {
+        "knowledge_link": [
+          "kb_knowledge",
+          "task"
+        ]
+      },
+      "notes": "How a known error links to a knowledge article is UNDEFINED."
+    },
+    "ITSM-069": {
+      "from": {
+        "table": "problem",
+        "query": "active=false",
+        "fields": [
+          "number",
+          "state",
+          "closed_at"
+        ]
+      },
+      "to": {
+        "table": "incident",
+        "query": "active=true^problem_idISNOTEMPTY",
+        "fields": []
+      },
+      "link": {
+        "kind": "reference",
+        "field": "problem_id",
+        "direction": "inbound"
+      },
+      "expect": "any_in_state",
+      "state_test": {
+        "always": true
+      },
+      "evidence_fields": [
+        "number",
+        "state",
+        "closed_at"
+      ]
+    },
+    "ITSM-073": {
+      "from": {
+        "table": "problem",
+        "query": "",
+        "fields": [
+          "number",
+          "priority"
+        ]
+      },
+      "to": {
+        "table": "incident",
+        "query": "problem_idISNOTEMPTY",
+        "fields": [
+          "priority"
+        ]
+      },
+      "link": {
+        "kind": "reference",
+        "field": "problem_id",
+        "direction": "inbound"
+      },
+      "expect": "any_in_state",
+      "state_test": {
+        "field": "priority",
+        "op": "in",
+        "value": {
+          "$param": "alignment_matrix"
+        }
+      },
+      "evidence_fields": [
+        "number",
+        "priority"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The alignment matrix (which incident priorities a problem priority must match) is UNDEFINED."
+      }
+    },
+    "ITSM-076": {
+      "requires_objects": [
+        "knowledge_link"
+      ],
+      "expected_fields": {
+        "knowledge_link": [
+          "kb_knowledge",
+          "task"
+        ]
+      },
+      "notes": "Article-to-incident linkage is UNDEFINED; sys_view_count on kb_knowledge alone does not answer the rule."
+    },
+    "ITSM-078": {
+      "requires_objects": [
+        "post_incident_review"
+      ],
+      "notes": "The validation / PIR record for a permanent fix is UNDEFINED."
+    },
+    "ITSM-109": {
+      "requires_tables": [
+        {
+          "table": "sysapproval_approver",
+          "fields": [
+            "approver",
+            "state",
+            "sysapproval"
+          ]
+        }
+      ],
+      "from": {
+        "table": "change_request",
+        "query": "requested_byISNOTEMPTY",
+        "fields": [
+          "number",
+          "requested_by",
+          "risk",
+          "type"
+        ]
+      },
+      "to": {
+        "table": "sysapproval_approver",
+        "query": [
+          {
+            "$clause": {
+              "template": "state={}",
+              "value": {
+                "$choice": {
+                  "table": "sysapproval_approver",
+                  "element": "state",
+                  "label": "Approved"
+                }
+              }
+            }
+          }
+        ],
+        "fields": [
+          "approver",
+          "state"
+        ]
+      },
+      "link": {
+        "kind": "reference",
+        "field": "sysapproval",
+        "direction": "inbound"
+      },
+      "expect": "any_in_state",
+      "state_test": {
+        "field": "approver",
+        "op": "equals",
+        "value": {
+          "$source": "requested_by"
+        }
+      },
+      "evidence_fields": [
+        "number",
+        "requested_by",
+        "risk",
+        "type"
+      ],
+      "notes": "An approved approval record on the change whose approver equals requested_by."
+    },
+    "ITSM-110": {
+      "requires_objects": [
+        "approval_routing"
+      ],
+      "notes": "Approval records and the authority matrix are UNDEFINED."
+    },
+    "ITSM-114": {
+      "requires_tables": [
+        {
+          "table": "change_task",
+          "fields": [
+            "change_request",
+            "change_task_type",
+            "state"
+          ]
+        }
+      ],
+      "from": {
+        "table": "change_request",
+        "query": [
+          {
+            "$clause": {
+              "template": "close_code={}",
+              "value": {
+                "$choice": {
+                  "table": "change_request",
+                  "element": "close_code",
+                  "label": "Unsuccessful"
+                }
+              }
+            }
+          }
+        ],
+        "fields": [
+          "number",
+          "close_code"
+        ]
+      },
+      "to": {
+        "table": "change_task",
+        "query": [
+          {
+            "$param": "backout_task_type",
+            "as": "clause",
+            "template": "change_task_type={}"
+          }
+        ],
+        "fields": [
+          "state"
+        ]
+      },
+      "link": {
+        "kind": "reference",
+        "field": "change_request",
+        "direction": "inbound"
+      },
+      "expect": "absent",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "close_code"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Which change_task_type means a backout task is UNDEFINED (no such value out of the box); \"backout evidence recorded\" elsewhere is not evaluated."
+      }
+    },
+    "ITSM-116": {
+      "requires_tables": [
+        {
+          "table": "sysapproval_approver",
+          "fields": [
+            "approver",
+            "state",
+            "sysapproval",
+            "sys_created_on",
+            "sys_updated_on"
+          ]
+        }
+      ],
+      "from": {
+        "table": "change_request",
+        "query": "",
+        "fields": [
+          "number",
+          "type",
+          "risk"
+        ]
+      },
+      "to": {
+        "table": "sysapproval_approver",
+        "query": [
+          {
+            "$clause": {
+              "template": "state={}",
+              "value": {
+                "$choice": {
+                  "table": "sysapproval_approver",
+                  "element": "state",
+                  "label": "Approved"
+                }
+              }
+            }
+          }
+        ],
+        "fields": [
+          "approver",
+          "sys_created_on",
+          "sys_updated_on"
+        ]
+      },
+      "link": {
+        "kind": "reference",
+        "field": "sysapproval",
+        "direction": "inbound"
+      },
+      "expect": "any_in_state",
+      "state_test": {
+        "field": "sys_created_on",
+        "field2": "sys_updated_on",
+        "op": "interval_lt",
+        "value": {
+          "$param": "threshold"
+        },
+        "unit": "seconds"
+      },
+      "evidence_fields": [
+        "number",
+        "type",
+        "risk"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Turnaround is measured as sys_updated_on − sys_created_on of the approval record; an approval updated after the decision shows a longer turnaround (missed rubber stamps). \"Grouped by approver and change type\" and \"report the distribution\" are not produced."
+      }
+    },
+    "ITSM-122": {
+      "requires_objects": [
+        "post_incident_review"
+      ],
+      "notes": "The PIR record is UNDEFINED, as are the risk bands requiring one."
+    },
+    "ITSM-128": {
+      "from": {
+        "table": "incident",
+        "query": [
+          "resolved_atISNOTEMPTY",
+          {
+            "$param": "close_codes",
+            "as": "clause",
+            "template": "close_codeIN{}"
+          }
+        ],
+        "fields": [
+          "number",
+          "close_code",
+          "rfc",
+          "cmdb_ci"
+        ]
+      },
+      "to": {
+        "table": "change_request",
+        "query": "",
+        "fields": []
+      },
+      "link": {
+        "kind": "reference",
+        "field": "rfc",
+        "direction": "outbound"
+      },
+      "expect": "absent",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "close_code",
+        "rfc",
+        "cmdb_ci"
+      ]
+    },
+    "ITSM-133": {
+      "from": {
+        "table": "cmdb_ci_service",
+        "query": "",
+        "fields": [
+          "name",
+          "busines_criticality"
+        ]
+      },
+      "to": {
+        "table": "problem",
+        "query": "business_serviceISNOTEMPTY",
+        "fields": []
+      },
+      "link": {
+        "kind": "reference",
+        "field": "business_service",
+        "direction": "inbound"
+      },
+      "expect": "absent",
+      "evidence_fields": [
+        "name",
+        "busines_criticality"
+      ],
+      "volume_threshold": {
+        "$param": "volume_threshold"
+      },
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Business Critical services with zero linked problems are reported once volume_threshold is set; the Business Critical criticality values are UNDEFINED and not filtered."
+      }
+    },
+    "ITSM-137": {
+      "undefined_dependencies": [
+        "how an SLA definition is scoped to a service (parsing contract_sla.start_condition for a service reference) is not defined"
+      ],
+      "notes": "cmdb_ci_service → service_offering (parent) is expressible; the SLA-to-service scoping is not."
+    }
+  }
+}

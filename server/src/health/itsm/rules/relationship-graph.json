@@ -1,0 +1,106 @@
+{
+  "engine": "relationship_graph",
+  "rules": {
+    "ITSM-105": {
+      "table": "change_request",
+      "scope": "cmdb_ciISNOTEMPTY",
+      "ci_field": "cmdb_ci",
+      "question": "dependents",
+      "depth": {
+        "$param": "scope_depth"
+      },
+      "offend": {
+        "path": "answer.dependents_count",
+        "op": "gt",
+        "value": 0
+      },
+      "evidence_fields": [
+        "number",
+        "type",
+        "cmdb_ci"
+      ],
+      "report_ratio": true,
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "\"Single affected CI\" is read as: the change names one CI (cmdb_ci) whose dependents (to scope_depth, UNDEFINED) exist. The affected-CI list (task_ci) is UNDEFINED, so \"not declared\" cannot be checked; \"description or type indicates broader scope\" is not evaluated."
+      }
+    },
+    "ITSM-126": {
+      "table": "change_request",
+      "scope": "cmdb_ciISNOTEMPTY^business_serviceISEMPTY",
+      "ci_field": "cmdb_ci",
+      "question": "path_to_service",
+      "depth": {
+        "$param": "depth"
+      },
+      "offend": {
+        "all": [
+          {
+            "path": "answer.found",
+            "op": "equals",
+            "value": true
+          },
+          {
+            "path": "answer.service_criticality",
+            "op": "in",
+            "value": {
+              "$param": "critical_values"
+            }
+          }
+        ]
+      },
+      "evidence_fields": [
+        "number",
+        "type",
+        "cmdb_ci",
+        "business_service"
+      ]
+    },
+    "ITSM-130": {
+      "table": "incident",
+      "scope": "cmdb_ciISNOTEMPTY",
+      "ci_field": "cmdb_ci",
+      "question": "degree",
+      "offend": {
+        "path": "answer.degree",
+        "op": "equals",
+        "value": 0
+      },
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "evidence_fields": [
+        "number",
+        "cmdb_ci",
+        "priority"
+      ]
+    },
+    "ITSM-131": {
+      "table": "change_request",
+      "scope": "cmdb_ciISNOTEMPTY^riskISNOTEMPTY",
+      "ci_field": "cmdb_ci",
+      "question": "dependents",
+      "depth": {
+        "$param": "depth_threshold"
+      },
+      "offend": {
+        "path": "answer.dependents_count",
+        "op": "equals",
+        "value": 0
+      },
+      "evidence_fields": [
+        "number",
+        "risk",
+        "cmdb_ci"
+      ],
+      "report_ratio": true,
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Changes whose primary CI has no dependents to depth_threshold (UNDEFINED) are reported; whether the instance's risk calculation consumes dependency data (risk_assessment object) is UNDEFINED."
+      }
+    }
+  }
+}
