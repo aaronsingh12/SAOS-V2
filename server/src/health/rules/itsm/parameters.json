@@ -1,0 +1,1514 @@
+{
+  "version": "1.0.0",
+  "phase": 4,
+  "source": "SAOS_Health_Rules_Tracker_ITSM.xlsx — sheet ITSM, column \"Threshold / Parameter\" (verbatim in workbook_text)",
+  "rule_count": 139,
+  "conventions": {
+    "default": "the workbook's stated default, or null with status UNDEFINED — no default is invented (DECISIONS.md §3)",
+    "parameterless": "parameters: [] declares a rule the workbook gives no threshold for (\"Any occurrence\", \"Active membership resolved live\"); it resolves RESOLVED with an empty set",
+    "types": "number | percent (0–100) | duration (with unit) | string | list | boolean"
+  },
+  "declarations": {
+    "ITSM-001": {
+      "workbook_text": "Default 70% in one band. Window default 90 days.",
+      "parameters": [
+        {
+          "key": "dominance_share",
+          "type": "percent",
+          "unit": null,
+          "default": 70,
+          "description": "share of incidents in one priority band above which the matrix is flagged",
+          "status": "DEFINED"
+        },
+        {
+          "key": "window",
+          "type": "duration",
+          "unit": "days",
+          "default": 90,
+          "description": "analysis window",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-002": {
+      "workbook_text": "Unused = zero use in 180 days. Dominance threshold default 40%.",
+      "parameters": [
+        {
+          "key": "unused_window",
+          "type": "duration",
+          "unit": "days",
+          "default": 180,
+          "description": "a category with zero use in this window is unused",
+          "status": "DEFINED"
+        },
+        {
+          "key": "dominance_share",
+          "type": "percent",
+          "unit": null,
+          "default": 40,
+          "description": "share above which one category dominates",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-003": {
+      "workbook_text": "Any band with non-zero volume and no SLA",
+      "parameters": []
+    },
+    "ITSM-004": {
+      "workbook_text": "Report as a ratio of total volume",
+      "parameters": []
+    },
+    "ITSM-005": {
+      "workbook_text": "Report as a ratio and by group",
+      "parameters": []
+    },
+    "ITSM-006": {
+      "workbook_text": "Any invalid pair with non-zero volume",
+      "parameters": []
+    },
+    "ITSM-007": {
+      "workbook_text": "Default minimum 3 business days. Compare against the reopen timing distribution.",
+      "parameters": [
+        {
+          "key": "minimum_autoclose_days",
+          "type": "duration",
+          "unit": "days",
+          "default": 3,
+          "description": "minimum auto-close duration in BUSINESS days (the workbook says business days; business-day arithmetic against the instance calendar is UNDEFINED)",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-008": {
+      "workbook_text": "Default 30% in one generic value",
+      "parameters": [
+        {
+          "key": "catchall_share",
+          "type": "percent",
+          "unit": null,
+          "default": 30,
+          "description": "share of closures in one generic value",
+          "status": "DEFINED"
+        },
+        {
+          "key": "generic_values",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "which close-code values count as generic (\"Other\", \"Resolved\" …) — UNDEFINED: the workbook names examples, not the list",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-009": {
+      "workbook_text": "Age threshold default 30 days for dead-end detection",
+      "parameters": [
+        {
+          "key": "deadend_age",
+          "type": "duration",
+          "unit": "days",
+          "default": 30,
+          "description": "records sitting in a state longer than this indicate a dead-end",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-010": {
+      "workbook_text": "Field-to-stage value mapping configurable",
+      "parameters": [
+        {
+          "key": "field_stage_mapping",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "field-to-stage value mapping — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-011": {
+      "workbook_text": "Active membership resolved live",
+      "parameters": []
+    },
+    "ITSM-012": {
+      "workbook_text": "Compare against the service commitment where one exists",
+      "parameters": []
+    },
+    "ITSM-013": {
+      "workbook_text": "Any custom state absent from SLA conditions",
+      "parameters": [
+        {
+          "key": "custom_state_values",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "which incident state values are custom (added to the standard set) — UNDEFINED: the workbook does not list the standard set",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-014": {
+      "workbook_text": "Default 5% populated",
+      "parameters": [
+        {
+          "key": "population_rate",
+          "type": "percent",
+          "unit": null,
+          "default": 5,
+          "description": "a custom field populated below this share is unpopulated",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-015": {
+      "workbook_text": "Fires only where published articles exist",
+      "parameters": []
+    },
+    "ITSM-016": {
+      "workbook_text": "Default threshold 40%. Window default 90 days.",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 40,
+          "description": "share of incidents with neither CI nor service",
+          "status": "DEFINED"
+        },
+        {
+          "key": "window",
+          "type": "duration",
+          "unit": "days",
+          "default": 90,
+          "description": "analysis window",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-017": {
+      "workbook_text": "Default threshold 50%",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 50,
+          "description": "share of incidents referencing a bare CI rather than a service",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-018": {
+      "workbook_text": "Active membership resolved live",
+      "parameters": []
+    },
+    "ITSM-019": {
+      "workbook_text": "Report the two cases separately",
+      "parameters": []
+    },
+    "ITSM-020": {
+      "workbook_text": "Length threshold default 20 characters after trimming",
+      "parameters": [
+        {
+          "key": "min_length",
+          "type": "number",
+          "unit": null,
+          "default": 20,
+          "description": "characters after trimming",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-021": {
+      "workbook_text": "Similarity threshold default 0.9",
+      "parameters": [
+        {
+          "key": "similarity",
+          "type": "number",
+          "unit": null,
+          "default": 0.9,
+          "description": "TF-IDF cosine similarity at or above which close notes are a copy of the short description",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-022": {
+      "workbook_text": "Volume threshold configurable; service account detection from naming and role pattern",
+      "parameters": [
+        {
+          "key": "volume_threshold",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "incident volume per caller above which a service/generic account is flagged — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "service_account_pattern",
+          "type": "string",
+          "unit": null,
+          "default": null,
+          "description": "naming pattern identifying service accounts — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-023": {
+      "workbook_text": "Volume threshold configurable relative to total volume",
+      "parameters": [
+        {
+          "key": "volume_share",
+          "type": "percent",
+          "unit": null,
+          "default": null,
+          "description": "share of total volume one identical short description must reach — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-024": {
+      "workbook_text": "Expected distribution derived from the estate's own data, minimum volume per category required",
+      "parameters": [
+        {
+          "key": "minimum_volume_per_category",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "minimum incidents per category before a resolution-code share is judged — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "anomaly_share",
+          "type": "percent",
+          "unit": null,
+          "default": null,
+          "description": "share within a category below which a category × close-code pair is anomalous — UNDEFINED (DECISIONS.md §2: stays configurable)",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-025": {
+      "workbook_text": "Consistency rules per close code, derived from the estate's own dominant patterns",
+      "parameters": [
+        {
+          "key": "consistency_rules",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "consistency rules per close code, derived from the estate — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-026": {
+      "workbook_text": "Any occurrence; report by group and priority",
+      "parameters": []
+    },
+    "ITSM-027": {
+      "workbook_text": "Timing window configurable",
+      "parameters": [
+        {
+          "key": "timing_window",
+          "type": "duration",
+          "unit": "minutes",
+          "default": null,
+          "description": "attachment-to-resolution timing window — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-028": {
+      "workbook_text": "Pattern set per identifier type, with checksum validation where the format supports it",
+      "parameters": [
+        {
+          "key": "identifier_patterns",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "pattern set per identifier type — UNDEFINED beyond the standard PAN / Aadhaar / card formats",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-029": {
+      "workbook_text": "Fires only where routing rules reference the fields",
+      "parameters": []
+    },
+    "ITSM-030": {
+      "workbook_text": "Default threshold 8%. Escalate above 15%.",
+      "parameters": [
+        {
+          "key": "reopen_rate",
+          "type": "percent",
+          "unit": null,
+          "default": 8,
+          "description": "reopen rate threshold",
+          "status": "DEFINED"
+        },
+        {
+          "key": "escalate_rate",
+          "type": "percent",
+          "unit": null,
+          "default": 15,
+          "description": "escalate above this rate",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-031": {
+      "workbook_text": "Default threshold 70%",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 70,
+          "description": "share of closures performed by auto-close",
+          "status": "DEFINED"
+        },
+        {
+          "key": "autoclose_closed_by",
+          "type": "string",
+          "unit": null,
+          "default": null,
+          "description": "the closed_by user identifying an auto-closure — UNDEFINED (auto-close configuration object not identified)",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-032": {
+      "workbook_text": "Tail threshold default 4 reassignments",
+      "parameters": [
+        {
+          "key": "tail_threshold",
+          "type": "number",
+          "unit": null,
+          "default": 4,
+          "description": "reassignments at or above which a record is in the long tail",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-033": {
+      "workbook_text": "Threshold from the customer's own commitment; default 10%",
+      "parameters": [
+        {
+          "key": "breach_rate",
+          "type": "percent",
+          "unit": null,
+          "default": 10,
+          "description": "SLA breach rate threshold (the customer's own commitment overrides)",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-034": {
+      "workbook_text": "Default flag at 2x the estate mean rate",
+      "parameters": [
+        {
+          "key": "multiple_of_mean",
+          "type": "number",
+          "unit": null,
+          "default": 2,
+          "description": "flag a group at this multiple of the estate mean pause/cancel rate",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-035": {
+      "workbook_text": "Spike threshold default 2x the expected density for that interval",
+      "parameters": [
+        {
+          "key": "spike_multiple",
+          "type": "number",
+          "unit": null,
+          "default": 2,
+          "description": "multiple of expected density for the interval before SLA expiry",
+          "status": "DEFINED"
+        },
+        {
+          "key": "interval",
+          "type": "duration",
+          "unit": "minutes",
+          "default": null,
+          "description": "the interval before SLA expiry examined — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-036": {
+      "workbook_text": "Default threshold 60 seconds",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "duration",
+          "unit": "seconds",
+          "default": 60,
+          "description": "creation-to-closure interval below which closure is bulk",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-037": {
+      "workbook_text": "Age thresholds per priority; defaults 2 days P1, 5 days P2, 15 days P3",
+      "parameters": [
+        {
+          "key": "p1_age",
+          "type": "duration",
+          "unit": "days",
+          "default": 2,
+          "description": "P1 backlog age",
+          "status": "DEFINED"
+        },
+        {
+          "key": "p2_age",
+          "type": "duration",
+          "unit": "days",
+          "default": 5,
+          "description": "P2 backlog age",
+          "status": "DEFINED"
+        },
+        {
+          "key": "p3_age",
+          "type": "duration",
+          "unit": "days",
+          "default": 15,
+          "description": "P3 backlog age",
+          "status": "DEFINED"
+        },
+        {
+          "key": "p4_age",
+          "type": "duration",
+          "unit": "days",
+          "default": null,
+          "description": "P4 backlog age — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "p5_age",
+          "type": "duration",
+          "unit": "days",
+          "default": null,
+          "description": "P5 backlog age — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-038": {
+      "workbook_text": "Correlation window configurable, default 30 minutes",
+      "parameters": [
+        {
+          "key": "correlation_window",
+          "type": "duration",
+          "unit": "minutes",
+          "default": 30,
+          "description": "alert-to-manual-P1 correlation window",
+          "status": "DEFINED"
+        },
+        {
+          "key": "manual_creation_query",
+          "type": "string",
+          "unit": null,
+          "default": null,
+          "description": "encoded-query clause identifying a MANUALLY created incident (contact_type / creator) — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-039": {
+      "workbook_text": "Default threshold 30%",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 30,
+          "description": "share of P1s without a problem record",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-040": {
+      "workbook_text": "Similarity threshold and repeat count configurable",
+      "parameters": [
+        {
+          "key": "similarity",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "similarity threshold — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "repeat_count",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "repeat count — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-041": {
+      "workbook_text": "Requires at least 3 windows",
+      "parameters": [
+        {
+          "key": "min_windows",
+          "type": "number",
+          "unit": null,
+          "default": 3,
+          "description": "trend windows required before a decline is claimed",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-042": {
+      "workbook_text": "Report as a ratio and by individual",
+      "parameters": []
+    },
+    "ITSM-043": {
+      "workbook_text": "Any occurrence; report as a ratio",
+      "parameters": []
+    },
+    "ITSM-044": {
+      "workbook_text": "Report separately for callers with and without fulfiller roles",
+      "parameters": []
+    },
+    "ITSM-045": {
+      "workbook_text": "P1 volume threshold configurable",
+      "parameters": [
+        {
+          "key": "p1_volume_threshold",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "P1 volume above which a major incident process is expected — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-046": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-047": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-048": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-049": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-050": {
+      "workbook_text": "Gap threshold default 30 minutes during an active major incident",
+      "parameters": [
+        {
+          "key": "gap_threshold",
+          "type": "duration",
+          "unit": "minutes",
+          "default": 30,
+          "description": "longest allowed gap between updates during an active major incident",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-051": {
+      "workbook_text": "Any occurrence with qualifying P1s present",
+      "parameters": []
+    },
+    "ITSM-052": {
+      "workbook_text": "Age threshold default 90 days",
+      "parameters": [
+        {
+          "key": "age_threshold",
+          "type": "duration",
+          "unit": "days",
+          "default": 90,
+          "description": "open review actions older than this",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-053": {
+      "workbook_text": "Default threshold 0.5%. Escalate below 0.1%.",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 0.5,
+          "description": "problem-to-incident ratio below which the process is unused",
+          "status": "DEFINED"
+        },
+        {
+          "key": "escalate_below",
+          "type": "percent",
+          "unit": null,
+          "default": 0.1,
+          "description": "escalate below this ratio",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-054": {
+      "workbook_text": "Cluster volume threshold and similarity threshold configurable",
+      "parameters": [
+        {
+          "key": "cluster_volume",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "cluster volume threshold — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "similarity",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "similarity threshold — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-055": {
+      "workbook_text": "Any occurrence; report as a ratio",
+      "parameters": []
+    },
+    "ITSM-056": {
+      "workbook_text": "Age threshold default 30 days",
+      "parameters": [
+        {
+          "key": "age_threshold",
+          "type": "duration",
+          "unit": "days",
+          "default": 30,
+          "description": "problems in the initial state longer than this",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-057": {
+      "workbook_text": "Report by Problem state; no single threshold",
+      "parameters": []
+    },
+    "ITSM-058": {
+      "workbook_text": "N default 10; effort derived from resolution time",
+      "parameters": [
+        {
+          "key": "top_n",
+          "type": "number",
+          "unit": null,
+          "default": 10,
+          "description": "clusters reported",
+          "status": "DEFINED"
+        },
+        {
+          "key": "similarity",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "similarity threshold — UNDEFINED (the workbook gives N only)",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-059": {
+      "workbook_text": "Flag where Problem creation concentration far exceeds incident concentration",
+      "parameters": [
+        {
+          "key": "concentration_ratio",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "how far problem concentration may exceed incident concentration — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-060": {
+      "workbook_text": "Any occurrence; report by state",
+      "parameters": []
+    },
+    "ITSM-061": {
+      "workbook_text": "Age threshold default 90 days",
+      "parameters": [
+        {
+          "key": "age_threshold",
+          "type": "duration",
+          "unit": "days",
+          "default": 90,
+          "description": "open problems with no state change for this long",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-062": {
+      "workbook_text": "Any occurrence; report as a ratio",
+      "parameters": []
+    },
+    "ITSM-063": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-064": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-065": {
+      "workbook_text": "Active membership resolved live",
+      "parameters": []
+    },
+    "ITSM-066": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-067": {
+      "workbook_text": "Any occurrence; report as a ratio",
+      "parameters": []
+    },
+    "ITSM-068": {
+      "workbook_text": "Age threshold default 60 days",
+      "parameters": [
+        {
+          "key": "age_threshold",
+          "type": "duration",
+          "unit": "days",
+          "default": 60,
+          "description": "open problem tasks older than this",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-069": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-070": {
+      "workbook_text": "Length threshold default 40 characters; similarity threshold 0.85",
+      "parameters": [
+        {
+          "key": "min_length",
+          "type": "number",
+          "unit": null,
+          "default": 40,
+          "description": "characters",
+          "status": "DEFINED"
+        },
+        {
+          "key": "similarity",
+          "type": "number",
+          "unit": null,
+          "default": 0.85,
+          "description": "TF-IDF cosine at or above which the root cause restates the symptom",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-071": {
+      "workbook_text": "Root cause classification from close code and text pattern",
+      "parameters": [
+        {
+          "key": "root_cause_classification",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "close codes / text patterns meaning \"a fix was required\" — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-072": {
+      "workbook_text": "Default 2 backward transitions",
+      "parameters": [
+        {
+          "key": "backward_transitions",
+          "type": "number",
+          "unit": null,
+          "default": 2,
+          "description": "backward transitions at or above which a problem regresses repeatedly",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-073": {
+      "workbook_text": "Alignment matrix configurable",
+      "parameters": [
+        {
+          "key": "alignment_matrix",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "problem-priority vs incident-impact alignment matrix — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-074": {
+      "workbook_text": "Window default 90 days either side. Flag where the decline is below threshold.",
+      "parameters": [
+        {
+          "key": "window",
+          "type": "duration",
+          "unit": "days",
+          "default": 90,
+          "description": "window either side of problem closure",
+          "status": "DEFINED"
+        },
+        {
+          "key": "decline_threshold",
+          "type": "percent",
+          "unit": null,
+          "default": null,
+          "description": "the decline below which the fix is ineffective — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-075": {
+      "workbook_text": "Similarity threshold default 0.8, minimum cluster size 2",
+      "parameters": [
+        {
+          "key": "similarity",
+          "type": "number",
+          "unit": null,
+          "default": 0.8,
+          "description": "TF-IDF cosine between root-cause texts",
+          "status": "DEFINED"
+        },
+        {
+          "key": "min_cluster_size",
+          "type": "number",
+          "unit": null,
+          "default": 2,
+          "description": "minimum problems per cluster",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-076": {
+      "workbook_text": "Window default 90 days",
+      "parameters": [
+        {
+          "key": "window",
+          "type": "duration",
+          "unit": "days",
+          "default": 90,
+          "description": "window for views / linkage",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-077": {
+      "workbook_text": "Report distribution, not a single threshold",
+      "parameters": []
+    },
+    "ITSM-078": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-079": {
+      "workbook_text": "Default threshold 20%",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 20,
+          "description": "share of problems closed as \"cannot reproduce\"",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-080": {
+      "workbook_text": "Default threshold 20% of changes as standard for a mature estate",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 20,
+          "description": "share of changes that are standard, below which the catalogue is unused",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-081": {
+      "workbook_text": "Any type with non-zero volume",
+      "parameters": []
+    },
+    "ITSM-082": {
+      "workbook_text": "Window default 90 days",
+      "parameters": [
+        {
+          "key": "window",
+          "type": "duration",
+          "unit": "days",
+          "default": 90,
+          "description": "window in which CAB activity is expected",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-083": {
+      "workbook_text": "Default 80% in one risk value",
+      "parameters": [
+        {
+          "key": "dominance_share",
+          "type": "percent",
+          "unit": null,
+          "default": 80,
+          "description": "share of changes carrying one risk value",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-084": {
+      "workbook_text": "Report both cases; the second is ITSM-138",
+      "parameters": []
+    },
+    "ITSM-085": {
+      "workbook_text": "Any absence",
+      "parameters": []
+    },
+    "ITSM-086": {
+      "workbook_text": "Flag where emergency approval burden is not materially lighter",
+      "parameters": [
+        {
+          "key": "burden_ratio",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "how much lighter emergency approval must be — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-087": {
+      "workbook_text": "Any model permitting evidenceless closure",
+      "parameters": []
+    },
+    "ITSM-088": {
+      "workbook_text": "Active delegation records only",
+      "parameters": []
+    },
+    "ITSM-089": {
+      "workbook_text": "Review period from policy; default 12 months",
+      "parameters": [
+        {
+          "key": "review_period",
+          "type": "duration",
+          "unit": "months",
+          "default": 12,
+          "description": "template review period",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-090": {
+      "workbook_text": "Population threshold default 80%",
+      "parameters": [
+        {
+          "key": "population_threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 80,
+          "description": "share of changes with risk/impact populated, below which fields are not mandatory in practice",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-091": {
+      "workbook_text": "Any custom type with non-zero volume",
+      "parameters": []
+    },
+    "ITSM-092": {
+      "workbook_text": "Risk bands configurable",
+      "parameters": [
+        {
+          "key": "risk_bands",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "risk bands requiring a post-implementation review — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-093": {
+      "workbook_text": "Access threshold where log data is available",
+      "parameters": [
+        {
+          "key": "access_threshold",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "calendar access threshold — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-094": {
+      "workbook_text": "Default threshold 30%",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 30,
+          "description": "share of changes with neither CI nor service",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-095": {
+      "workbook_text": "Report the two cases separately",
+      "parameters": []
+    },
+    "ITSM-096": {
+      "workbook_text": "Any occurrence; report by type and risk band",
+      "parameters": []
+    },
+    "ITSM-097": {
+      "workbook_text": "Any occurrence; escalate for high-risk and production changes",
+      "parameters": []
+    },
+    "ITSM-098": {
+      "workbook_text": "Risk bands configurable",
+      "parameters": [
+        {
+          "key": "risk_bands",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "risk bands counted as high-risk — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-099": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-100": {
+      "workbook_text": "Report the two cases separately; the second feeds ITSM-108",
+      "parameters": []
+    },
+    "ITSM-101": {
+      "workbook_text": "Active membership resolved live",
+      "parameters": []
+    },
+    "ITSM-102": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-103": {
+      "workbook_text": "Report the two cases separately",
+      "parameters": []
+    },
+    "ITSM-104": {
+      "workbook_text": "Volume threshold configurable relative to change volume",
+      "parameters": [
+        {
+          "key": "volume_share",
+          "type": "percent",
+          "unit": null,
+          "default": null,
+          "description": "share of change volume one identical backout plan must reach — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-105": {
+      "workbook_text": "Scope inference from change type and CI relationship depth",
+      "parameters": [
+        {
+          "key": "scope_depth",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "relationship depth defining \"clearly spans multiple CIs\" — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-106": {
+      "workbook_text": "Scope to change-controlled object classes; correlation window configurable",
+      "parameters": [
+        {
+          "key": "correlation_window",
+          "type": "duration",
+          "unit": "hours",
+          "default": null,
+          "description": "CI-modification to change window — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "object_classes",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "change-controlled object classes — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-107": {
+      "workbook_text": "Default threshold 10%. Escalate above 25%.",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 10,
+          "description": "emergency change share",
+          "status": "DEFINED"
+        },
+        {
+          "key": "escalate_at",
+          "type": "percent",
+          "unit": null,
+          "default": 25,
+          "description": "escalate above this share",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-108": {
+      "workbook_text": "Correlation against CI audit where available; otherwise against actual start field",
+      "parameters": []
+    },
+    "ITSM-109": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-110": {
+      "workbook_text": "Authority matrix from the customer's own delegation policy",
+      "parameters": [
+        {
+          "key": "authority_matrix",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "authority matrix from the delegation policy — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-111": {
+      "workbook_text": "Tolerance configurable, default 1 hour",
+      "parameters": [
+        {
+          "key": "tolerance",
+          "type": "duration",
+          "unit": "hours",
+          "default": 1,
+          "description": "tolerance around the approved window",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-112": {
+      "workbook_text": "Requires blackout windows to be defined; report ITSM-085 where they are not",
+      "parameters": []
+    },
+    "ITSM-113": {
+      "workbook_text": "Default threshold 90%",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 90,
+          "description": "success rate below which changes are flagged",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-114": {
+      "workbook_text": "Any occurrence",
+      "parameters": [
+        {
+          "key": "backout_task_type",
+          "type": "string",
+          "unit": null,
+          "default": null,
+          "description": "the change_task_type value meaning a backout task — UNDEFINED (no such value out of the box)",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-115": {
+      "workbook_text": "Window default 72 hours. CI correlation includes dependent CIs where relationships exist.",
+      "parameters": [
+        {
+          "key": "window",
+          "type": "duration",
+          "unit": "hours",
+          "default": 72,
+          "description": "incident-after-change window",
+          "status": "DEFINED"
+        },
+        {
+          "key": "dependency_depth",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "how many relationship hops count as a dependent CI — UNDEFINED (the workbook says dependent CIs are included, not how far)",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-116": {
+      "workbook_text": "Default threshold 120 seconds. Report the distribution, not only the outliers.",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "duration",
+          "unit": "seconds",
+          "default": 120,
+          "description": "approval turnaround at or below which an approval is rubber-stamped",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-117": {
+      "workbook_text": "Template scope from the template definition",
+      "parameters": []
+    },
+    "ITSM-118": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-119": {
+      "workbook_text": "All three absent",
+      "parameters": []
+    },
+    "ITSM-120": {
+      "workbook_text": "Default 3 reschedules",
+      "parameters": [
+        {
+          "key": "reschedules",
+          "type": "number",
+          "unit": null,
+          "default": 3,
+          "description": "reschedules at or above which a change is repeatedly rescheduled",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-121": {
+      "workbook_text": "Default 25% of total approvals",
+      "parameters": [
+        {
+          "key": "share",
+          "type": "percent",
+          "unit": null,
+          "default": 25,
+          "description": "share of total approvals by a single approver",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-122": {
+      "workbook_text": "Risk bands requiring PIR configurable",
+      "parameters": [
+        {
+          "key": "risk_bands",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "risk bands requiring PIR — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-123": {
+      "workbook_text": "Window default 72 hours. Dependent CI traversal depth default 2.",
+      "parameters": [
+        {
+          "key": "window",
+          "type": "duration",
+          "unit": "hours",
+          "default": 72,
+          "description": "change-before-incident window",
+          "status": "DEFINED"
+        },
+        {
+          "key": "depth",
+          "type": "number",
+          "unit": null,
+          "default": 2,
+          "description": "dependent CI traversal depth",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-124": {
+      "workbook_text": "Same window and traversal parameters as ITSM-123",
+      "parameters": []
+    },
+    "ITSM-125": {
+      "workbook_text": "Default 3 occurrences",
+      "parameters": [
+        {
+          "key": "occurrences",
+          "type": "number",
+          "unit": null,
+          "default": 3,
+          "description": "change-then-incident occurrences per CI",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-126": {
+      "workbook_text": "Traversal depth configurable",
+      "parameters": [
+        {
+          "key": "depth",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "traversal depth — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "critical_values",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "busines_criticality values meaning Business Critical — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-127": {
+      "workbook_text": "Requires freeze periods to be defined",
+      "parameters": [
+        {
+          "key": "freeze_schedule_type",
+          "type": "string",
+          "unit": null,
+          "default": null,
+          "description": "the cmn_schedule class (table) or type that holds freeze periods — UNDEFINED (the platform defines blackout and maintenance classes, not a freeze class)",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-128": {
+      "workbook_text": "Close code set configurable",
+      "parameters": [
+        {
+          "key": "close_codes",
+          "type": "list",
+          "unit": null,
+          "default": null,
+          "description": "close codes indicating change causation — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-129": {
+      "workbook_text": "Per-process thresholds; fires only when all three breach",
+      "parameters": [
+        {
+          "key": "problem_reference_threshold",
+          "type": "percent",
+          "unit": null,
+          "default": null,
+          "description": "the problem-process CMDB-reference threshold (016 and 094 carry their own) — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-130": {
+      "workbook_text": "Default threshold 25%",
+      "parameters": [
+        {
+          "key": "threshold",
+          "type": "percent",
+          "unit": null,
+          "default": 25,
+          "description": "share of incident volume on CIs with no relationships",
+          "status": "DEFINED"
+        }
+      ]
+    },
+    "ITSM-131": {
+      "workbook_text": "Depth threshold configurable",
+      "parameters": [
+        {
+          "key": "depth_threshold",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "depth threshold — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-132": {
+      "workbook_text": "Requires the ITOM cause to be identified; links to ITOM-147",
+      "parameters": []
+    },
+    "ITSM-133": {
+      "workbook_text": "Volume threshold relative to the service population",
+      "parameters": [
+        {
+          "key": "volume_threshold",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "incident volume relative to the service population — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-134": {
+      "workbook_text": "Active membership resolved live",
+      "parameters": []
+    },
+    "ITSM-135": {
+      "workbook_text": "Dominance threshold configurable; requires minimum incident volume per CI",
+      "parameters": [
+        {
+          "key": "dominance_share",
+          "type": "percent",
+          "unit": null,
+          "default": null,
+          "description": "dominance threshold — UNDEFINED",
+          "status": "UNDEFINED"
+        },
+        {
+          "key": "minimum_volume_per_ci",
+          "type": "number",
+          "unit": null,
+          "default": null,
+          "description": "minimum incident volume per CI — UNDEFINED",
+          "status": "UNDEFINED"
+        }
+      ]
+    },
+    "ITSM-136": {
+      "workbook_text": "Includes free-text and legacy service fields where present",
+      "parameters": []
+    },
+    "ITSM-137": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    },
+    "ITSM-138": {
+      "workbook_text": "Requires evidence that conflicts existed to be found",
+      "parameters": []
+    },
+    "ITSM-139": {
+      "workbook_text": "Any occurrence",
+      "parameters": []
+    }
+  }
+}

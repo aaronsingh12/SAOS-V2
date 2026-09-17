@@ -1,0 +1,362 @@
+{
+  "engine": "temporal_correlation",
+  "rules": {
+    "ITSM-027": {
+      "requires_tables": [
+        {
+          "table": "sys_attachment",
+          "fields": [
+            "table_sys_id",
+            "table_name",
+            "sys_created_on",
+            "content_type"
+          ]
+        }
+      ],
+      "left": {
+        "table": "incident",
+        "query": "resolved_atISNOTEMPTY^close_notesISEMPTY",
+        "key_field": "sys_id",
+        "time_field": "resolved_at",
+        "fields": [
+          "number"
+        ]
+      },
+      "right": {
+        "table": "sys_attachment",
+        "query": "table_name=incident",
+        "key_field": "table_sys_id",
+        "time_field": "sys_created_on"
+      },
+      "window": {
+        "$param": "timing_window",
+        "as": "window"
+      },
+      "direction": "before",
+      "offend": "matched",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "resolved_at"
+      ]
+    },
+    "ITSM-035": {
+      "undefined_dependencies": [
+        "the interval before SLA expiry to examine, and the expected density it is compared against, are not defined — no engine mode exists for a resolution-time density spike"
+      ],
+      "notes": "spike_multiple is declared (2×); the interval is UNDEFINED."
+    },
+    "ITSM-038": {
+      "requires_tables": [
+        {
+          "table": "em_alert",
+          "fields": [
+            "cmdb_ci",
+            "sys_created_on",
+            "incident"
+          ]
+        }
+      ],
+      "left": {
+        "table": "incident",
+        "query": [
+          "priority=1",
+          "cmdb_ciISNOTEMPTY",
+          {
+            "$param": "manual_creation_query",
+            "as": "clause",
+            "template": "{}"
+          }
+        ],
+        "key_field": "cmdb_ci",
+        "time_field": "sys_created_on",
+        "fields": [
+          "number",
+          "priority",
+          "contact_type"
+        ]
+      },
+      "right": {
+        "table": "em_alert",
+        "query": "incidentISEMPTY",
+        "key_field": "cmdb_ci",
+        "time_field": "sys_created_on"
+      },
+      "window": {
+        "$param": "correlation_window",
+        "as": "window"
+      },
+      "direction": "before",
+      "offend": "matched",
+      "related_domain": "ITOM",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "priority",
+        "cmdb_ci",
+        "contact_type"
+      ]
+    },
+    "ITSM-074": {
+      "mode": "before_after",
+      "left": {
+        "table": "problem",
+        "query": "active=false^closed_atISNOTEMPTY",
+        "time_field": "closed_at",
+        "fields": [
+          "number",
+          "state"
+        ]
+      },
+      "right": {
+        "table": "incident",
+        "query": "problem_idISNOTEMPTY",
+        "key_field": "problem_id",
+        "time_field": "sys_created_on"
+      },
+      "window": {
+        "$param": "window",
+        "as": "window"
+      },
+      "required_decline": {
+        "$param": "decline_threshold",
+        "as": "fraction"
+      },
+      "evidence_fields": [
+        "number",
+        "state",
+        "closed_at"
+      ]
+    },
+    "ITSM-106": {
+      "left": {
+        "table": "sys_audit",
+        "query": [
+          "tablename=cmdb_ci",
+          {
+            "$param": "object_classes",
+            "as": "clause",
+            "template": "documentkey.sys_class_nameIN{}"
+          }
+        ],
+        "key_field": "documentkey",
+        "time_field": "sys_created_on",
+        "fields": [
+          "fieldname",
+          "user"
+        ]
+      },
+      "right": {
+        "table": "change_request",
+        "query": [
+          {
+            "$clause": {
+              "template": "approval={}",
+              "value": {
+                "$choice": {
+                  "table": "change_request",
+                  "element": "approval",
+                  "label": "Approved"
+                }
+              }
+            }
+          },
+          "cmdb_ciISNOTEMPTY"
+        ],
+        "key_field": "cmdb_ci",
+        "time_field": "work_start"
+      },
+      "window": {
+        "$param": "correlation_window",
+        "as": "window"
+      },
+      "direction": "before",
+      "offend": "unmatched",
+      "related_domain": "CMDB",
+      "report_ratio": true,
+      "evidence_fields": [
+        "documentkey",
+        "fieldname",
+        "user",
+        "sys_created_on"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The change-controlled object classes and the correlation window are UNDEFINED; audit on cmdb_ci must be enabled (a capability, not a pass)."
+      }
+    },
+    "ITSM-112": {
+      "mode": "schedule_intersection",
+      "table": "change_request",
+      "scope": "work_startISNOTEMPTY^work_endISNOTEMPTY",
+      "start_field": "work_start",
+      "end_field": "work_end",
+      "evidence_fields": [
+        "number",
+        "type",
+        "work_start",
+        "work_end",
+        "approval"
+      ],
+      "notes": "Blackout periods are the platform's cmn_schedule_blackout class (verified on dev442675), expanded over the extent of the records' own implementation intervals (the workbook gives no analysis window). days_of_week 1 = Monday … 7 = Sunday is verified on the same instance (schedules.js).",
+      "requires_tables": [
+        {
+          "table": "cmn_schedule_blackout",
+          "fields": [
+            "name",
+            "time_zone"
+          ]
+        },
+        {
+          "table": "cmn_schedule_span",
+          "fields": [
+            "schedule",
+            "start_date_time",
+            "end_date_time",
+            "repeat_type",
+            "days_of_week",
+            "repeat_count",
+            "repeat_until",
+            "all_day"
+          ]
+        }
+      ],
+      "schedule_table": "cmn_schedule_blackout"
+    },
+    "ITSM-115": {
+      "left": {
+        "table": "change_request",
+        "query": [
+          {
+            "$clause": {
+              "template": "close_code={}",
+              "value": {
+                "$choice": {
+                  "table": "change_request",
+                  "element": "close_code",
+                  "label": "Successful"
+                }
+              }
+            }
+          },
+          "cmdb_ciISNOTEMPTY",
+          "work_endISNOTEMPTY"
+        ],
+        "key_field": "cmdb_ci",
+        "time_field": "work_end",
+        "fields": [
+          "number",
+          "type"
+        ]
+      },
+      "right": {
+        "table": "incident",
+        "query": "cmdb_ciISNOTEMPTY",
+        "key_field": "cmdb_ci",
+        "time_field": "sys_created_on"
+      },
+      "window": {
+        "$param": "window",
+        "as": "window"
+      },
+      "direction": "after",
+      "expand_keys": {
+        "name": "dependents_via_graph",
+        "args": {
+          "depth": {
+            "$param": "dependency_depth"
+          },
+          "direction": "both"
+        }
+      },
+      "offend": "matched",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "type",
+        "cmdb_ci",
+        "work_end"
+      ]
+    },
+    "ITSM-123": {
+      "left": {
+        "table": "incident",
+        "query": "priority=1^cmdb_ciISNOTEMPTY",
+        "key_field": "cmdb_ci",
+        "time_field": "sys_created_on",
+        "fields": [
+          "number",
+          "priority",
+          "close_code"
+        ]
+      },
+      "right": {
+        "table": "change_request",
+        "query": "cmdb_ciISNOTEMPTY^work_endISNOTEMPTY",
+        "key_field": "cmdb_ci",
+        "time_field": "work_end",
+        "fields": [
+          "type",
+          "assignment_group"
+        ]
+      },
+      "window": {
+        "$param": "window",
+        "as": "window"
+      },
+      "direction": "before",
+      "expand_keys": {
+        "name": "dependents_via_graph",
+        "args": {
+          "depth": {
+            "$param": "depth"
+          },
+          "direction": "both"
+        }
+      },
+      "offend": "matched",
+      "report_ratio": true,
+      "evidence_fields": [
+        "number",
+        "priority",
+        "cmdb_ci",
+        "sys_created_on"
+      ]
+    },
+    "ITSM-127": {
+      "mode": "schedule_intersection",
+      "table": "change_request",
+      "scope": "work_startISNOTEMPTY^work_endISNOTEMPTY",
+      "start_field": "work_start",
+      "end_field": "work_end",
+      "evidence_fields": [
+        "number",
+        "type",
+        "work_start",
+        "work_end"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The schedule class or type that holds freeze periods is UNDEFINED (freeze_schedule_type names the cmn_schedule subclass or table to read; the validation instance has no freeze class). \"By type and approver\": approver needs the approval object (UNDEFINED)."
+      },
+      "requires_tables": [
+        {
+          "table": "cmn_schedule_span",
+          "fields": [
+            "schedule",
+            "start_date_time",
+            "end_date_time",
+            "repeat_type",
+            "days_of_week",
+            "repeat_count",
+            "repeat_until",
+            "all_day"
+          ]
+        }
+      ],
+      "schedule_table": {
+        "$param": "freeze_schedule_type"
+      }
+    }
+  }
+}

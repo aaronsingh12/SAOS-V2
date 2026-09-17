@@ -421,6 +421,42 @@ export const table = {
     }
     return out;
   },
+
+  /**
+   * Aggregate API — the general form: count, avg, sum, min and max over an
+   * encoded query, grouped by zero or more fields.
+   *
+   * ITSM Phase 3. `countBy` above answers one group-by field with counts and
+   * nothing else; the ITSM aggregate rules need "share per (impact, urgency,
+   * priority)" and "resolution effort per cluster" — several group-by fields
+   * and avg/sum — and the alternative is reading every row into memory, which
+   * is the thing the aggregate engine exists to avoid. `countBy` is left as it
+   * is: its callers and its shape are unchanged.
+   *
+   * Returns one row per group: `{ group: { field: value, ... }, count, avg: {field: n},
+   * sum: {…}, min: {…}, max: {…} }`. With no group-by there is exactly one row
+   * whose `group` is `{}`.
+   */
+  async aggregate(t, { query = '', groupBy = [], avg = [], sum = [], min = [], max = [] } = {}) {
+    const list = (xs) => (Array.isArray(xs) ? xs : [xs]).filter(Boolean);
+    const params = { sysparm_count: 'true', sysparm_query: query };
+    if (list(groupBy).length) params.sysparm_group_by = list(groupBy).join(',');
+    if (list(avg).length) params.sysparm_avg_fields = list(avg).join(',');
+    if (list(sum).length) params.sysparm_sum_fields = list(sum).join(',');
+    if (list(min).length) params.sysparm_min_fields = list(min).join(',');
+    if (list(max).length) params.sysparm_max_fields = list(max).join(',');
+    const data = await snowFetch(`/api/now/stats/${encodeURIComponent(t)}`, { params });
+    const rows = Array.isArray(data?.result) ? data.result : (data?.result ? [data.result] : []);
+    const num = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, v === '' || v == null ? null : Number(v)]));
+    return rows.map((r) => ({
+      group: Object.fromEntries((r?.groupby_fields || []).map((g) => [g.field, g.value])),
+      count: Number(r?.stats?.count ?? 0),
+      avg: num(r?.stats?.avg),
+      sum: num(r?.stats?.sum),
+      min: num(r?.stats?.min),
+      max: num(r?.stats?.max),
+    }));
+  },
 };
 
 export async function testConnection() {

@@ -1,0 +1,274 @@
+{
+  "engine": "reference_integrity",
+  "rules": {
+    "ITSM-018": {
+      "table": "incident",
+      "scope": "active=true",
+      "field": "assignment_group",
+      "target": "sys_user_group",
+      "check": "members_active",
+      "report": [
+        "inactive"
+      ],
+      "evidence_fields": [
+        "number",
+        "assignment_group",
+        "priority",
+        "sys_created_on"
+      ]
+    },
+    "ITSM-019": {
+      "table": "incident",
+      "scope": "cmdb_ciISNOTEMPTY",
+      "field": "cmdb_ci",
+      "target": "cmdb_ci",
+      "check": "state",
+      "state_field": "install_status",
+      "invalid_states": [
+        {
+          "$choice": {
+            "table": "cmdb_ci",
+            "element": "install_status",
+            "label": "Retired"
+          }
+        }
+      ],
+      "report": [
+        "missing",
+        "invalid_state"
+      ],
+      "evidence_fields": [
+        "number",
+        "cmdb_ci",
+        "state",
+        "assignment_group"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "A retired CI is recognised through install_status (label \"Retired\" from the instance choice list). life_cycle_stage_status (the newer lifecycle model) is not consulted; an instance that retires CIs only there would not be flagged."
+      }
+    },
+    "ITSM-022": {
+      "table": "incident",
+      "scope": "caller_idISNOTEMPTY",
+      "field": "caller_id",
+      "target": "sys_user",
+      "check": "exists",
+      "report": [
+        "missing"
+      ],
+      "evidence_fields": [
+        "number",
+        "caller_id"
+      ],
+      "service_account_pattern": {
+        "$param": "service_account_pattern"
+      },
+      "volume_threshold": {
+        "$param": "volume_threshold"
+      },
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The existence check on caller_id is only the scaffold; the naming pattern and the volume threshold that define a service / generic account are UNDEFINED, so the rule stays UNCONFIGURED."
+      }
+    },
+    "ITSM-065": {
+      "table": "problem",
+      "scope": "active=true",
+      "evidence_fields": [
+        "number",
+        "assigned_to",
+        "assignment_group",
+        "state"
+      ],
+      "variants": [
+        {
+          "variant": "owner",
+          "field": "assigned_to",
+          "target": "sys_user",
+          "check": "active",
+          "report": [
+            "empty",
+            "inactive",
+            "missing"
+          ]
+        },
+        {
+          "variant": "group",
+          "field": "assignment_group",
+          "target": "sys_user_group",
+          "check": "members_active",
+          "report": [
+            "inactive"
+          ]
+        }
+      ]
+    },
+    "ITSM-088": {
+      "requires_tables": [
+        {
+          "table": "sys_user_delegate",
+          "fields": [
+            "user",
+            "delegate",
+            "starts",
+            "ends"
+          ]
+        }
+      ],
+      "table": "sys_user_delegate",
+      "field": "delegate",
+      "target": "sys_user",
+      "check": "active",
+      "report": [
+        "inactive",
+        "missing"
+      ],
+      "evidence_fields": [
+        "user",
+        "delegate",
+        "starts",
+        "ends"
+      ],
+      "variants": [
+        {
+          "variant": "open-ended",
+          "scope": [
+            {
+              "$now": {
+                "field": "starts",
+                "op": "<="
+              }
+            },
+            "endsISEMPTY"
+          ]
+        },
+        {
+          "variant": "bounded",
+          "scope": [
+            {
+              "$now": {
+                "field": "starts",
+                "op": "<="
+              }
+            },
+            {
+              "$now": {
+                "field": "ends",
+                "op": ">="
+              }
+            }
+          ]
+        }
+      ],
+      "notes": "\"Active delegation records only\": starts at or before the run anchor and not yet ended."
+    },
+    "ITSM-095": {
+      "table": "change_request",
+      "scope": "cmdb_ciISNOTEMPTY",
+      "field": "cmdb_ci",
+      "target": "cmdb_ci",
+      "check": "state",
+      "state_field": "install_status",
+      "invalid_states": [
+        {
+          "$choice": {
+            "table": "cmdb_ci",
+            "element": "install_status",
+            "label": "Retired"
+          }
+        }
+      ],
+      "report": [
+        "missing",
+        "invalid_state"
+      ],
+      "evidence_fields": [
+        "number",
+        "cmdb_ci",
+        "state",
+        "type"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "As ITSM-019: install_status only; life_cycle_stage_status not consulted."
+      }
+    },
+    "ITSM-101": {
+      "table": "change_request",
+      "scope": "active=true",
+      "field": "assignment_group",
+      "target": "sys_user_group",
+      "check": "members_active",
+      "report": [
+        "inactive"
+      ],
+      "evidence_fields": [
+        "number",
+        "assignment_group",
+        "type",
+        "state"
+      ]
+    },
+    "ITSM-136": {
+      "table": "incident",
+      "scope": "business_serviceISNOTEMPTY",
+      "field": "business_service",
+      "target": "cmdb_ci_service",
+      "check": "exists",
+      "report": [
+        "missing"
+      ],
+      "evidence_fields": [
+        "number",
+        "business_service"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Only the business_service reference is checked against cmdb_ci_service. \"Free-text and legacy service fields\" are UNDEFINED (names not given)."
+      }
+    },
+    "ITSM-139": {
+      "requires_tables": [
+        {
+          "table": "m2m_kb_task",
+          "fields": [
+            "kb_knowledge",
+            "task"
+          ]
+        },
+        {
+          "table": "kb_knowledge",
+          "fields": [
+            "workflow_state",
+            "number"
+          ]
+        }
+      ],
+      "table": "m2m_kb_task",
+      "scope": "task.sys_class_name=incident",
+      "field": "kb_knowledge",
+      "target": "kb_knowledge",
+      "check": "state",
+      "state_field": "workflow_state",
+      "valid_states": [
+        {
+          "$choice": {
+            "table": "kb_knowledge",
+            "element": "workflow_state",
+            "label": "Published"
+          }
+        }
+      ],
+      "report": [
+        "missing",
+        "invalid_state"
+      ],
+      "evidence_fields": [
+        "task",
+        "kb_knowledge"
+      ],
+      "notes": "\"Retired or unpublished\" = any workflow_state other than the instance's \"Published\"; the link is the platform's attached-knowledge relationship (m2m_kb_task), scoped to incidents."
+    }
+  }
+}

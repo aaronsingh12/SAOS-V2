@@ -1,0 +1,764 @@
+{
+  "engine": "record_predicate",
+  "rules": {
+    "ITSM-020": {
+      "table": "incident",
+      "scope": "resolved_atISNOTEMPTY",
+      "predicates": [
+        {
+          "field": "close_notes",
+          "op": "length_lt",
+          "value": {
+            "$param": "min_length"
+          }
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "close_code",
+        "assignment_group",
+        "resolved_at"
+      ],
+      "report_ratio": true
+    },
+    "ITSM-036": {
+      "table": "incident",
+      "scope": "closed_atISNOTEMPTY",
+      "predicates": [
+        {
+          "field": "sys_created_on",
+          "field2": "closed_at",
+          "op": "interval_lt",
+          "value": {
+            "$param": "threshold"
+          },
+          "unit": "seconds"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "closed_by",
+        "close_code",
+        "sys_created_on",
+        "closed_at"
+      ],
+      "report_ratio": true,
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Per-record findings with closed_by and timestamps; the workbook's grouping \"by closing user and by time window\" is not aggregated."
+      }
+    },
+    "ITSM-037": {
+      "table": "incident",
+      "evidence_fields": [
+        "number",
+        "priority",
+        "sys_created_on",
+        "sys_updated_on",
+        "assignment_group"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "P1",
+          "scope": "active=true^priority=1",
+          "predicates": [
+            {
+              "field": "sys_created_on",
+              "op": "date_before",
+              "window": {
+                "$param": "p1_age",
+                "as": "window"
+              }
+            }
+          ]
+        },
+        {
+          "variant": "P2",
+          "scope": "active=true^priority=2",
+          "predicates": [
+            {
+              "field": "sys_created_on",
+              "op": "date_before",
+              "window": {
+                "$param": "p2_age",
+                "as": "window"
+              }
+            }
+          ]
+        },
+        {
+          "variant": "P3",
+          "scope": "active=true^priority=3",
+          "predicates": [
+            {
+              "field": "sys_created_on",
+              "op": "date_before",
+              "window": {
+                "$param": "p3_age",
+                "as": "window"
+              }
+            }
+          ]
+        },
+        {
+          "variant": "P4",
+          "scope": "active=true^priority=4",
+          "predicates": [
+            {
+              "field": "sys_created_on",
+              "op": "date_before",
+              "window": {
+                "$param": "p4_age",
+                "as": "window"
+              }
+            }
+          ]
+        },
+        {
+          "variant": "P5",
+          "scope": "active=true^priority=5",
+          "predicates": [
+            {
+              "field": "sys_created_on",
+              "op": "date_before",
+              "window": {
+                "$param": "p5_age",
+                "as": "window"
+              }
+            }
+          ]
+        }
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "P1, P2 and P3 ages are evaluated with the workbook defaults; P4 and P5 ages are UNDEFINED (UNCONFIGURED variants) and the trend is not computed."
+      }
+    },
+    "ITSM-042": {
+      "table": "incident",
+      "scope": "active=true",
+      "predicates": [
+        {
+          "field": "assigned_to",
+          "op": "not_empty"
+        },
+        {
+          "field": "assignment_group",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "assigned_to",
+        "assignment_group",
+        "sys_created_on"
+      ],
+      "report_ratio": true,
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Only \"assigned_to populated and assignment_group empty\" is evaluated. \"Assignment patterns concentrated on individuals\" has no threshold in the workbook — UNDEFINED."
+      }
+    },
+    "ITSM-043": {
+      "table": "incident",
+      "scope": "active=true",
+      "predicates": [
+        {
+          "field": "state",
+          "op": "equals",
+          "value": {
+            "$choice": {
+              "table": "incident",
+              "element": "state",
+              "label": "On Hold"
+            }
+          }
+        },
+        {
+          "field": "hold_reason",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "state",
+        "hold_reason",
+        "assignment_group"
+      ],
+      "report_ratio": true,
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Evaluates the CURRENT on-hold state with an empty hold reason (state value from the instance choice list by label \"On Hold\"). Past on-hold transitions (sys_audit) are not replayed, so a record that has since left on-hold is not seen."
+      }
+    },
+    "ITSM-044": {
+      "table": "incident",
+      "scope": "resolved_atISNOTEMPTY",
+      "predicates": [
+        {
+          "field": "caller_id",
+          "field2": "resolved_by",
+          "op": "same_as"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "caller_id",
+        "resolved_by",
+        "close_code"
+      ],
+      "report_ratio": true,
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Caller = resolver is evaluated for all resolved incidents; the split by callers with / without fulfiller roles is not made (which roles count as fulfiller is UNDEFINED)."
+      }
+    },
+    "ITSM-049": {
+      "requires_objects": [
+        "major_incident"
+      ],
+      "notes": "Major-incident identification (field / values) is UNDEFINED; no platform object is named."
+    },
+    "ITSM-052": {
+      "requires_objects": [
+        "post_incident_review"
+      ],
+      "notes": "The post-incident-review action table is UNDEFINED."
+    },
+    "ITSM-062": {
+      "table": "problem",
+      "scope": "active=false",
+      "predicates": [
+        {
+          "field": "cause_notes",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "state",
+        "assignment_group",
+        "close_code"
+      ],
+      "report_ratio": true
+    },
+    "ITSM-067": {
+      "table": "problem",
+      "scope": "",
+      "predicates": [
+        {
+          "field": "cmdb_ci",
+          "op": "empty"
+        },
+        {
+          "field": "business_service",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "state",
+        "assignment_group"
+      ],
+      "report_ratio": true
+    },
+    "ITSM-068": {
+      "requires_tables": [
+        {
+          "table": "problem_task",
+          "fields": [
+            "state",
+            "sys_created_on",
+            "assigned_to",
+            "problem",
+            "active"
+          ]
+        }
+      ],
+      "table": "problem_task",
+      "scope": [
+        "active=true",
+        {
+          "$window": {
+            "param": "age_threshold",
+            "field": "sys_created_on",
+            "edge": "older_than"
+          }
+        }
+      ],
+      "predicates": [],
+      "evidence_fields": [
+        "number",
+        "state",
+        "sys_created_on",
+        "assigned_to",
+        "problem"
+      ],
+      "report_ratio": true
+    },
+    "ITSM-089": {
+      "requires_objects": [
+        "standard_change_template"
+      ],
+      "notes": "Expiry / review date fields on the template are UNDEFINED."
+    },
+    "ITSM-096": {
+      "table": "change_request",
+      "predicates": [
+        {
+          "field": "implementation_plan",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "type",
+        "risk",
+        "state",
+        "approval",
+        "assignment_group"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "approved",
+          "scope": [
+            {
+              "$clause": {
+                "template": "approval={}",
+                "value": {
+                  "$choice": {
+                    "table": "change_request",
+                    "element": "approval",
+                    "label": "Approved"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "variant": "closed",
+          "scope": [
+            "active=false",
+            {
+              "$clause": {
+                "template": "approval!={}",
+                "value": {
+                  "$choice": {
+                    "table": "change_request",
+                    "element": "approval",
+                    "label": "Approved"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ITSM-097": {
+      "table": "change_request",
+      "predicates": [
+        {
+          "field": "backout_plan",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "type",
+        "risk",
+        "state",
+        "approval",
+        "close_code"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "approved",
+          "scope": [
+            {
+              "$clause": {
+                "template": "approval={}",
+                "value": {
+                  "$choice": {
+                    "table": "change_request",
+                    "element": "approval",
+                    "label": "Approved"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "variant": "closed",
+          "scope": [
+            "active=false",
+            {
+              "$clause": {
+                "template": "approval!={}",
+                "value": {
+                  "$choice": {
+                    "table": "change_request",
+                    "element": "approval",
+                    "label": "Approved"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Every approved / closed change with an empty backout plan is reported; the escalation for high-risk and production changes needs the risk bands, which are UNDEFINED."
+      }
+    },
+    "ITSM-098": {
+      "table": "change_request",
+      "scope": "",
+      "predicates": [
+        {
+          "field": "risk",
+          "op": "in",
+          "value": {
+            "$param": "risk_bands"
+          }
+        },
+        {
+          "field": "test_plan",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "risk",
+        "assignment_group",
+        "close_code"
+      ],
+      "report_ratio": true
+    },
+    "ITSM-099": {
+      "table": "change_request",
+      "scope": [
+        {
+          "$clause": {
+            "template": "approval={}",
+            "value": {
+              "$choice": {
+                "table": "change_request",
+                "element": "approval",
+                "label": "Approved"
+              }
+            }
+          }
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "risk",
+        "impact",
+        "approval",
+        "state",
+        "type",
+        "assignment_group"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "risk",
+          "predicates": [
+            {
+              "field": "risk",
+              "op": "empty"
+            }
+          ]
+        },
+        {
+          "variant": "impact",
+          "predicates": [
+            {
+              "field": "impact",
+              "op": "empty"
+            }
+          ]
+        }
+      ]
+    },
+    "ITSM-100": {
+      "table": "change_request",
+      "scope": [
+        {
+          "$clause": {
+            "template": "approval={}",
+            "value": {
+              "$choice": {
+                "table": "change_request",
+                "element": "approval",
+                "label": "Approved"
+              }
+            }
+          }
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "start_date",
+        "end_date",
+        "approval",
+        "work_start"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "start_date empty",
+          "predicates": [
+            {
+              "field": "start_date",
+              "op": "empty"
+            }
+          ]
+        },
+        {
+          "variant": "end_date empty",
+          "predicates": [
+            {
+              "field": "end_date",
+              "op": "empty"
+            }
+          ]
+        }
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Only \"planned dates empty at approval\" is evaluated. \"Planned start earlier than approval date\" needs the approval timestamp, whose object (approval records) is UNDEFINED."
+      }
+    },
+    "ITSM-102": {
+      "table": "change_request",
+      "predicates": [
+        {
+          "field": "justification",
+          "op": "empty"
+        },
+        {
+          "field": "reason",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "state",
+        "approval",
+        "type",
+        "risk",
+        "assignment_group"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "approved",
+          "scope": [
+            {
+              "$clause": {
+                "template": "approval={}",
+                "value": {
+                  "$choice": {
+                    "table": "change_request",
+                    "element": "approval",
+                    "label": "Approved"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "variant": "closed",
+          "scope": [
+            "active=false",
+            {
+              "$clause": {
+                "template": "approval!={}",
+                "value": {
+                  "$choice": {
+                    "table": "change_request",
+                    "element": "approval",
+                    "label": "Approved"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ITSM-103": {
+      "table": "change_request",
+      "scope": "active=false",
+      "evidence_fields": [
+        "number",
+        "close_code",
+        "state",
+        "type",
+        "assignment_group"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "close_code empty",
+          "predicates": [
+            {
+              "field": "close_code",
+              "op": "empty"
+            }
+          ]
+        },
+        {
+          "variant": "close_notes empty",
+          "predicates": [
+            {
+              "field": "close_notes",
+              "op": "empty"
+            }
+          ]
+        }
+      ]
+    },
+    "ITSM-108": {
+      "engine": "record_predicate",
+      "table": "change_request",
+      "scope": "work_startISNOTEMPTY",
+      "predicates": [
+        {
+          "field": "work_start",
+          "field2": "sys_created_on",
+          "op": "interval_gt",
+          "value": 0,
+          "unit": "seconds"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "sys_created_on",
+        "start_date",
+        "work_start",
+        "approval"
+      ],
+      "report_ratio": true,
+      "notes": "The workbook's own fallback: correlated against the actual start field (work_start). Correlation against CI audit is UNDEFINED (object classes, window) and belongs to ITSM-106."
+    },
+    "ITSM-111": {
+      "table": "change_request",
+      "scope": [
+        {
+          "$clause": {
+            "template": "approval={}",
+            "value": {
+              "$choice": {
+                "table": "change_request",
+                "element": "approval",
+                "label": "Approved"
+              }
+            }
+          }
+        },
+        "work_startISNOTEMPTY",
+        "start_dateISNOTEMPTY"
+      ],
+      "evidence_fields": [
+        "number",
+        "start_date",
+        "end_date",
+        "work_start",
+        "work_end",
+        "approval"
+      ],
+      "report_ratio": true,
+      "variants": [
+        {
+          "variant": "started early",
+          "predicates": [
+            {
+              "field": "work_start",
+              "field2": "start_date",
+              "op": "interval_gt",
+              "value": {
+                "$param": "tolerance"
+              },
+              "unit": "hours"
+            }
+          ]
+        },
+        {
+          "variant": "ended late",
+          "scope": [
+            {
+              "$clause": {
+                "template": "approval={}",
+                "value": {
+                  "$choice": {
+                    "table": "change_request",
+                    "element": "approval",
+                    "label": "Approved"
+                  }
+                }
+              }
+            },
+            "work_endISNOTEMPTY",
+            "end_dateISNOTEMPTY"
+          ],
+          "predicates": [
+            {
+              "field": "end_date",
+              "field2": "work_end",
+              "op": "interval_gt",
+              "value": {
+                "$param": "tolerance"
+              },
+              "unit": "hours"
+            }
+          ]
+        }
+      ]
+    },
+    "ITSM-118": {
+      "requires_objects": [
+        "conflict_detection"
+      ],
+      "notes": "Conflict override records and their justification field are UNDEFINED."
+    },
+    "ITSM-119": {
+      "table": "change_request",
+      "scope": "",
+      "predicates": [
+        {
+          "field": "parent",
+          "op": "empty"
+        },
+        {
+          "field": "justification",
+          "op": "empty"
+        },
+        {
+          "field": "reason",
+          "op": "empty"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "type",
+        "assignment_group",
+        "cmdb_ci"
+      ],
+      "report_ratio": true,
+      "partial": {
+        "kind": "false_positive_risk",
+        "not_covered": "Linkage is read from the parent reference and the justification / reason fields. A many-to-many task relationship table is not in the workbook (UNDEFINED); a change linked only that way would be reported."
+      }
+    }
+  }
+}

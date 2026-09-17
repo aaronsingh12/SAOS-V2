@@ -1,0 +1,227 @@
+{
+  "engine": "text_analysis",
+  "rules": {
+    "ITSM-021": {
+      "operation": "similarity",
+      "table": "incident",
+      "scope": "resolved_atISNOTEMPTY",
+      "fields": [
+        "short_description",
+        "close_notes"
+      ],
+      "threshold": {
+        "$param": "similarity"
+      },
+      "evidence_fields": [
+        "number",
+        "close_code",
+        "assignment_group"
+      ]
+    },
+    "ITSM-023": {
+      "operation": "frequency",
+      "table": "incident",
+      "scope": "",
+      "field": "short_description",
+      "volume_share": {
+        "$param": "volume_share"
+      },
+      "evidence_fields": [
+        "number",
+        "assignment_group",
+        "close_code"
+      ]
+    },
+    "ITSM-025": {
+      "operation": "pattern_scan",
+      "table": "incident",
+      "scope": "close_codeISNOTEMPTY",
+      "fields": [
+        "close_notes"
+      ],
+      "patterns": {
+        "$param": "consistency_rules"
+      },
+      "evidence_fields": [
+        "number",
+        "close_code",
+        "assignment_group"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The per-close-code consistency rules are UNDEFINED; when supplied as patterns the scan reports contradictions by location only."
+      }
+    },
+    "ITSM-028": {
+      "operation": "pattern_scan",
+      "table": "incident",
+      "scope": "",
+      "fields": [
+        "description",
+        "short_description",
+        "close_notes"
+      ],
+      "patterns": [
+        {
+          "name": "PAN (Indian permanent account number)",
+          "regex": "\\b[A-Z]{5}[0-9]{4}[A-Z]\\b"
+        },
+        {
+          "name": "Aadhaar",
+          "regex": "\\b[2-9][0-9]{3}[ -]?[0-9]{4}[ -]?[0-9]{4}\\b",
+          "checksum": "verhoeff"
+        },
+        {
+          "name": "payment card",
+          "regex": "\\b(?:[0-9][ -]?){13,19}\\b",
+          "checksum": "luhn"
+        }
+      ],
+      "evidence_fields": [
+        "number",
+        "assignment_group"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "PAN, Aadhaar and payment-card formats are scanned. \"Account numbers or other identifiers\" have no defined pattern (identifier_patterns UNDEFINED) and journal work notes are not scanned."
+      }
+    },
+    "ITSM-040": {
+      "operation": "cluster",
+      "table": "incident",
+      "scope": "",
+      "text_field": "short_description",
+      "block_field": "caller_id",
+      "threshold": {
+        "$param": "similarity"
+      },
+      "min_size": {
+        "$param": "repeat_count"
+      },
+      "evidence_fields": [
+        "number",
+        "caller_id",
+        "sys_created_on",
+        "close_code",
+        "problem_id"
+      ]
+    },
+    "ITSM-054": {
+      "operation": "cluster",
+      "table": "incident",
+      "scope": "",
+      "text_field": "short_description",
+      "block_field": "category",
+      "threshold": {
+        "$param": "similarity"
+      },
+      "min_size": {
+        "$param": "cluster_volume"
+      },
+      "require_no_link": "problem_id",
+      "evidence_fields": [
+        "number",
+        "category",
+        "problem_id",
+        "sys_created_on"
+      ]
+    },
+    "ITSM-058": {
+      "operation": "cluster",
+      "table": "incident",
+      "scope": "resolved_atISNOTEMPTY",
+      "text_field": "short_description",
+      "threshold": {
+        "$param": "similarity"
+      },
+      "min_size": 2,
+      "top_n": {
+        "$param": "top_n"
+      },
+      "require_no_link": "problem_id",
+      "rank_by": "resolution_effort",
+      "evidence_fields": [
+        "number",
+        "assignment_group",
+        "close_code",
+        "problem_id"
+      ],
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Top-N clusters by resolution effort with no problem link; the similarity threshold is UNDEFINED (the workbook gives N only). min_size 2 is the smallest set that is a cluster, not a threshold."
+      }
+    },
+    "ITSM-070": {
+      "operation": "similarity",
+      "table": "problem",
+      "scope": "active=false",
+      "fields": [
+        "description",
+        "cause_notes"
+      ],
+      "threshold": {
+        "$param": "similarity"
+      },
+      "min_length": {
+        "$param": "min_length"
+      },
+      "length_field": "cause_notes",
+      "evidence_fields": [
+        "number",
+        "state",
+        "short_description"
+      ]
+    },
+    "ITSM-071": {
+      "operation": "pattern_scan",
+      "table": "problem",
+      "scope": "active=false^rfcISEMPTY",
+      "fields": [
+        "cause_notes"
+      ],
+      "patterns": {
+        "$param": "root_cause_classification"
+      },
+      "evidence_fields": [
+        "number",
+        "close_code",
+        "rfc"
+      ],
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Closed problems with no linked change whose root cause matches the fix-required classification, which is UNDEFINED (root_cause_classification)."
+      }
+    },
+    "ITSM-075": {
+      "operation": "cluster",
+      "table": "problem",
+      "scope": "",
+      "text_field": "cause_notes",
+      "threshold": {
+        "$param": "similarity"
+      },
+      "min_size": {
+        "$param": "min_cluster_size"
+      },
+      "evidence_fields": [
+        "number",
+        "state",
+        "closed_at"
+      ]
+    },
+    "ITSM-104": {
+      "operation": "frequency",
+      "table": "change_request",
+      "scope": "",
+      "field": "backout_plan",
+      "volume_share": {
+        "$param": "volume_share"
+      },
+      "evidence_fields": [
+        "number",
+        "assignment_group",
+        "type"
+      ]
+    }
+  }
+}
