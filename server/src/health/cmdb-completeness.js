@@ -65,7 +65,7 @@ export function cmdbCompletenessRules(ctx, options = {}) {
   const skip = (rule, table, reason) => ctx.skipped.push({ rule, table, reason });
   const readOk = (key) => meta.reads?.[key]?.status === 'ok';
   const readWhy = (key) => meta.reads?.[key]?.error || 'not read';
-  /* Decision 7 of 19 Sep: completeness judges the records somebody is supposed to
+  /* Decision 7 of 16 Sep 2026: completeness judges the records somebody is supposed to
      be maintaining. Retired, stolen and absent CIs belong to the lifecycle
      dimension, which exists to evaluate exactly those statuses. */
   const { active: cis, excluded: inactiveCis } = dqActive(ctx.estate.cmdb_ci || [], opt.dqInactiveInstallStatus || DQ_INACTIVE_INSTALL_STATUS);

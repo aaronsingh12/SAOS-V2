@@ -3,13 +3,13 @@ import { isIP } from 'node:net';
 import { modifiersFor, lineageOf, inCidr, dqActive, DQ_INACTIVE_INSTALL_STATUS } from './cmdb-signals.js';
 import { isPlaceholder, COMPLETENESS_DEFAULTS } from './cmdb-completeness.js';
 import { validFqdn, validSerial } from './cmdb-correctness.js';
-import { parseDate } from './rules.js';
+import { parseDate } from './time.js';
 
 /**
  * GROUP 4 — UNIQUENESS (D3). CMDB-033 to CMDB-043.
  *
  * Implemented from tracker v3, against what exists (verified on dev424910,
- * 18 Sep 2026):
+ * 16 Sep 2026):
  *
  *   - A DUPLICATE SET is CIs sharing one exact identity value (serial, IP, MAC,
  *     FQDN or correlation_id). Sets that share a member are one IDENTITY CLUSTER
@@ -22,7 +22,7 @@ import { parseDate } from './rules.js';
  *     records are already charged by the rule that found the set.
  *   - Frequency guards: a serial on more than 10 CIs is a bad default, not
  *     duplicates; a name on more than 5 is generic. Both are reported as skips.
- *   - CMDB-038 is POSTURE (18 Sep): it needs three snapshots of duplicate-set
+ *   - CMDB-038 is POSTURE (16 Sep 2026): it needs three snapshots of duplicate-set
  *     membership, which each run records in `measures.duplicate_sets`.
  *   - CMDB-043 is context: a number, never a finding.
  *   - De-duplication tasks live in `reconcile_duplicate_task`; the CIs in each
@@ -39,7 +39,7 @@ export const UNIQUENESS_RULES = Object.freeze([
 export const UNIQUENESS_DEFAULTS = Object.freeze({
   /*
    * A retired CI sharing a serial with its replacement is history, not a
-   * duplicate. Decision 7 of 19 Sep: the data-quality dimensions exclude
+   * duplicate. Decision 7 of 16 Sep 2026: the data-quality dimensions exclude
    * Retired (7), Stolen (8) and Absent (100); the lifecycle dimension keeps
    * them. An EMPTY install_status stays in scope — it is not retired, it is
    * unmaintained, and CMDB-085/087 will judge the statuses themselves.
@@ -56,7 +56,7 @@ export const UNIQUENESS_DEFAULTS = Object.freeze({
   sharedIdentityClasses: Object.freeze(['cmdb_ci_cluster', 'cmdb_ci_cluster_node', 'cmdb_ci_cluster_vip', 'cmdb_ci_lb',
     'cmdb_ci_lb_service', 'cmdb_ci_vm_instance', 'cmdb_ci_vmware_instance', 'cmdb_ci_nat']),
   /*
-   * CMDB-034 (decision 6 of 19 Sep): an ALLOWLIST of class pairs that may share
+   * CMDB-034 (decision 6 of 16 Sep 2026): an ALLOWLIST of class pairs that may share
    * a name by design — nothing else is suppressed. A printer and a software
    * package called "Canon i960" are reported, because an event or an incident
    * resolving that name by text can bind to either; the branch is reported as
@@ -66,7 +66,7 @@ export const UNIQUENESS_DEFAULTS = Object.freeze({
   sameBranchConfidence: 0.9,
   crossBranchConfidence: 0.75,
   /*
-   * CMDB-037 (decision 5 of 19 Sep): sources REGISTERED as independent key
+   * CMDB-037 (decision 5 of 16 Sep 2026): sources REGISTERED as independent key
    * spaces. A correlation_id collision between two of these is two systems
    * numbering their own records, not a duplicate. Anything else is reported —
    * a cross-source collision is often the IRE merge failure this group hunts —
@@ -153,7 +153,7 @@ export function cmdbUniquenessRules(ctx, options = {}) {
     skip('CMDB-035', 'cmdb_ci', `${inactiveCis.length} retired, stolen or absent CI(s) are outside the data-quality dimensions and were not judged for uniqueness — the lifecycle dimension (CMDB-085/087) evaluates those statuses`);
   }
   /* A status nobody set is not a retired CI. Counted, so the gap is visible until
-     a lifecycle rule owns it (decision point raised 19 Sep). */
+     a lifecycle rule owns it (decision point raised 16 Sep 2026). */
   ctx.measures.cis_without_install_status = {
     count: (ctx.estate.cmdb_ci || []).filter((c) => String(c.install_status ?? '').trim() === '').length,
     basis: 'cmdb_ci WHERE install_status is empty — kept in the data-quality scope, flagged here because no built rule owns it yet',
@@ -280,7 +280,7 @@ export function cmdbUniquenessRules(ctx, options = {}) {
          * The 5x lands on the BARE twin — the record with nothing pointing at
          * it, which is the defect. The related twin is the victim: it carries
          * the relationships, the impact analysis and the history, and it is
-         * charged as an ordinary duplicate (confirmed 19 Sep).
+         * charged as an ordinary duplicate (confirmed 16 Sep 2026).
          */
         const multiplierByRecord = Object.fromEntries(bare.map((c) => [c.sys_id, 5]));
         add('CMDB-033', members, [...attrs, 'sys_class_name', 'name'],
@@ -451,7 +451,7 @@ export function cmdbUniquenessRules(ctx, options = {}) {
     }
     if (genericAcross) skip('CMDB-034', 'cmdb_ci', `${genericAcross} name(s) on more than ${opt.nameMaxFrequency} active CIs across classes treated as generic`);
     if (crossGuarded) skip('CMDB-034', 'cmdb_ci', `${crossGuarded} same-name class pair(s) excluded as a permitted pair or as directly related CIs`);
-    if (crossBranch) skip('CMDB-034', 'cmdb_ci', `${crossBranch} same-name pair(s) sit in unrelated branches of cmdb_ci — reported at ${opt.crossBranchConfidence} confidence rather than suppressed (decision 6 of 19 Sep)`);
+    if (crossBranch) skip('CMDB-034', 'cmdb_ci', `${crossBranch} same-name pair(s) sit in unrelated branches of cmdb_ci — reported at ${opt.crossBranchConfidence} confidence rather than suppressed (decision 6 of 16 Sep 2026)`);
   }
 
   /* ════════ de-duplication tasks: CMDB-042 (aged), CMDB-043 (count) ════════ */

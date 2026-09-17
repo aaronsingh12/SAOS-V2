@@ -408,6 +408,12 @@ end date re-opens itself when it expires.
   context: a defect that runs through a whole class shows up as one *class-wide pattern* finding and never zeroes
   the records. Systemic *posture* (trends, governance percentages) is shown on its own and neither gates nor scores.
   Duplicates are grouped into identity clusters, so a CI caught by several duplicate rules is charged once.
+- **Drift detection is for returning customers, not a first scan.** Net position, recurrence (and the escalation of a
+  defect that came back), new duplicates, newly stale CIs and the score trend compare scans that *read* the CMDB under
+  the **same rule version** — so they need two earlier such scans, work from the third, and start again whenever the
+  rules change. A first engagement will not show drift; freeze the rule version for an engagement to get it. Until
+  then every one of those checks says *not measured* and why, and never reports a stable estate it has not seen.
+  Raw platform counts (relationship and CI totals per class) keep their history across rule changes.
 - **Scan what you need.** Tick CMDB, ITOM, ITSM or Platform — or Full System Scan. Each module keeps its own
   latest result and time, so scanning ITSM leaves the CMDB result where it was.
 - **Skips what has not changed.** Before reading a module, each of its tables is asked for its row count and newest

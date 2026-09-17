@@ -25,7 +25,13 @@ const f = (rule_id, severity, target_ids, extra = {}) => ({ rule_id, severity, t
 
 /* ════════════════════════ scoring decisions ════════════════════════ */
 
-test('a percentage rule is a dimension KPI: 70% record average + 30% KPI when both exist', () => {
+test("a percentage rule is a dimension KPI, blended by the dimension TYPE", () => {
+  /*
+   * D1 is a RECORD-type dimension (the defect is a property of a record and
+   * counting records is the measurement), so it keeps the 70/30 ratio. An
+   * ESTATE-type dimension weights its KPI half heaviest — see the blend tests in
+   * health-cmdb-quality.test.js for why D10 could not keep one global ratio.
+   */
   const q = scoreCmdbQuality({
     findings: [f('CMDB-012', 'CRITICAL', ['a'])],                    // D1 record: a 60, b 100 → 80
     kpis: [{ rule_id: 'CMDB-021', pass_pct: 50, numerator: 1, denominator: 2, basis: 't' }],   // D1 KPI
@@ -36,7 +42,7 @@ test('a percentage rule is a dimension KPI: 70% record average + 30% KPI when bo
   assert.equal(d1.record_part, 80);
   assert.equal(d1.kpi_part, 50);
   assert.equal(d1.score, 71);
-  assert.deepEqual(d1.blend, { record: 0.7, kpi: 0.3 });
+  assert.deepEqual(d1.blend, { record: 0.7, kpi: 0.3, kind: 'record' });
 });
 
 test('with only a KPI measured, the KPI IS the dimension score; the KPI never deducts per record', () => {

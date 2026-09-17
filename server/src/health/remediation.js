@@ -1040,7 +1040,16 @@ export function remediationFor(finding) {
       ? 'This finding states a fact; choosing the fix needs a judgement the data cannot supply. The agent will gather evidence and propose — it will not decide for you.'
       : 'This finding states its own fix. The agent can apply it, and you still approve the write at the gate.',
     tables: referencedTables(finding, entry),
-    manualSteps: entry.manualSteps,
+    /*
+     * A GROUPED finding expands into one step per class (decision 6 of 16 Sep 2026):
+     * the finding is one line in the trust gate, and the fix is still per class.
+     */
+    manualSteps: finding.grouped_classes?.length
+      ? [
+        ...entry.manualSteps,
+        ...finding.grouped_classes.map(({ cls, cis }) => `Create or extend an identification rule covering \`${cls}\` (${Number(cis).toLocaleString('en-US')} CI(s)) — one update set per class, tested in sub-production first.`),
+      ]
+      : entry.manualSteps,
     verify: entry.verify,
     effort: estimateEffort(entry, (finding.target_ids || []).length),
     prompt: buildAgentPrompt(finding, entry),

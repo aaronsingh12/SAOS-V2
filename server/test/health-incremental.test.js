@@ -419,13 +419,27 @@ test('END TO END: full scan, then nothing changed (nothing read), then one incid
   assert.equal(instance.calls.pages, pagesBefore, 'an unchanged instance was read again');
   assert.equal(second.findings.length, 0);
 
+  /*
+   * ONE INCIDENT CHANGES, AND TWO MODULES ARE RE-READ — which is correct, and
+   * became true when D10 was completed (Group 12, Sep 2026). CMDB-117, CMDB-118
+   * and CMDB-121 read `incident`, `change_request` and `problem` to measure
+   * whether the platform actually consumes the CMDB, so the CMDB module now
+   * genuinely DEPENDS on the ITSM tables: a new incident referencing a CI
+   * changes CMDB-121's answer. The dependency tracker discovered that on its
+   * own, and the planner acted on it.
+   *
+   * ITOM and Platform read none of those tables and are still verified, so this
+   * is a real dependency being honoured rather than the planner giving up.
+   */
   instance.tables.incident[0] = { ...instance.tables.incident[0], sys_updated_on: '2026-09-15 10:30:00' };
   const third = await scan();
-  assert.deepEqual(third.manifest.modules, ['itsm']);
-  assert.deepEqual(third.manifest.verified_modules, ['cmdb', 'itom', 'platform']);
+  assert.deepEqual(third.manifest.modules, ['cmdb', 'itsm']);
+  assert.deepEqual(third.manifest.verified_modules, ['itom', 'platform']);
   assert.match(third.manifest.plan.modules.itsm.reasons.join(' '), /incident: records updated since the last read/);
-  assert.ok(Object.keys(third.manifest.scopes).every((k) => ['all', 'itsm'].includes(k)), 'an ITSM re-read carried other modules\' summaries');
-  assert.equal(third.manifest.metrics.cmdb_quality_score, null, 'an ITSM-only scan produced a CMDB number');
+  assert.match(third.manifest.plan.modules.cmdb.reasons.join(' '), /incident: records updated since the last read/,
+    'the CMDB module must say WHICH table invalidated it');
+  assert.ok(Object.keys(third.manifest.scopes).every((k) => ['all', 'cmdb', 'itsm'].includes(k)),
+    'a re-read carried a module\'s summary that was not re-read');
 });
 
 test('END TO END: a module-limited scan reads only its own tables and reports only its own module', async () => {
@@ -519,4 +533,40 @@ test('STORE: stamps are recorded only through a finished run — a failed run re
   const baselines = store.moduleBaselines();
   assert.equal(baselines.itsm.runId, ok);
   assert.equal(baselines.itsm.stamps.problem.count, 15, 'the baseline is not the producing run\'s own stamps');
+});
+
+test('an OPT-IN table nobody read never blocks reuse — but one that was read is checked', async () => {
+  /*
+   * Measured Sep 2026: the rules touch `ctx.estate.sys_audit` to discover it is
+   * absent and say so, which the dependency tracker duly records. `sys_audit` is
+   * opt-in, so it had no stamp — and every CMDB scan then concluded it must
+   * re-read, undoing the reuse the planner exists for.
+   */
+  const { moduleTables } = await import('../src/health/scopes.js');
+  const cmdbTables = moduleTables(['cmdb']);
+  const stampsAll = Object.fromEntries(cmdbTables.map((t) => [t, stamp(1, '2026-09-11 00:00:00')]));
+  const nowStamps = Object.fromEntries([...cmdbTables, 'sys_audit'].map((t) => [t, stamp(1, '2026-09-11 00:00:00')]));
+  const withDep = (stamps) => ({
+    cmdb: {
+      runId: 'run-1', status: 'completed', checkedAt: '2026-09-15T09:00:00.000Z', engineKey: KEYS.cmdb, user: 'admin',
+      dependencies: [...cmdbTables, 'sys_audit'], stamps,
+      specHashes: Object.fromEntries(Object.keys(TABLES).map((t) => [t, specHash(t)])),
+      metaStamps: {},
+    },
+  });
+  const client = stampClient(nowStamps);
+
+  const unread = await planScan({ modules: ['cmdb'], client, baselines: withDep(stampsAll), engineKeys: KEYS, user: 'admin', now: NOW });
+  assert.equal(unread.modules.cmdb.action, 'reuse',
+    `an unread opt-in table blocked reuse: ${(unread.modules.cmdb.reasons || []).join(' ')}`);
+  assert.equal(client.asked.some(([t]) => t === 'sys_audit'), false, 'an unread opt-in table was still stamped');
+
+  /* Opted in on the previous run, so it HAS a stamp — and is checked like any other. */
+  const read = await planScan({
+    modules: ['cmdb'], client: stampClient({ ...nowStamps, sys_audit: stamp(9, '2026-09-15 08:00:00') }),
+    baselines: withDep({ ...stampsAll, sys_audit: stamp(4, '2026-09-01 00:00:00') }),
+    engineKeys: KEYS, user: 'admin', now: NOW,
+  });
+  assert.notEqual(read.modules.cmdb.action, 'reuse', 'an opt-in table that WAS read must still invalidate when it changes');
+  assert.match(read.modules.cmdb.reasons.join(' '), /sys_audit/);
 });

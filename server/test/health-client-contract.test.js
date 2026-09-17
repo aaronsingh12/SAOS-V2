@@ -360,6 +360,18 @@ test('the All view shows each scope on its own and never averages them', () => {
   assert.match(PAGE, /rather than averaged/);
 });
 
+test('the All view shows whether to believe the CMDB score, not only the number', () => {
+  /*
+   * REGRESSION, dev424910 Sep 2026. The All view showed "77% Mostly healthy" for
+   * CMDB with the trust gate open on seven blockers: the tile took its word from
+   * the number alone, and the trust variants were wired to the CMDB tab only.
+   */
+  assert.match(PAGE, /const untrusted = Boolean\(sum\?\.gate && !sum\.gate\.trustworthy/, 'a scope tile words its score without the gate');
+  assert.match(PAGE, /untrusted \? sum\.gate\.label/, 'an untrusted tile does not say why');
+  const allBranch = PAGE.slice(PAGE.indexOf("{scope === 'all' ? ("), PAGE.indexOf('<div className="card hs-scorecard">'));
+  assert.match(allBranch, /<TrustVariants composite=\{cmdbQ\.composite\} \/>/, 'the All view does not show the trust variants');
+});
+
 test('switching scope clears the area AND rule filters so a scope is never filtered to another scope’s', () => {
   /*
    * Both belong to one scope. A CMDB area or a CMDB rule carried into ITSM

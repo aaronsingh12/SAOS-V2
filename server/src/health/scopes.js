@@ -14,10 +14,14 @@ import { REMEDIATION } from './remediation.js';
  * A single formula applied to every scope would produce four numbers that look
  * comparable and are not.
  *
- *   CMDB  — a RECORD score: the share of CIs no CMDB rule objected to. Records
- *           are the unit of CMDB health, so a percentage of them is meaningful.
- *   ITSM  — the same kind, over the open-or-recent incident, change and problem
- *           slice that was actually read.
+ *   CMDB  — the SAOS CMDB Quality score, in two layers (see cmdb-quality.js):
+ *           a TRUST GATE that says whether the number may be believed at all,
+ *           and a COMPOSITE of ten weighted dimensions over the dimensions
+ *           actually measured. It is not a pass rate: the first version was the
+ *           share of CIs no rule objected to, where one Low finding failed a
+ *           whole record — which is how an estate scored 0.3%.
+ *   ITSM  — a RECORD score: the share of the open-or-recent incident, change
+ *           and problem slice that was actually read with no rule objecting.
  *   ITOM  — a CHECK score. ITOM's important findings are about ABSENCE — no MID
  *           server, Discovery never ran — and name no records at all. "No MID
  *           server" cannot be a percentage of rows, so ITOM is scored as the
@@ -36,7 +40,7 @@ import { REMEDIATION } from './remediation.js';
  * the MID server table" must not score as "the MID servers are fine".
  */
 
-const CMDB_DOMAINS = ['CMDB', 'CMDB_GOVERNANCE', 'RELATIONSHIP', 'CSDM'];
+const CMDB_DOMAINS = ['CMDB', 'CMDB_GOVERNANCE', 'RELATIONSHIP', 'FRESHNESS', 'LIFECYCLE', 'ATTESTATION', 'OWNERSHIP', 'CSDM'];
 const ITOM_DOMAINS = ['DISCOVERY', 'CREDENTIALS', 'MID_SERVER', 'SERVICE_MAPPING', 'EVENT_MANAGEMENT', 'AVAILABILITY'];
 const ITSM_DOMAINS = ['INCIDENT', 'CHANGE', 'PROBLEM'];
 const PLATFORM_DOMAINS = ['CUSTOMIZATION', 'INTEGRATION', 'PERFORMANCE', 'UPGRADE', 'SECURITY'];
@@ -70,7 +74,14 @@ export const SCOPES = Object.freeze([
       'life_cycle_stage_status', 'svc_ci_assoc', 'change_request', 'life_cycle_mapping', 'life_cycle_control',
       'cmdb_reconciliation_definition', 'cmdb_datasource_attribute_value', 'reconcile_duplicate_task', 'duplicate_audit_result',
       'sys_object_source', 'cmdb_datasource_precedence', 'cmdb_datasource_last_update', 'cmdb_datasource_staleness',
-      'cmdb_ire_output_aggregate_stats', 'cmdb_metadata_hosting', 'cmdb_metadata_containment'],
+      'cmdb_ire_output_aggregate_stats', 'cmdb_metadata_hosting', 'cmdb_metadata_containment', 'cmdb_rel_type',
+      'discovery_schedule', 'discovery_device_history', 'discovery_range_item', 'alm_asset',
+      'cert_audit', 'cert_audit_result', 'cert_filter', 'cert_follow_on_task', 'sys_archive', 'sys_archive_destroy', 'sys_user_grmember',
+      'sys_table_rotation', 'cmdb_data_management_task'],
+      /* `sys_audit` is deliberately ABSENT. It is opt-in (see `optIn` in
+         tables.js): naming it here would make every CMDB scan read it, which is
+         exactly the default the opt-in exists to prevent. A caller enables it by
+         passing it in `tables`. */
     scoreKind: 'records',
   },
   {
@@ -132,11 +143,13 @@ export function moduleTables(modules) {
 /**
  * Which module a RULE belongs to, from its id alone.
  *
- * A finding carries its domain, so `scopeOf` answers for findings. A skipped
- * check carries only its rule id, and a module-limited scan must drop the skips
- * of modules it did not check — otherwise an ITSM-only scan would report every
- * CMDB rule as "not run". The prefixes mirror the domains each family emits;
- * a test holds the two answers equal for every rule the pack can produce.
+ * A skipped check carries only its rule id, and a module-limited scan must drop
+ * the skips of modules it did not check — otherwise an ITSM-only scan would
+ * report every CMDB rule as "not run". `scopeOf` routes FINDINGS by this same
+ * prefix first (and by domain only for an id no prefix claims), so a rule's
+ * findings and its skips can never land in different modules — see `scopeOf`
+ * for the Group 13 findings that did. Tests hold the two answers equal for every
+ * catalogue rule under any domain.
  */
 const RULE_PREFIX_SCOPE = Object.freeze([
   [/^(CMDB|REL|CSDM)-/, 'cmdb'],
@@ -154,6 +167,22 @@ export function scopeOfRule(ruleId) {
 export function scopeOf(finding) {
   const override = RULE_SCOPE[finding?.rule_id];
   if (override) return override;
+  /*
+   * A RULE'S FINDINGS AND ITS SKIPS MUST LAND IN THE SAME MODULE.
+   *
+   * Skips carry only a rule id and are routed by its prefix (`scopeOfRule`);
+   * findings used to be routed by DOMAIN alone. Measured on dev424910, Sep 2026:
+   * the Group 13 scale rules (CMDB-124…130) report through `performance_agent`,
+   * whose domain belongs to Platform, so on every CMDB-only scan their FINDINGS
+   * were filtered out while their skips stayed — CMDB-124 was out of band and
+   * showed neither a finding nor a skip. The rules only run when CMDB is
+   * scanned, so they could only ever appear on a scan of CMDB and Platform
+   * together. Its fixture tests called the pack directly and never passed
+   * through this filter. The prefix now decides first; the domain decides only
+   * for a rule id no module prefix claims.
+   */
+  const id = String(finding?.rule_id || '');
+  for (const [re, key] of RULE_PREFIX_SCOPE) if (re.test(id)) return key;
   const domain = finding?.domain;
   for (const s of SCOPES) if (s.domains?.includes(domain)) return s.key;
   /* A domain no scope claims belongs to Platform rather than vanishing: a
@@ -245,7 +274,7 @@ function cmdbQualityScore(q, coverage, findings) {
       : `${measured.length} of ${q.dimensions.length} dimensions measured (${c.measured_weight} of 100 weight) over ${q.in_scope.records.toLocaleString()} in-scope CIs — ${q.in_scope.basis}`,
     definition: c.definition,
     withheld: c.score == null
-      ? `${c.not_measured_because} ${q.rules.built} of ${q.rules.catalogued} catalogue rules are built; the ones built so far are the trust gate, which sits outside the 100.`
+      ? `${c.not_measured_because} ${q.rules.built} of ${q.rules.catalogued} catalogue rules are built. The trust gate sits outside the 100, so a gate result alone is not a score.`
       : null,
     drivers: legacyDrivers,
   };

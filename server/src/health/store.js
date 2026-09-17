@@ -4,6 +4,7 @@ import { boundInstance } from '../servicenow/instance-binding.js';
 import { stateMap, QUIET_STATES } from './finding-state.js';
 import { scopeFilter, summariseScopes, SCOPE_KEYS, MODULE_KEYS, SCOPES, moduleTables, scopeOfRule } from './scopes.js';
 import { TABLES } from './tables.js';
+import { cmdbHistoryFromRuns, cmdbSnapshotEligibility } from './cmdb-history.js';
 
 /**
  * Durable health runs.
@@ -292,21 +293,36 @@ export function trend({ limit = 30 } = {}) {
  * Only runs that recorded the measure are returned; a run from before Group 4
  * is a gap, never a zero.
  */
-export function cmdbMeasureHistory({ limit = 12 } = {}) {
+/**
+ * The CMDB history a scan hands to the trend rules. See `cmdb-history.js`.
+ *
+ * Over-fetches runs because ITSM-only scans and verifications crowd the table
+ * and are not CMDB snapshots, then loads the stored findings of the most recent
+ * eligible snapshots — the fingerprints net position (CMDB-131) and recurrence
+ * (CMDB-132) compare. Fingerprints are bounded to `fingerprintRuns` snapshots
+ * so the read stays proportional to the trend it serves, not to history.
+ */
+export function cmdbMeasureHistory({ limit = 12, fingerprintRuns = 6 } = {}) {
   const bound = boundInstance();
-  const rows = getDb().prepare(`
-    SELECT started_at, manifest_json FROM health_runs
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, started_at, status, modules_json, manifest_json FROM health_runs
      WHERE instance_key = ? AND status IN ('completed','partial')
      ORDER BY started_at DESC LIMIT ?
-  `).all(bound.key || 'unbound', limit);
-  const duplicateSets = [];
+  `).all(bound.key || 'unbound', limit * 4);
+  const runs = [];
   for (const r of rows) {
-    let m = null;
-    try { m = r.manifest_json ? JSON.parse(r.manifest_json) : null; } catch { m = null; }
-    const d = m?.cmdb_quality?.measures?.duplicate_sets;
-    if (d && Array.isArray(d.keys)) duplicateSets.push(d);
+    let manifest = null;
+    let modules = null;
+    try { manifest = r.manifest_json ? JSON.parse(r.manifest_json) : null; } catch { manifest = null; }
+    try { modules = r.modules_json ? JSON.parse(r.modules_json) : null; } catch { modules = null; }
+    runs.push({ id: r.id, started_at: r.started_at, status: r.status, modules, manifest });
   }
-  return { duplicate_sets: duplicateSets.reverse() };
+  const eligibleRecent = runs.filter((run) => cmdbSnapshotEligibility(run).ok).slice(0, limit);
+  const excluded = runs.filter((run) => !cmdbSnapshotEligibility(run).ok).slice(0, limit);
+  const findingsOf = db.prepare('SELECT fingerprint, rule_id, domain FROM health_findings WHERE run_id = ?');
+  eligibleRecent.slice(0, fingerprintRuns).forEach((run) => { run.findings = findingsOf.all(run.id); });
+  return cmdbHistoryFromRuns([...eligibleRecent, ...excluded]);
 }
 
 /**

@@ -1,13 +1,18 @@
 import { TABLES, resolveTables, specHash } from './tables.js';
 import { extractEstate, extractCmdbMeta, cmdbMetaSources, instanceClient } from './extract.js';
 import { planScan, engineKeys, stampSources } from './incremental.js';
+import { CONFIG_ONLY_RULES } from './cmdb-identification.js';
 import { EstateRules, RULE_VERSION, AGENTS, isComplete, IMPLEMENTED_CATALOGUE_RULES } from './rules.js';
-import { scoreCmdbQuality } from './cmdb-quality.js';
+import { scoreCmdbQuality, CMDB_CATALOGUE } from './cmdb-quality.js';
 import { cmdbInScope } from './cmdb-gate.js';
 import { explainFindings } from './explain.js';
 import { digest } from './digest.js';
 import { summariseScopes, normaliseModules, moduleTables, MODULE_KEYS } from './scopes.js';
-import { DQ_INACTIVE_INSTALL_STATUS } from './cmdb-signals.js';
+import { DQ_INACTIVE_INSTALL_STATUS, intentMisTags } from './cmdb-signals.js';
+import { trackMisroutes } from './cmdb-csdm.js';
+import { CONSUMPTION_TRACKS } from './cmdb-consumption.js';
+import { SCALE_TRACKS } from './cmdb-scale.js';
+import { DRIFT_TRACKS, cmdbScoreTrend } from './cmdb-drift.js';
 
 /**
  * Health Assist — the run.
@@ -225,8 +230,11 @@ export async function runHealthCheck({
   const rules = new EstateRules(estate, coverage, staleDays, now, { meta, acceptedFingerprints: accepted, history: measureHistory });
   const all = rules.analyze({ modules: readModules });
   phases.analyse_ms = Date.now() - t0;
-  const detected = all.length;
-  const findings = all.slice(0, MAX_FINDINGS);
+  /* Per rule pack, with the tables each read — see `stage` in rules.analyze. */
+  phases.analyse_stages = rules.timings?.stages ?? [];
+  /* `let`: CMDB-137 can add one finding after scoring, and the slice is retaken then. */
+  let detected = all.length;
+  let findings = all.slice(0, MAX_FINDINGS);
 
   let llm = { status: 'disabled', tokens_used: 0 };
   if (explain && findings.length) {
@@ -249,7 +257,7 @@ export async function runHealthCheck({
    * it happened to read for another module.
    */
   /*
-   * THE DATA-QUALITY DIMENSIONS SCORE A NARROWER SET (decision 7 of 19 Sep).
+   * THE DATA-QUALITY DIMENSIONS SCORE A NARROWER SET (decision 7 of 16 Sep 2026).
    *
    * Completeness, correctness, uniqueness, identification and reconciliation
    * judge records somebody is supposed to maintain, so retired, stolen and
@@ -265,9 +273,27 @@ export async function runHealthCheck({
   const dimensionScope = inactive.size
     ? { D1: dqIds, D2: dqIds, D3: dqIds, D4: dqIds, D5: dqIds }
     : {};
+  t0 = Date.now();
   const cmdbQuality = readsCmdb
-    ? scoreCmdbQuality({ findings: all, kpis: rules.kpis, inScope: scope, implemented: IMPLEMENTED_CATALOGUE_RULES, measures: rules.measures, dimensionScope })
+    ? scoreCmdbQuality({
+      findings: all, kpis: rules.kpis, inScope: scope, implemented: IMPLEMENTED_CATALOGUE_RULES,
+      measures: rules.measures, dimensionScope, skippedRules: rules.skipped, configRules: CONFIG_ONLY_RULES,
+    })
     : null;
+  /*
+   * CMDB-137 needs the composite it trends, so it is evaluated only now. Its
+   * finding joins the same list and is counted on the trend track; it never
+   * feeds back into the score it describes.
+   */
+  phases.score_ms = Date.now() - t0;
+  if (cmdbQuality) {
+    const trend = cmdbScoreTrend(rules, cmdbQuality);
+    if (trend) {
+      cmdbQuality.tracks.trend = (cmdbQuality.tracks.trend || 0) + 1;
+      detected = all.length;
+      findings = all.slice(0, MAX_FINDINGS);
+    }
+  }
   const score = cmdbQuality ? cmdbQuality.composite.score : (readModules.includes('cmdb') ? qualityScore(estate, coverage, all) : null);
   const allScopes = summariseScopes(coverage, all, { cmdbQuality });
   /* Only the modules this scan checked carry a summary; the others keep theirs in their own runs. */
@@ -313,6 +339,8 @@ export async function runHealthCheck({
   const manifest = {
     version: MANIFEST_VERSION,
     rule_pack_version: RULE_VERSION,
+    /* Whether a later run can trend against this one — see `scoringComparability`. */
+    comparability: { ...rules.comparability, engine: keys.cmdb ?? null },
     kind: 'scan',
     /* What this run produced results for, and what it was asked about. */
     modules: readModules,
@@ -331,6 +359,13 @@ export async function runHealthCheck({
     cutoff,
     coverage,
     skipped_checks: rules.skipped,
+    /*
+     * CATALOGUE INVARIANTS, checked every run rather than only in CI. A rule
+     * whose subject is a dead-status population but which is tagged `quality`
+     * cannot fire — the tag strips the very CIs it exists to find. Three shipped
+     * that way and were caught by reading them; this is so the next one is not.
+     */
+    catalogue_warnings: [...intentMisTags(CMDB_CATALOGUE), ...trackMisroutes(CMDB_CATALOGUE), ...trackMisroutes(CMDB_CATALOGUE, CONSUMPTION_TRACKS), ...trackMisroutes(CMDB_CATALOGUE, SCALE_TRACKS), ...trackMisroutes(CMDB_CATALOGUE, DRIFT_TRACKS)],
     cmdb_quality: cmdbQuality,
     meta_reads: meta.cmdb?.reads ?? null,
     findings_detected: detected,

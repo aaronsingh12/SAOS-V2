@@ -756,7 +756,7 @@ table client, no module under `health/` calls `table.create`, `table.update` or
 `table.remove`, and the rule pack imports nothing at all.
 
 That split is the point. A change that went out from here directly would land
-without the approval gate, without the read-back and without the audit trail;
+without the approval gate, without the read-back and without the aud`it trail;
 routing every one through the plan executor is what guarantees all three.
 
 The model is strictly downstream of the rules. It receives derived facts — an
@@ -1159,7 +1159,7 @@ production parent service) — never on the OOB default. CMDB-141 counts only
 service-bound changes. CMDB-023 reads its permitted set from the instance's
 `life_cycle_mapping` (legacy status value → lifecycle stage); nothing is hardcoded.
 
-**Corrections of 18 Sep.** *Systemic is not the same as gate.* `systemicKind`
+**Corrections of 16 Sep 2026.** *Systemic is not the same as gate.* `systemicKind`
 also takes *posture* (CMDB-038, 056, 091, 104, 112, 131): Systemic, shown in its
 own panel, never gating and never scored. CMDB-002 and 003 keep gating; CMDB-116
 is shown only. *A record is charged for its own context, never its class's.* Every
@@ -1176,7 +1176,7 @@ OOB mapping, "installed but down" — is valid without naming the pair. CMDB-030
 is a conservative subset and logs, every run, that it under-detects serials
 until a manufacturer pattern library is built from the estate's own formats.
 
-**Confirmations and corrections of 19 Sep.** *Two modifier families, encoded as
+**Confirmations and corrections of 16 Sep 2026.** *Two modifier families, encoded as
 such.* `MODIFIER_FAMILY` marks every modifier `per_ci` or `population`. A per-CI
 fact (Business Critical support, production, shared infrastructure, an approved
 exception) changes what the record is CHARGED and at Systemic zeroes it; a
@@ -1197,7 +1197,7 @@ and a software package sharing a name is reported (an event resolving that name
 by text can bind to either) at 0.75 confidence with the branches named, instead
 of being suppressed.
 
-**The data-quality slice is per dimension (decision 7 of 19 Sep).** Completeness,
+**The data-quality slice is per dimension and per RULE INTENT (19–16 Sep 2026).** Completeness,
 correctness, uniqueness, identification and reconciliation judge records somebody
 is supposed to maintain, so Retired (7), Stolen (8) and Absent (100) CIs are out
 of both their findings and their denominator — `dqActive` in `cmdb-signals.js`,
@@ -1206,10 +1206,21 @@ and `dimensionScope` on the score, which reports `records_scored` and a
 one of them: evaluating those statuses is what it is for. A CI with an EMPTY
 install_status stays in scope — it is not retired, it is unmaintained — and is
 counted in `measures.cis_without_install_status` until a lifecycle rule owns it.
-A rule whose SUBJECT is a dead CI still sees them: CMDB-024 looks the dead end of
-a relationship up from the full estate and charges the live CI.
+Decision 5 of 16 Sep 2026 made the second half explicit: every rule carries an
+`intent` in the tracker and the catalogue, beside `systemic_kind`.
 
-**CMDB-023 derives its permitted set, and names no stage (19 Sep).** For each
+| intent | what it judges | CI set |
+|---|---|---|
+| `quality` | records somebody is supposed to be maintaining | live only — Retired (7), Stolen (8), Absent (100) excluded from findings AND denominator |
+| `contradiction` | the states quality rules skip: a status that disagrees with itself, an edge into a dead CI, a retired CI still being discovered | the FULL estate |
+
+`cisForRule` in `cmdb-signals.js` hands each rule its set; 24 of the 141 rules are
+contradiction rules (CMDB-023–026, 056, 061–065, 073, 076, the D8 lifecycle group,
+113–114). A record a contradiction rule actually charged JOINS its dimension's
+denominator, so the mean still describes exactly the records that dimension
+judged — no more and no fewer.
+
+**CMDB-023 derives its permitted set, and names no stage (16 Sep 2026).** For each
 class, the instance's own `life_cycle_mapping` says which stages `install_status`
 can reach and which `operational_status` can reach. A stage BOTH can reach is a
 claim either field is able to make; two such claims that differ are a
@@ -1240,6 +1251,521 @@ are different facts. Configuration findings (CMDB-044/045/047/048/049/051/052/
 054/055) name config records and carry an `unscored_reason`: they gate or are
 reported, and never charge the CIs they govern — one misconfigured identifier
 would otherwise zero a whole class.
+
+**Confirmations of 16 Sep 2026 (Group 5).** *Attribute strength is three tiers, not
+two*: strong (serial, correlation_id, asset tag, UUID), medium (network identity,
+or a STRUCTURAL COMPOSITE of two or more of host / container / install_directory
+/ port…), weak (name and other labels). A single structural attribute is not
+identity — `install_directory` alone matches every Tomcat on every host — and
+CMDB-054 now compares tiers rather than a binary, so "name before serial" and
+"name before host+directory" are both caught. CMDB-047 is unchanged by this:
+`host` and `container` point at another CI, so a composite that identifies is
+still dependent, and the rule still wants an independent local criterion.
+*Latent defects*: an identification rule with a defect whose class holds no CI is
+pre-ignition, not harmless — it is kept out of the score and the gate and listed
+in `measures.latent_identification_defects` (rule, identifier, class, defect), 238
+of them on dev424910. *CMDB-045 is one grouped gate finding* naming the classes,
+with `grouped_classes` driving one remediation step per class, because seven
+separate blockers saying the same thing made the trust gate unreadable.
+
+**A KPI cannot gate on a capability the estate does not have.** A `measured_kpi`
+gates because a measured failure invalidates what the composite means. When the
+thing measured is ABSENT rather than failing — no service map to traverse from
+(CMDB-057 below a floor of 5 live services), no Discovery installed at all
+(CMDB-070) — a gate would report a purchasing decision as a measurement. Such a
+rule sets `systemic_kind_override` on its finding and must say why in
+`systemic_kind_override_reason`; `scoreCmdbQuality` then treats it as posture:
+surfaced, never gating, never scored, and labelled with what it was downgraded
+FROM. The override is **downgrade-only** — a rule cannot promote itself into the
+gate, so gate membership stays the catalogue's decision.
+
+**A rule may declare a smaller CHARGE for a record it still reports in full.**
+`deduction_band_override` is read by `applyMateriality`, which is the one place
+the charge is computed — a rule writing `deduction_severity` itself would simply
+be overwritten on the next pass. It too is downgrade-only, and it is ignored for
+a record the CI's own context escalated to Systemic. CMDB-058 is why: an
+orphaned laptop and an orphaned database are both holes in the map, and only one
+of them matters to impact analysis.
+
+**Group 6 — Relationships (D6).** CMDB-056…069, in `cmdb-relationships.js`. What
+the instance keeps decides what can run (verified on dev424910, 16 Sep 2026):
+`cmdb_rel_ci` has **no source and no last-confirmed column**, so CMDB-063 and
+CMDB-066 skip and say why; `cmdb_rel_type` carries descriptors only and **no
+permitted class scope**, so CMDB-064 and CMDB-065 take their scope from
+`cmdb_metadata_hosting`/`_containment` (the instance's own direction rules) and
+report every other type as unscoped rather than judged. A self-loop is reported
+without the type table — a CI related to itself is a cycle whatever the type
+means — while longer cycles wait for it, because symmetric types (`Exchanges data
+with::Exchanges data with`) must be excluded first or every peer pair reads as a
+cycle. CMDB-058 charges orphans only in classes something models: a class where
+not one CI has an edge is ONE finding about an unmodelled class (unscored), not
+1,767 orphans — measured on `cmdb_ci_spkg`. CMDB-057 traverses from every service
+to depth 8 and publishes the reachable share; CMDB-067 benchmarks each service's
+depth against the estate's own 75th percentile rather than an imposed standard.
+CMDB-056 compares the edge count against earlier runs
+(`measures.relationship_counts`, the same snapshot mechanism as CMDB-038). The
+three older hand-written rules this group replaces — REL-SELF, REL-DUPLICATE,
+CMDB-UNRELATED — step aside with a "subsumed by" skip rather than reporting the
+same defect twice.
+
+**Decisions of Sep 2026 (Group 6).** *Classes are per-estate settings, expressed
+as subtree ROOTS* expanded through the class hierarchy, so an estate's own
+subclasses are covered without editing code — with the coverage boundary stated
+rather than papered over: hypervisors outside the server subtree, storage arrays
+and network gear carry things through relationship types `hostingTypes` does not
+name, and CMDB-059 under-detects there by design. *Orphans are charged by
+relationship expectation, not silenced by patterns*: the 808 leaf devices on
+dev424910 charge LOW and the unrelated databases charge in full, because letting
+a class-wide pattern suppress the records under it would score the worst-modelled
+estate best — the D1 runaway in reverse. *Both metadata tables are declared
+scope*, and `is_reverse` is honoured on both: it is set on 31 of 88 hosting rows,
+and ignoring it inverted the permitted direction for a third of the metadata,
+which is the very mistake CMDB-065 exists to report. Containment stores its pairs
+as a TREE — `ci_type` is the child and `parent_id` points at another row of the
+same table. *Edge provenance is never approximated*: `sys_created_by` names
+whoever's session wrote the row, not the edge's origin, so CMDB-063 and CMDB-066
+stay permanently not-measured with a reason rather than confidently wrong.
+*CMDB-067's benchmark is checked for circularity* — it is a percentile of the
+same services it judges, so it is refused unless at least 5 services reach
+anything and their depths span a tier; and its 60% pass bar is flagged in the
+KPI's own `alerts` as this build's configurable default, not a catalogue
+threshold.
+
+**Group 7 — Freshness and source coverage (D7).** CMDB-070…079, in
+`cmdb-freshness.js`. The dimension asks not "is the record right" but "is
+anything still saying so", and on dev424910 the answer is mostly nothing — which
+makes this the group where refusing to score matters most. **Discovery is not
+installed**: `discovery_schedule` is not a table on this instance, which
+`classifyFailure` reports as `unavailable` rather than a failed read, so asking
+for it costs nothing and the answer IS the finding. CMDB-070 therefore reports
+posture instead of gating; CMDB-071 and CMDB-072 skip, because a subnet nothing
+was ever going to scan is not a gap and an invented tolerance is an opinion with
+a number in front of it. With no per-CI source attribution (`sys_object_source`
+and `cmdb_datasource_last_update` both empty) CMDB-074 refuses to count the
+single `discovery_source` column — that would report every estate as 100%
+single-sourced, a fact about the schema. With `cmdb_metadata` absent, CMDB-076
+reports the gap AND the reason it matters: **2,659 of 2,784 CIs share one
+`sys_updated_on`**, so record-level freshness reads as near-perfect while no
+attribute has been confirmed by anything — exactly the illusion CMDB-076 exists
+to break. CMDB-077 is not measured **by choice**: the CI keeps only its last
+updater, and reading `sys_audit` to do it properly would make the CMDB module
+report "changed" on every incremental check and destroy scan reuse — a trade
+stated rather than made silently. CMDB-078 publishes the manual share as an
+explicit UPPER BOUND because purged import sets look manual, and CMDB-079
+refuses to report 0% import-sourced, which would state a retention policy as a
+measurement. What the estate CAN answer: CMDB-073 (all 50 CIs claiming "Other
+Automated" have an empty `first_discovered`), CMDB-075 (22 CIs untouched since
+creation, the oldest by 6,885 days) and CMDB-078. A retired CI that discovery is
+still finding is measured here, in `measures.retired_still_discovered`, and
+charged by CMDB-087 in D8 — counted once, not twice.
+
+**Group 7 follow-ups (Sep 2026).** *Class tiers are ONE setting* — `CLASS_TIERS`
+in `cmdb-signals.js`, shared by D6 and D7 (host, application, hub,
+infrastructure, endpoint, discoverable), because three rule packs each carrying
+their own class lists is three lists that disagree. UPS, racks and network gear
+are INFRASTRUCTURE, not endpoints: a rack full of servers depends on the UPS.
+*Script accounts are seeded from the estate*, not hardcoded — the seed (names
+plus name shapes) is matched against the accounts that have actually written a
+CI here, and the resolved list is named in the finding, because a ratio nobody
+can check is not a measurement. *`sys_audit` is OPT-IN* (`optIn` on its spec,
+excluded from `DEFAULT_TABLES` and from every module's table list): it is an
+append-only log that changes on every run, so reading it by default would make
+the CMDB module report "changed" on every incremental check and destroy scan
+reuse. A caller enables it by naming it in `tables`, and CMDB-077 stays
+permanently not-measured until they do.
+
+**The bulk-touch pair — CMDB-142 and CMDB-143 (minted Sep 2026).** A
+synchronised mass write does not mean the records are fresh; it means their
+freshness is UNVERIFIABLE, and the estate must not be able to buy a clean
+freshness score with a scheduled job. Measured on dev424910: **2,659 of 2,784
+CIs (95.5%) share one `system` write on 2026-04-30**, which made record-level
+freshness read as near-perfect and hid every one of them from CMDB-075
+permanently. CMDB-142 charges each of them — the inverse of a stale charge,
+"touched, but the touch carries no information" — and CMDB-143 publishes the
+share as a gating `measured_kpi`, because when freshness cannot be believed every
+age-based measure in the composite is reporting a job's schedule. A real
+migration is exempt: it changes attributes and leaves audit rows to prove it, so
+where `sys_audit` is opted in the test is made, and where it is not the rule says
+the test could not be run and drops to 0.8 confidence rather than withholding or
+asserting. A share alone is not a mass write — an absolute floor stops two saves
+on a ten-CI estate reading as a job. D7 fell from 76.7 to 46.6 when this landed,
+which is the point.
+
+**Group 8 — Lifecycle and retirement (D8).** CMDB-080…090, in
+`cmdb-lifecycle.js`. **The dimension that runs the other way**: every rule here
+is a CONTRADICTION rule over the full estate, because the records it judges are
+exactly the ones D1–D7 exclude. Three arrived tagged `quality` (CMDB-080, 081,
+082) and could therefore never have fired — "Retired CI still holding active
+relationships", evaluated over a CI set with the retired CIs removed, is a rule
+that cannot match. Corrected in the tracker and pinned by a test, because the tag
+IS the behaviour. **The two `install_status` columns do not share values**:
+`cmdb_ci` and `alm_asset` both use the name, but `10` is Consumed on an asset
+while Absent is `100` on a CI, and `8` is Missing on an asset and Stolen on a CI
+— so every state test resolves the LABEL from `sys_choice` first, and mapping by
+number would have invented contradictions. On dev424910, 941 asset-CI pairs are
+linked, 821 agree and 7 disagree. **Not one CI here is retired**, so six rules
+evaluate against an empty population — reported as an evaluated result, never as
+a skip, since "no retired CI is doing this" and "we could not check" are
+different facts. CMDB-089 is the SINGLE HOME for the 117 CIs with no
+`install_status` at all (D1 deliberately leaves them here; CMDB-021 is a class
+ratio, never a per-record charge). Two rules consume D7 rather than recompute it:
+CMDB-087 reads `measures.retired_still_discovered`, and CMDB-088 reads
+`measures.record_freshness` and DECLINES to measure a retirement backlog on an
+estate where 95.5% of timestamps come from one job. A retention period is never
+assumed — with no policy configured, CMDB-090 points at CMDB-101 instead.
+
+**Two invariants that are checked, not remembered (Sep 2026).**
+
+*The intent invariant.* A rule whose SUBJECT is a dead-status population but
+which is tagged `quality` cannot fire — the tag strips the very CIs it exists to
+find. Three shipped that way (CMDB-080/081/082) and were caught by reading them.
+`intentMisTags` in `cmdb-signals.js` now checks the whole catalogue on EVERY run
+and reports violations in `manifest.catalogue_warnings`, because a per-rule test
+only catches the ones somebody remembers to write. It reads title and detection
+logic only — a false-positive guard that merely mentions retirement is discussing
+an exception, not declaring a subject — and it immediately found a fourth:
+**CMDB-101**, which measures retired CI age against a retention period and was
+tagged `quality`. Now `contradiction`, and the invariant reports zero.
+
+*Label resolution for cross-table status.* `install_status` exists on `cmdb_ci`
+AND `alm_asset` with different choice lists: `7` is Retired on both, but `10` is
+Consumed on an asset while Absent is `100` on a CI, and `8` is Missing on an
+asset and Stolen on a CI. Comparing the numbers across that boundary would have
+produced hundreds of confident, wrong findings over 941 linked pairs. `choiceLabels`
+in `cmdb-signals.js` is the standard for every cross-table status comparison from
+here: read the instance's own labels and compare MEANING, never encoding. The
+numeric fallback is declared in the finding when it is used, because one is a
+fact about this instance and the other an assumption about ServiceNow.
+
+**Group 9 — Data Manager and attestation (posture track).** CMDB-091…101, in
+`cmdb-governance.js`. **Not a scored dimension**: every rule sits on the
+`governance` track with no dimension, so none of it deducts from the composite —
+proven live, where Group 9 produced 14 findings and the composite stayed at
+exactly 76.9. The reason is worth stating: attestation measures whether anybody
+ANSWERS for the data, which is a different question from whether the data is
+right. An estate can attest diligently to wrong records, or hold perfect records
+nobody has signed for; folding the two together would let good governance
+disguise bad data. CMDB-091 is Systemic with `systemic_kind: posture` — surfaced,
+never gating. **Two mechanisms are read, because an estate may run either, both
+or neither**: the modern Data Manager is `cmdb_data_management_*` (NOT
+`cmdb_data_manager_*`, which is not a table on any version here) and attestation
+on dev424910 is the LEGACY Certification module, since `dcf_*` is not installed.
+"Not configured" and "not installed" stay different findings — an estate without
+the product has not neglected anything. What the estate showed: 3 Data Manager
+policies active and never executed (the oldest 1,709 days after creation), 6
+attestation configs with no attester at all, 2 whose attester group has no active
+members, **561 failed attestations against 52 certified**, 97 certification tasks
+open past 60 days, and one `cmdb_ci` archive rule that is switched off — which is
+what CMDB-090 in D8 defers to when it declines to measure a retention breach.
+
+**Group 10 — Ownership (D9).** CMDB-102…108, in `cmdb-ownership.js`. A scored
+dimension again after the posture group (weight 6), so the active-status filter
+returns: nobody needs to own a decommissioned server, and dead CIs leave both the
+findings and the denominator. The theme is that **a filled-in field is not an
+owner** — a support group with no members, an owner who has left, an assignee who
+merely holds the device: each reads as "owned" on a report and answers nobody.
+Group membership is resolved AT EVALUATION TIME (`sys_user_grmember` with
+`user.active` dot-walked), never from the group record, because a group row that
+exists and is marked active says nothing about whether anybody is in it.
+`assigned_to` is deliberately NOT ownership but IS reported as a recoverable
+signal, which is what the catalogue's "any inferable owner signal" asks for.
+CMDB-107 measures concentration against the WHOLE in-scope estate rather than the
+owned subset — one person holding 10 of 33 owned CIs is 30% of the owned set and
+0.4% of the estate, and only the second number is about how much one absence
+would strand. On dev424910: **2,684 of 2,784 CIs (96.4%) have no owner, manager
+or support group**, 35 of 35 classes have no class-level data owner (posture,
+ranked by the findings that have nobody to receive them — `cmdb_ci_spkg` alone
+carries 3,977), and two support groups with no members carry 13 CIs. D9 = 84.9.
+
+**An opt-in table nobody read is not an input (Sep 2026).** A live bug the
+end-to-end tests caught: the dependency tracker records every table a rule
+TOUCHED, and the rules do touch `ctx.estate.sys_audit` — they have to, to
+discover it is absent and say so. Since `sys_audit` is opt-in it had no stamp, so
+every CMDB scan found an input it had never read, concluded it must re-read, and
+no module would ever have been reusable again — the optimisation the planner
+exists for, undone by a table that was deliberately skipped. `inputsOf` now
+ignores an opt-in table with no baseline stamp, and still checks one that was
+genuinely read.
+
+**Validation debt (Sep 2026).** A rule that passes its fixtures and has never
+fired against a real estate is not validated, it is plausible. The tracker now
+carries a **validation debt** sheet, generated from the same results file the
+status columns come from so it cannot drift: **32 rules** proved only by
+fixtures, because dev424910 has no retired CIs, no Discovery, no reconciliation
+definitions, no growth and no per-CI source attribution. It is the standing
+priority batch for the first populated-instance validation, assembled as it
+accrues rather than reconstructed later from memory.
+
+**CONSEQUENCE SCOPING — the same decision, now named once (Sep 2026).** *When a
+defect is near-universal, severity is carried by the CIs where the gap has
+operational consequence, not by raw count.* It was decided three separate times
+before anybody named it: D1 charges a computer for a missing IP; D6 charges an
+orphaned database in full and an orphaned laptop at LOW; D9 charges ownership by
+what one absence would strand. `consequenceOf` in `cmdb-signals.js` is the shared
+implementation, so Group 11 and everything after it inherits the decision instead
+of re-making it. **Both halves are required**: the per-record charge is SCOPED
+(never suppressed — every defective record is still reported and still charges
+something), AND the estate-wide fact is raised ONCE as a zero-point pattern.
+Scoping without the headline hides "96.4% of this estate has no owner" behind
+deliberately uneven charges; the headline without scoping is the raw count again,
+where 2,684 laptops outweigh every database. A rule doing one and not the other
+has got this wrong. Where the share is extreme (default 80%), the headline
+SELF-DISCLOSES the parameter it measured and prompts for the alternative, because
+a near-universal absence is occasionally the wrong field being measured.
+
+**WARRANTED EXPECTATION — the principle under consequence scoping (named 17 Sep
+2026).** *A class's expected data is a function of what that class is for;
+absence is a defect only where presence was warranted.* It is one idea that was
+decided three times: CMDB-124 expects no relationships from software packages or
+laptops, D6 charges an orphaned database in full and an orphaned laptop at LOW,
+and D9 charges ownership by what one missing owner would strand. This is what
+separates SAOS from a naive checker. Charging every absence equally floods: 1,767
+software packages without edges, or 2,684 laptops without an owner, drown the
+handful of databases and servers where the same gap stops an impact analysis.
+Charging by warranted expectation stays honest because every expectation is a
+named, per-estate setting that the result discloses whenever it decides a verdict,
+so a customer whose estate does warrant the data can raise it and re-run. It is
+never a hidden exemption.
+
+**Group 11 — CSDM linkage (mixed track).** CMDB-109…115, in `cmdb-csdm.js`.
+Unlike Group 9 this group is **not uniformly posture**: CMDB-109/110/113/114 feed
+the scored D10 dimension, and CMDB-111/112/115 are CSDM-maturity posture. The
+distinction is not stylistic — CMDB-113/114 are contradictions, two records in
+the same instance asserting different things, while CMDB-112 measures how far an
+estate has climbed the CSDM ladder, which is a programme's progress and not a
+data defect. `CSDM_TRACKS` DECLARES which is which and `trackMisroutes` checks it
+against the catalogue every run, alongside the intent invariant, because a
+posture rule that quietly acquires a dimension starts charging the composite and
+a D10 rule that quietly loses one stops — and neither announces itself. On
+dev424910 **the CSDM class model is not in use** (business service, application
+service, discovered service, service offering, business app and business
+capability classes are all empty; all 42 services sit on the base class) and
+**`svc_ci_assoc` is empty**. So the rules name the missing layer rather than
+reporting zero defects — "no Business Service is unreachable" and "there are no
+Business Services" look identical in a count and are opposite findings — and
+CMDB-113/114 refuse outright, because a symmetric difference against an empty set
+would report all 220 relationship edges as disagreements, which is the
+catalogue's own documented false positive. Where a layer is absent the rules fall
+back to the base service class and SAY SO, the same discipline as the
+principal-class fallback: a fallback that is not named is an assumption.
+
+**Group 12 — Consumption and trust (D10).** CMDB-116…123, in
+`cmdb-consumption.js`. The dimension that asks whether anybody USES the CMDB: a
+CMDB nobody consults is not a data-quality problem, it is the whole problem
+expressed as silence. **D10 is shared and Group 12 completes it** — CMDB-109/110/
+113/114 (Group 11) and CMDB-141 were already in it, so this group ADDS records
+(CMDB-121) and KPIs (CMDB-117/118/123) to that set rather than replacing them.
+No rule re-derives another's defect: CMDB-121 asks whether work REFERENCES a CI,
+CMDB-115 whether it is in the service model, CMDB-105 whether anybody owns it —
+the same CI can fail all three and each is a different question. Tracks are mixed
+again (`CONSUMPTION_TRACKS`, checked by the same `trackMisroutes` guard):
+CMDB-116/119/120/122 are context-only. **CMDB-116 is the trust score itself and
+is `derived`** — computed FROM the composite, so charging the composite would let
+the number mark its own homework, and gating would make a low score proof of its
+own untrustworthiness. It is shown with the default-weight caveat and deducts
+nothing. CMDB-119 judges only classes that actually extend `cmdb_ci` (the five
+`u_cmdb_qb_result_*` tables on dev424910 are Query Builder output, not CI
+classes), and CMDB-120 never marks an estate down for ServiceNow's own deep
+hierarchies.
+
+**`parseDate` moved to a leaf module, `time.js` (Sep 2026).** Ten rule packs
+imported it from `rules.js`, which every pack also depends on for its engine — so
+each one closed an import cycle. ESM tolerated that only while `rules.js` was
+imported FIRST; importing a rule pack directly resolved the cycle the other way
+and left `rules.js` reading a rule-list export that had not initialised yet
+(`ReferenceError: Cannot access 'CONSUMPTION_RULES' before initialization`). A
+pure function with no dependencies now lives in a file with no dependencies, and
+`rules.js` re-exports it so nothing else had to move.
+
+**THE BLEND IS PER DIMENSION TYPE, NOT ONE GLOBAL RATIO (Sep 2026).** A
+dimension blends its mean record score with the mean pass rate of its percentage
+rules, and one ratio for all ten assumed they ask the same shape of question.
+Measured when D10 completed: record part **96.0**, KPI part **0.0** — so the
+blend ALONE decided the score, 67.2 at 70/30 and 38.4 at 40/60. And the record
+part was near-inert *by design*: consequence scoping correctly quiets a long tail
+of unreferenced laptops, leaving a mean that barely moves, while the KPI half was
+saying something stark and true. So the ratio now follows the shape of the
+question — `record` 70/30 (completeness, correctness, uniqueness, lifecycle,
+ownership), `mixed` 60/40 (relationships, freshness, identification,
+reconciliation), `estate` 30/70 (consumption). This is consequence scoping one
+level up: where a defect is near-universal and low-consequence per record, the
+per-record mean stops being informative and the weight belongs with the measure
+that still is. Live effect: **D10 67.2 → 28.8, D6 73.4 → 65.4, D7 46.6 → 42.0,
+composite 81.1 → 77.0.** Each dimension publishes the blend it used, so a score
+can be re-derived.
+
+**CMDB-116 — one number, three qualifications.** The composite is the figure
+somebody screenshots, so it is never shown alone. `composite.variants` publishes
+the same arithmetic three ways — raw, coverage-qualified, gate-qualified — each
+carrying the caveat of what it does NOT account for, and the **gate variant is
+dominant**: when the trust gate is open it shows NO VALUE AT ALL, because the
+other two are describing a number nobody should act on. Live on dev424910 the
+gate variant is blank against 7 blockers while the raw figure reads 77.0. Still
+`derived`, still deducting nothing — presentation, not scoring — and the
+default-weight caveat the catalogue requires ships with it. **The All view shows
+them too (17 Sep 2026).** It had shown the CMDB tile as "77% Mostly healthy" with the
+gate open, because the tile took its word from the number alone and the variants
+appeared only on the CMDB tab. The view that shows everything must also show
+whether to believe it: the tile now carries the gate label, and the three variants
+sit under the tiles.
+
+**Group 13 — Scale and platform impact (platform indicator).** CMDB-124…130, in
+`cmdb-scale.js`, on the `platform` track with no dimension: this group asks
+whether the CMDB has grown into a shape the PLATFORM struggles with, a different
+question with a different owner from whether the data is right. A perfectly
+accurate CMDB can still be why a list view times out. **These rules are the most
+likely to be superlinear themselves**, so each is written against counts and
+aggregates, shares one pass over the CIs, and is individually timed into
+`measures.scale_timings` — **2 ms total across all seven** on a 2,784-CI estate.
+CMDB-124's expected edges-per-CI band is DERIVED from the estate's own class mix
+and the derivation is printed in the finding, so a network-weighted estate is not
+marked down for running denser than a server-weighted one. CMDB-125 and CMDB-128
+ABSTAIN until they have 2 and 3 snapshots: "no growth observed" and "no growth"
+are different findings. CMDB-127 declines outright because `sys_db_index` does
+not exist on this version and `sys_index` is refused to admin — reporting "no
+index" from a table we are forbidden to read would be reporting our own access as
+an estate defect. `syslog_transaction` (292,530 rows) is opt-in for the same
+reason `sys_audit` is.
+
+**Two standing principles, stated once.** *A confident wrong percentage is worse
+than an honest gap* (CMDB-119 declining to compute an overlap from a partial
+attribute signature). And its twin: *a limitation of the measurement environment
+is disclosed as SAOS's OWN gap and is never charged to the estate* (CMDB-127:
+`sys_db_index` absent, `sys_index` refused to admin — "no supporting index" from
+a table we may not read would bill the customer for our access). Every rule that
+meets a forbidden, absent or unread table follows both.
+
+**CMDB-124, per tier (Sep 2026).** The first version combined tiers weighted by
+CI COUNT, and on dev424910 1,767 software packages at a default of one expected
+edge set the estate's bar single-handed — the finding measured the parameter.
+Now software and logical classes expect zero edges, each tier is judged against
+its own expectation, the estate verdict weights tiers by EXPECTED EDGE MASS so a
+large zero-expectation tier carries no weight, and the tier the verdict rests on
+is named in the finding with the setting that decides it. **Endpoints expect zero
+too (17 Sep 2026)**: with software at zero, 843 laptops at 0.5 edges each became
+421.5 of 795.5 expected edges and flipped the verdict on their own (0.277 "far
+below" with them, 0.575 in band without). Almost no estate maps laptop
+relationships, and one that doesn't was never expected to (warranted expectation,
+above). Every tier set to 0 is named in the result with the edges it carries
+anyway: "raise the setting and re-run if you model them".
+
+**A dimension discloses what its KPI half rests on.** `kpi_basis` on every
+dimension lists the KPIs that measured, the ones that produced no measurement (`unmeasured`), the share of the
+dimension they carry, and any that are also trust-gate blockers. On dev424910,
+D10's KPI half is 70% of the dimension and rests on CMDB-141 alone while
+CMDB-117/118 abstain below their volume floor — and CMDB-141 is also a gate
+blocker, so the estate hears one signal twice. The caveat says so, so 28.8 is not
+read as a broad consumption assessment. **The zero case too (CMDB checkpoint, 17 Sep 2026):** the
+disclosure first fired only when at least one KPI measured, so D1, with CMDB-021
+built and silent, read 73.8 as a complete score with no caveat while D7 and D10
+disclosed a merely PARTIAL KPI half. A dimension now discloses an ABSENT KPI part,
+and the mirror case: a KPI-only score while its record rules charged nothing.
+
+**Group 14 — Drift and regression (trend track). The last CMDB group.**
+CMDB-131…138 in `cmdb-drift.js`. Every rule compares THIS run with earlier ones,
+never gates and never scores — with one deliberate exception to "never changes a
+current finding": **CMDB-132 feeds the `recurred` escalator**. A finding seen,
+verifiably closed and seen again is escalated one band, which raises its charge
+and its priority. A closure only counts as verified when the finding's own rule
+was still producing findings in the run where it was absent; otherwise the rule
+may simply not have run.
+
+*Comparability is the whole game.* dev424910's own history shows why: two
+consecutive CMDB runs read 82.1 then 77.0 and held 11,618 then 20,954 findings —
+all of it rule changes that week, none of it the estate. `scoringComparability`
+(rules.js) hashes the rule-pack version (now 3.0.2), the implemented rule set,
+every rule's scoring attributes, the dimension weights and the per-type blends,
+and is stored in each manifest. Trend rules compare only snapshots with the same
+key, say how many they set aside and why, and CMDB-137 names the naive comparison
+it refuses. `RULE_VERSION` must be bumped when a rule's detection logic changes,
+because the hash cannot see inside a rule.
+
+*A real latent bug, found building this.* The history reader returned only
+`duplicate_sets` and `relationship_counts`, so CMDB-096 (`class_growth`) and
+CMDB-125/128/129 (`scale_snapshot`) could never leave abstention in production —
+their fixture tests injected history directly and never touched the reader. The
+reader is now `cmdb-history.js`, pure and tested: every trend measure is declared
+once in `TREND_MEASURE_KEYS`, and a snapshot is only a CMDB snapshot if it is not
+an ITSM-only scan, not a verification, not a degraded CMDB read and (for its
+findings) not truncated — each of which would otherwise read as every defect
+resolved.
+
+*Verification runs both ways.* CMDB-131 counts a finding as RESOLVED only when its
+rule still produced findings this run, and as CREATED only when its rule produced
+findings on the earlier run. A rule that measured nothing before may not have been
+measuring (below a volume floor, a table unread, findings dropped by routing), so
+its findings are published as `newly_measured` and are not charged as new defects.
+The cost is symmetric: a rule's genuinely first defect reads as newly measured.
+The first build guarded only the resolved half, which could not flatter the net
+position but could darken it.
+
+*Findings and skips route to the same module.* `scopeOf` used to route a finding
+by its domain, while a skip (which carries only a rule id) routed by rule prefix.
+The Group 13 rules report through `performance_agent`, whose domain is Platform,
+so on every CMDB-only scan their findings were filtered out and their skips kept:
+live on dev424910, CMDB-124 was out of band and showed neither. The fixture tests
+called the pack directly and never passed through `analyze()`'s module filter.
+Findings now route by rule prefix first and by domain only for an id no prefix
+claims; all 77 (rule, domain) pairs stored on the instance resolved identically
+before the change. A test holds `scopeOf` equal to `scopeOfRule` for every
+catalogue rule under any domain, and a regression test goes through `analyze()`.
+This and the CMDB-131 change are the first `RULE_VERSION` bump under the
+discipline above (3.0.0 → 3.0.1); no run keyed under 3.0.0 had been persisted.
+
+*Comparability is a property of the MEASURE (17 Sep 2026).* The first build left
+it to each rule, and two rules reading the same measure disagreed: CMDB-134
+required the key for duplicate-set membership and CMDB-038 did not.
+`MEASURE_COMPARABILITY` in `cmdb-history.js` now tags every stored measure:
+- **raw:** a count the platform holds (relationship counts, CIs per class,
+  creation dates). It is compared across rule versions.
+- **derived:** a result our rules, thresholds or settings produced (duplicate
+  sets, stale-CI lists, bulk-touch groups, attestation outcomes, findings,
+  scores). It is compared only under the same key.
+
+`comparableHistory` enforces the tag, and `EstateRules.history` is an accessor
+that passes every assignment through it. So no rule can see a derived reading
+from another model, and none can opt out; an untagged field never reaches a rule.
+A source-scan test fails if any rule reads a history field no tag governs. When
+unsure, a measure is derived: a wrong `derived` costs a baseline, a wrong `raw`
+reports a rule change as estate change. It has the same shape as
+`MODIFIER_FAMILY`: the property belongs to the thing, not the caller.
+`TREND_RULE_INPUTS` maps each history-reading rule to its measure, so what a rule
+change resets is derived, not listed by hand. CMDB-038, 131–135, 137 and the
+`recurred` escalator reset. CMDB-056, 096, 125, 128, 129 and 136 read raw counts
+and keep their baseline.
+
+*A RETURNING-CUSTOMER CAPABILITY, NOT A FIRST-SCAN ONE.* The honest cost of
+comparability is that every rule change resets the derived baseline. Recurrence
+and the score trend need two earlier scans that READ the CMDB under the same rule
+version, so the third such scan is the first where the layer can fully evaluate.
+Until a rule version is frozen for an engagement, the layer is dark. A scan that
+finds the CMDB unchanged is a verification: it reuses the last result and stores
+no snapshot. A rule change alters the engine key and forces a full read. **Nobody
+should expect drift detection in a first engagement.** `measures.trend_readiness`
+states this on every run (dark / partial / live, how many comparable scans exist,
+what resets). Every abstention waiting on comparable scans says it too, and so
+does the README.
+
+*The stable-estate replay is a permanent test*
+(`health-cmdb-stable-replay.test.js`). It runs three real `runHealthCheck` scans
+of one unchanged in-memory estate a day apart, each handed the history
+`cmdbHistoryFromRuns` builds from the runs before it: the production path end to
+end, minus the database write. It requires:
+- no finding disappears;
+- no drift finding, recurrence, created or resolved finding, or new duplicate set;
+- a flat composite and flat dimensions.
+
+The one legitimate addition is a history-reading measure reaching its snapshot
+floor, and CMDB-131 must count that as newly measured. The test found its first
+defect on its first run: CMDB-128 told an unchanged estate its relationships were
+"growing at 0.0 rows/day". It now says flat is flat.
+
+*Where a scan's time goes.* `manifest.phases.analyse_stages` times each rule pack
+and lists the tables it read, beside the existing per-table read times (`coverage[t].ms`)
+and per-metadata-read times (`meta.cmdb.reads[k].ms`). Measured on dev424910's
+stored CMDB scan: of 480 s, table reads took 368 s, metadata reads 104 s and the
+whole rule evaluation 2 s, so a slow scan is a reading problem before it is a rule
+problem.
 
 **Group 4 — Uniqueness (D3).** CIs sharing one exact identity value (serial, IP,
 MAC, FQDN, correlation_id) form a duplicate set; sets sharing a member are one

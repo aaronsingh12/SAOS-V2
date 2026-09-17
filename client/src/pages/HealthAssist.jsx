@@ -187,6 +187,36 @@ const TRACK_LABEL = {
   posture: 'Systemic posture (not gated, not scored)',
 };
 
+/**
+ * THE THREE VARIANTS OF ONE NUMBER (CMDB-116).
+ *
+ * The composite is the figure somebody screenshots, so it is never shown alone.
+ * The same arithmetic appears three ways — raw, coverage-qualified and
+ * gate-qualified — and the GATE variant is visually dominant, because when the
+ * trust gate is open the other two describe a number nobody should act on.
+ *
+ * CMDB-116 is `derived` and deducts nothing: this is presentation, not scoring.
+ */
+function TrustVariants({ composite }) {
+  const variants = composite?.variants ?? [];
+  if (!variants.length) return null;
+  return (
+    <div className="hs-variants">
+      {variants.map((v) => (
+        <div key={v.key} className={`hs-variant${v.dominant ? ' is-dominant' : ''}`}>
+          <div className="hs-variant-head">
+            <span className="hs-variant-label">{v.label}</span>
+            <span className="hs-variant-value">{v.value == null ? '—' : `${v.value}%`}</span>
+          </div>
+          <div className="hs-variant-qual">{v.qualifier}</div>
+          <p className="hs-fine">{v.caveat}</p>
+        </div>
+      ))}
+      {composite.weights_caveat && <p className="hs-fine hs-variant-foot">{composite.weights_caveat}</p>}
+    </div>
+  );
+}
+
 function Dimensions({ q }) {
   if (!q?.dimensions?.length) return null;
   const tracks = Object.entries(q.tracks || {}).filter(([, n]) => n > 0);
@@ -210,6 +240,7 @@ function Dimensions({ q }) {
                   {d.measured && d.blend && `records ${d.record_part} × ${d.blend.record * 100}% + KPI ${d.kpi_part} × ${d.blend.kpi * 100}%`}
                   {d.measured && !d.blend && (d.kpi_part != null ? `KPI only (${d.kpis.map((k) => `${k.rule_id} ${k.pass_pct}%`).join(', ')})` : 'record average')}
                   {!d.measured && d.not_measured_because}
+                  {d.scope_note && <div className="hs-fine">{d.scope_note}</div>}
                   {d.caveats?.map((c) => <div key={c} className="hs-guard-open">{c}</div>)}
                 </td>
               </tr>
@@ -612,14 +643,19 @@ function ScopeTiles({ summaries, scopes, onPick }) {
       {scopes.filter((s) => s.key !== 'all').map((s) => {
         const sum = summaries?.[s.key];
         const v = verdict(sum?.score);
+        /* The word is never taken from the number alone. Measured on dev424910:
+           the CMDB tile read "77% Mostly healthy" with the trust gate open on
+           seven blockers — the one place the scorecard's gate label was not. */
+        const untrusted = Boolean(sum?.gate && !sum.gate.trustworthy && sum?.score != null);
+        const tone = untrusted ? 'systemic' : v?.tone;
         return (
           <button key={s.key} type="button" className="hs-tile" onClick={() => onPick(s.key)} title={s.description}>
             <span className="hs-tile-label">{s.label}</span>
-            <span className={`hs-tile-score${v ? ` tone-${v.tone}` : ' hs-score-none'}`}>
+            <span className={`hs-tile-score${tone ? ` tone-${tone}` : ' hs-score-none'}`}>
               {sum?.score != null ? <>{sum.score}<small>%</small></> : '—'}
             </span>
-            <span className="hs-tile-word">
-              {v ? v.word : (sum?.score_kind === 'none' ? 'No score for this area' : 'No score this run')}
+            <span className={`hs-tile-word${untrusted ? ' tone-systemic' : ''}`}>
+              {untrusted ? sum.gate.label : v ? v.word : (sum?.score_kind === 'none' ? 'No score for this area' : 'No score this run')}
             </span>
             <span className="hs-tile-count">{(sum?.findings ?? 0).toLocaleString()} found</span>
             {sum?.checked_at && <span className="hs-tile-when">checked {new Date(sum.checked_at).toLocaleString()}</span>}
@@ -1298,6 +1334,15 @@ export default function HealthAssist() {
                 side by side rather than averaged into one number that would mean nothing. Pick one to look inside it.
               </p>
               <ScopeTiles summaries={manifest?.scopes} scopes={scopeList} onPick={pickScope} />
+              {/* The view that shows everything must show whether to believe it:
+                  the gate-qualified composite is the screenshot surface, so the
+                  three CMDB variants appear here as well as on the CMDB tab. */}
+              {cmdbQ?.composite?.variants?.length > 0 && (
+                <div className="hs-mt">
+                  <div className="hs-sub">CMDB score — can it be believed?</div>
+                  <TrustVariants composite={cmdbQ.composite} />
+                </div>
+              )}
               <div className="hs-facts hs-mt">
                 <div><b>{detected.toLocaleString()}</b><span>things found</span></div>
                 <div><b>{(metrics.visible_cis ?? 0).toLocaleString()}</b><span>CIs read</span></div>
@@ -1331,6 +1376,7 @@ export default function HealthAssist() {
                     ? <><b>No score.</b> {summary?.score_withheld_because || metrics.score_withheld_because}</>
                     : <>{summary?.score_definition || metrics.score_definition} <b>{summary?.score_basis}</b></>}
                 </p>
+                {scope === 'cmdb' && <TrustVariants composite={cmdbQ?.composite} />}
                 <div className="hs-facts">
                   <div><b>{(summary?.findings ?? 0).toLocaleString()}</b><span>found in {scopeInfo?.label}</span></div>
                   <div><b>{coverageRows.length}</b><span>tables read</span></div>

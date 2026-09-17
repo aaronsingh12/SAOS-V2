@@ -21,13 +21,24 @@ import crypto from 'node:crypto';
  */
 
 /** sys_id and sys_updated_on are implicit on every spec: identity, and staleness. */
-function spec(key, fields, required = false, { filter = null, filterLabel = null } = {}) {
+function spec(key, fields, required = false, { filter = null, filterLabel = null, optIn = false } = {}) {
   return Object.freeze({
     key,
     fields: Object.freeze([...new Set(['sys_id', 'sys_updated_on', ...fields.split(',')])]),
     required,
     filter,
     filterLabel,
+    /*
+     * OPT-IN: in the allow-list, but never read unless a caller names it.
+     *
+     * `sys_audit` is the case this exists for. It is an append-only log, so it
+     * changes on EVERY run: including it by default would make the CMDB module
+     * report "changed" on every incremental check and destroy the scan reuse the
+     * planner exists for — a bad trade for the one rule that wants it
+     * (CMDB-077). An estate that would rather have the rule can ask for the
+     * table by name, and the cost is then a choice rather than a surprise.
+     */
+    optIn,
   });
 }
 
@@ -65,9 +76,9 @@ export const TABLES = Object.freeze({
      dev424910. `used_for` is NOT on cmdb_ci (only on servers, applications…), so it is
      read per class in extractCmdbMeta. `business_criticality` is not on cmdb_ci on
      that version either; it stays requested and is reported as a missing field. */
-  cmdb_ci: spec('cis', 'name,sys_class_name,serial_number,fqdn,ip_address,mac_address,owned_by,managed_by,support_group,operational_status,install_status,discovery_source,last_discovered,business_criticality,company,location,cost_center,correlation_id,life_cycle_stage_status,sys_created_on,sys_created_by', true),
-  cmdb_rel_ci: spec('relationships', 'parent,child,type,type.name', true),
-  cmdb_ci_service: spec('services', 'name,sys_class_name,owned_by,operational_status,life_cycle_stage,life_cycle_stage_status,busines_criticality,used_for'),
+  cmdb_ci: spec('cis', 'name,sys_class_name,serial_number,fqdn,ip_address,mac_address,owned_by,owned_by.active,owned_by.name,managed_by,managed_by.active,managed_by.name,assigned_to,assigned_to.active,support_group,support_group.name,operational_status,install_status,discovery_source,last_discovered,first_discovered,business_criticality,company,location,cost_center,correlation_id,life_cycle_stage,life_cycle_stage_status,asset,sys_created_on,sys_created_by,sys_updated_by,sys_mod_count', true),
+  cmdb_rel_ci: spec('relationships', 'parent,child,type,type.name,sys_created_by,sys_created_on', true),
+  cmdb_ci_service: spec('services', 'name,sys_class_name,owned_by,owned_by.name,managed_by,support_group,support_group.name,operational_status,life_cycle_stage,life_cycle_stage_status,busines_criticality,used_for'),
   service_offering: spec('offerings', 'name,parent,owned_by'),
   ecc_agent: spec('mid_servers', 'name,status,validated,last_refreshed'),
   ecc_queue: spec('ecc_queue', 'name,state,queue,agent,sys_created_on'),
@@ -121,9 +132,33 @@ export const TABLES = Object.freeze({
   cmdb_health_config: spec('health_inclusion_rules', 'applies_to,active_record_condition,metric,sys_overrides,sys_created_on'),
   cmdb_health_metric: spec('health_metrics', 'name,friendly_name,parent'),
   cmdb_health_metric_pref: spec('health_metric_weights', 'metric,active,weighted_average_contribution,failure_threshold,sys_mod_count,sys_created_on'),
-  cmdb_class_info: spec('class_info', 'class,principal_class'),
+  cmdb_class_info: spec('class_info', 'class,principal_class,managed_by_group,managed_by_group.name'),
   cmdb_recommended_fields: spec('recommended_fields', 'table,recommended,active'),
-  cmdb_data_management_policy: spec('data_manager_policies', 'name,table,policy_execution_job,cmdb_policy_type,sys_created_on'),
+  cmdb_data_management_policy: spec('data_manager_policies', 'name,table,policy_execution_job,cmdb_policy_type,encoded_query,archive_for_days,needs_review,assignee,assignee.active,task_assignment_type,task_management_user,task_management_user.active,task_management_group,user,user_group,sys_created_on'),
+
+  /* Group 9 (Data Manager and attestation). WHAT THIS INSTANCE ACTUALLY RUNS:
+     the modern Data Manager tables are `cmdb_data_management_*` (NOT
+     `cmdb_data_manager_*`, which does not exist), and dev424910 holds 3 policies
+     with ZERO executions. Attestation here is the LEGACY Certification module —
+     `dcf_*` is not installed, but cert_audit (10 definitions), cert_audit_result
+     (613 results: 561 Failed, 52 Certified) and cert_follow_on_task (544 open,
+     97 past 60 days) are live. Both mechanisms are read, because an estate may
+     run either, both or neither, and "not configured" and "not installed" are
+     different findings. */
+  /* Group 14 (CMDB-138): the tasks a Data Manager attestation cycle raises. Empty
+     on dev424910 — the policies there have never run (CMDB-092). */
+  cmdb_data_management_task: spec('data_manager_tasks', 'number,state,active,opened_at,due_date,closed_at,policy_id,assigned_to,sys_created_on'),
+  cert_audit: spec('attestation_configs', 'name,active,audit_type,table,filter,template,assign_to,assign_to.active,assign_to.name,assign_to_group,assign_to_group.name,assignment_type,create_tasks,last_run_date,next_scheduled_run,run_type,run_period,short_description,sys_created_on'),
+  cert_audit_result: spec('attestation_results', 'audit,state,configuration_item,column_name,desired_value,discrepancy_value,failed_condition,follow_on_task,certification_template,table,sys_created_on'),
+  cert_filter: spec('attestation_filters', 'name,table,filter_condition,active,short_description'),
+  cert_follow_on_task: spec('attestation_tasks', 'number,active,state,cmdb_ci,assigned_to,assigned_to.active,assignment_group,due_date,opened_at,short_description,sys_created_on'),
+  /* Platform archival. There is no `cmdb_archive_rule` on this version: archive
+     and destroy rules live on sys_archive / sys_archive_destroy and name their
+     table, so a retention policy for a CMDB class is found by its `table`. */
+  sys_archive: spec('archive_rules', 'name,table,active,condition,last_run_date,next_run_date,record_estimate,total'),
+  sys_archive_destroy: spec('destroy_rules', 'name,table,active,archive_duration,condition'),
+  /* Group membership, for resolving an attester to somebody who can answer. */
+  sys_user_grmember: spec('group_members', 'group,user,user.active'),
   cmdb_policy_scheduled_job: spec('data_manager_jobs', 'name,active,run_type,run_period'),
   /* Group 2 (Completeness) and CMDB-140 (identity attributes). */
   cmn_location: spec('locations', 'name,parent'),
@@ -138,8 +173,13 @@ export const TABLES = Object.freeze({
   life_cycle_control: spec('lifecycle_controls', 'table,life_cycle_stage,life_cycle_stage_status,display_name,active'),
   cmdb_reconciliation_definition: spec('reconciliation_rules', 'name,applies_to,discovery_source,attributes,priority,active'),
   cmdb_datasource_attribute_value: spec('source_attribute_values', 'ci,class,attribute,value,discovery_source,updated_on'),
+  /* Group 6 (Relationships). cmdb_rel_type carries descriptors only on this
+     version — no permitted class scope — which is why CMDB-064 takes its scope
+     from the hosting metadata and reports the rest as unscoped. */
+  cmdb_rel_type: spec('relationship_types', 'name,parent_descriptor,child_descriptor'),
+
   /* Group 5 (Identification and reconciliation). Verified present on dev424910,
-     19 Sep 2026: this version keeps NO `cmdb_ire_error` table — per-run counters
+     16 Sep 2026: this version keeps NO `cmdb_ire_error` table — per-run counters
      live in cmdb_ire_output_aggregate_stats, and per-CI source attribution (the
      only trace of IRE having run) in sys_object_source. */
   sys_object_source: spec('ci_source_attribution', 'name,source_feed,target_table,target_sys_id,last_scan,id,sys_created_on'),
@@ -148,6 +188,41 @@ export const TABLES = Object.freeze({
   cmdb_datasource_staleness: spec('source_staleness', 'name,applies_to,discovery_source,duration,active'),
   cmdb_ire_output_aggregate_stats: spec('ire_run_stats', 'run_id,run_table,errors,warnings,inserted,updated,unchanged,partial,incomplete,distinct_error_codes,distinct_warning_codes,expected_target_table,sys_created_on'),
   cmdb_metadata_hosting: spec('hosting_metadata', 'parent_type,child_type,rel_type,is_reverse'),
+
+  /* Group 7 (Freshness and source coverage). `discovery_schedule` DOES NOT EXIST
+     on dev424910 — a PDI without the Discovery product answers `400 Invalid
+     table`, which `classifyFailure` reports as `unavailable` rather than as a
+     failed read, so asking for it costs nothing and the answer is the finding:
+     CMDB-070 reports "no discovery capability" as posture instead of gating the
+     composite on a product the estate has not bought. */
+  discovery_schedule: spec('discovery_schedules', 'name,active,discover,run_type,run_period,run_time,run_dayofweek,run_start,max_run_time,location,mid_server'),
+  discovery_device_history: spec('discovery_runs', 'cmdb_ci,source,issue,state,status,started,completed,last_updated,sys_created_on'),
+  discovery_range_item: spec('discovery_ranges', 'name,type,network_ip,netmask,start_ip_address,end_ip_address,summary,active,parent'),
+  /* Group 13 (Scale and platform impact). `sys_table_rotation` is 40 rows and is
+     read normally; `syslog_transaction` is 292,530 rows on dev424910 and is
+     OPT-IN, because a rule about scale must not itself become the scale problem. */
+  sys_table_rotation: spec('rotation_rules', 'name,table_name,duration,rotations'),
+  syslog_transaction: spec('transactions', 'url,table,response_time,sql_time,sql_count,sys_created_on,sys_created_by', false, {
+    filter: () => 'tableSTARTSWITHcmdb',
+    filterLabel: 'transactions against CMDB tables',
+    optIn: true,
+  }),
+
+  /* OPT-IN ONLY — see `optIn` on `spec`. CMDB-077 wants it; scan reuse pays for it. */
+  sys_audit: spec('ci_audit', 'tablename,documentkey,fieldname,oldvalue,newvalue,user,sys_created_on', false, {
+    filter: () => 'tablenameSTARTSWITHcmdb_ci',
+    filterLabel: 'audit entries on CMDB tables',
+    optIn: true,
+  }),
+
+  /* Group 8 (Lifecycle and retirement). The asset register is the OTHER opinion
+     about the same physical thing, and D8 exists to find where the two disagree.
+     Verified on dev424910: the link is `alm_asset.ci` (941 rows set) with
+     `cmdb_ci.asset` pointing back (951), and the two install_status choice lists
+     do NOT share values — 7 is Retired on both, but 10 is Consumed on the asset
+     and Absent is 100 on the CI, which is why the mapping is read from
+     sys_choice LABELS and never from the numbers. */
+  alm_asset: spec('assets', 'display_name,ci,install_status,substatus,retired,retirement_date,life_cycle_stage,life_cycle_stage_status,model_category,serial_number,sys_created_on'),
   cmdb_metadata_containment: spec('containment_metadata', 'ci_type,parent_id,rel_type,always_include,is_reverse'),
 
   /* Group 4 (Uniqueness). The CMDB de-duplication tasks, and the CIs each one
@@ -160,8 +235,11 @@ export const TABLES = Object.freeze({
   }),
 });
 
-/** The tables a run reads unless the caller narrows it. Required ones are never droppable. */
-export const DEFAULT_TABLES = Object.freeze(Object.keys(TABLES));
+/** The tables a run reads unless the caller narrows it. Opt-in tables are not among them. */
+export const DEFAULT_TABLES = Object.freeze(Object.entries(TABLES).filter(([, s]) => !s.optIn).map(([name]) => name));
+
+/** Tables that exist in the allow-list but are only read when asked for by name. */
+export const OPT_IN_TABLES = Object.freeze(Object.entries(TABLES).filter(([, s]) => s.optIn).map(([name]) => name));
 
 export const REQUIRED_TABLES = Object.freeze(
   Object.entries(TABLES).filter(([, s]) => s.required).map(([name]) => name),

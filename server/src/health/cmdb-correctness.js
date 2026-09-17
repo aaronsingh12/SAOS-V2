@@ -1,7 +1,7 @@
 import { isIP } from 'node:net';
-import { modifiersFor, lineageOf, dqActive, DQ_INACTIVE_INSTALL_STATUS } from './cmdb-signals.js';
+import { modifiersFor, lineageOf, dqActive, cisForRule, intentOf, DQ_INACTIVE_INSTALL_STATUS } from './cmdb-signals.js';
 import { isPlaceholder, COMPLETENESS_DEFAULTS } from './cmdb-completeness.js';
-import { parseDate } from './rules.js';
+import { parseDate } from './time.js';
 
 /**
  * GROUP 3 — CORRECTNESS AND VALIDITY (D2). CMDB-023 to CMDB-032.
@@ -14,7 +14,7 @@ import { parseDate } from './rules.js';
  *     value onto a lifecycle STAGE (with class-specific rows). A pair is
  *     contradictory when one value maps to a RUNNING stage and the other to a
  *     NOT-RUNNING one — "In Stock" (Inventory) with "Operational", for example.
- *     Two different stages are not enough (decision 3 of 18 Sep): Installed +
+ *     Two different stages are not enough (decision 3 of 16 Sep 2026): Installed +
  *     Non-Operational maps to Operational + Design on the OOB mapping, and is
  *     the valid "installed but down" state. The exemption falls out of the stage
  *     sets; no pair is hardcoded.
@@ -36,7 +36,7 @@ export const CORRECTNESS_DEFAULTS = Object.freeze({
     'Virtualized by::Virtualizes', 'Provided By::Provides', 'Cluster of::Cluster']),
   liveStages: Object.freeze(['Operational']),
   deadStages: Object.freeze(['End of Life', 'Missing']),
-  /* CMDB-023 needs no stage list at all — see the derivation below (19 Sep). */
+  /* CMDB-023 needs no stage list at all — see the derivation below (16 Sep 2026). */
   dqInactiveInstallStatus: DQ_INACTIVE_INSTALL_STATUS,
   sourceLagHours: 24,                   // CMDB-025
   churnChanges: 3,                      // CMDB-026: more than this many
@@ -81,7 +81,12 @@ export function cmdbCorrectnessRules(ctx, options = {}) {
   const skip = (rule, table, reason) => ctx.skipped.push({ rule, table, reason });
   const readOk = (key) => meta.reads?.[key]?.status === 'ok';
   const readWhy = (key) => meta.reads?.[key]?.error || 'not read';
-  const { active: cis, excluded: inactiveCis } = dqActive(ctx.estate.cmdb_ci || [], opt.dqInactiveInstallStatus);
+  const allCis = ctx.estate.cmdb_ci || [];
+  const { active: cis, excluded: inactiveCis } = dqActive(allCis, opt.dqInactiveInstallStatus);
+  /* Decision 5 of 16 Sep 2026: each rule takes the set its INTENT says. CMDB-023
+     through 026 are contradiction rules — a retired CI reported Operational is
+     precisely what they are for. */
+  const cisFor = (rule) => cisForRule(rule, { all: allCis, active: cis });
   /*
    * EVERY CI, including the retired ones. The data-quality slice decides which
    * records are JUDGED; a rule like CMDB-024 ("a live CI depends on a dead one")
@@ -128,7 +133,7 @@ export function cmdbCorrectnessRules(ctx, options = {}) {
   };
 
   /**
-   * WHICH STAGES THE TWO STATUS FIELDS CAN BOTH REACH, per class (19 Sep).
+   * WHICH STAGES THE TWO STATUS FIELDS CAN BOTH REACH, per class (16 Sep 2026).
    *
    * No stage list is written down anywhere. The instance's own
    * `life_cycle_mapping` says which stage each legacy value of each field means;
@@ -172,7 +177,7 @@ export function cmdbCorrectnessRules(ctx, options = {}) {
     let unmapped = 0;
     let oneSided = 0;
     let noShared = 0;
-    for (const c of cis) {
+    for (const c of cisFor('CMDB-023')) {
       if (empty(c.install_status) || empty(c.operational_status)) continue;
       const a = stageOf(c.sys_class_name, 'install_status', c.install_status);
       const b = stageOf(c.sys_class_name, 'operational_status', c.operational_status);
@@ -191,7 +196,7 @@ export function cmdbCorrectnessRules(ctx, options = {}) {
   }
 
   if (inactiveCis.length) {
-    skip('CMDB-023', 'cmdb_ci', `${inactiveCis.length} retired, stolen or absent CI(s) are outside the data-quality dimensions and were not judged for correctness — the lifecycle dimension (CMDB-085/087) evaluates those statuses`);
+    skip('CMDB-030', 'cmdb_ci', `${inactiveCis.length} retired, stolen or absent CI(s) are outside the QUALITY rules of this dimension (${intentOf('CMDB-030')}) — the contradiction rules here (CMDB-023 to 026) did judge them, and the lifecycle dimension owns the statuses themselves`);
   }
 
   /* ── CMDB-024 — a live CI depending on a dead one ─────────────────────── */
@@ -352,7 +357,7 @@ export function cmdbCorrectnessRules(ctx, options = {}) {
   }
 
   /* ── CMDB-030 — format validation ─────────────────────────────────────── *
-   * A CONSERVATIVE SUBSET, confirmed 18 Sep: serials are checked for impossible
+   * A CONSERVATIVE SUBSET, confirmed 16 Sep 2026: serials are checked for impossible
    * characters and length only. It under-detects — "ABC" passes for a vendor
    * whose serials are 10 digits — until a manufacturer pattern library is built
    * from the estate's own dominant serial formats. Said on every run. */

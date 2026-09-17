@@ -56,7 +56,7 @@ test('every table spec carries sys_id and sys_updated_on — identity and stalen
 
 /* ── Coverage gating: the property that stops invented findings ─────────── */
 
-test('the unrelated-CI rule does NOT run when relationship coverage is incomplete', () => {
+test('the orphan rule does NOT run when relationship coverage is incomplete', () => {
   /*
    * THE DEFECT THIS PREVENTS. An ACL that hides half of cmdb_rel_ci makes every
    * CI look orphaned. "We could not read the table" must never render as "your
@@ -67,10 +67,13 @@ test('the unrelated-CI rule does NOT run when relationship coverage is incomplet
   const rules = new EstateRules(estate, coverage, 90, NOW);
   const findings = rules.analyze();
 
-  assert.equal(findings.filter((f) => f.rule_id === 'CMDB-UNRELATED').length, 0);
-  const skip = rules.skipped.find((s) => s.rule === 'CMDB-UNRELATED');
+  /* Group 6 (16 Sep 2026) replaced CMDB-UNRELATED with CMDB-058; the property is the
+     same one, and it is now the whole group that refuses to run. */
+  assert.equal(findings.filter((f) => ['CMDB-058', 'CMDB-UNRELATED'].includes(f.rule_id)).length, 0);
+  const skip = rules.skipped.find((s) => s.rule === 'CMDB-058');
   assert.ok(skip, 'the skipped rule was not recorded');
-  assert.match(skip.reason, /incomplete/i);
+  assert.match(skip.reason, /not read completely/i);
+  assert.match(rules.skipped.find((s) => s.rule === 'CMDB-UNRELATED').reason, /Subsumed by CMDB-058/);
 });
 
 test('the same estate WITH complete relationship coverage does produce the finding', () => {
@@ -78,7 +81,14 @@ test('the same estate WITH complete relationship coverage does produce the findi
   const estate = { cmdb_ci: [ci('a')], cmdb_rel_ci: [] };
   const coverage = { cmdb_ci: COMPLETE('cmdb_ci', 1), cmdb_rel_ci: COMPLETE('cmdb_rel_ci', 0) };
   const findings = new EstateRules(estate, coverage, 90, NOW).analyze();
-  assert.equal(findings.filter((f) => f.rule_id === 'CMDB-UNRELATED').length, 1);
+  /* Nothing in the class is related, so it is ONE finding about an unmodelled
+     class rather than one per CI (decision of 16 Sep 2026). */
+  const orphan = findings.find((f) => f.rule_id === 'CMDB-058');
+  assert.ok(orphan, 'the orphan rule stayed silent on a complete read');
+  assert.deepEqual(orphan.grouped_classes.map((x) => x.cls), ['cmdb_ci_server']);
+  assert.match(orphan.unscored_reason, /names classes, not records/);
+  assert.equal(findings.filter((f) => f.rule_id === 'CMDB-UNRELATED').length, 0,
+    'the rule CMDB-058 replaced still ran beside it');
 });
 
 test('a table that was never extracted yields no rows and a recorded reason', () => {
@@ -121,7 +131,7 @@ test('placeholder serials are not treated as shared identities', () => {
   assert.deepEqual(dupes[0].target_ids.sort(), ['d', 'e']);
 });
 
-test('a self-referencing relationship is HIGH, and a duplicated edge is reported once', () => {
+test('a self-referencing relationship and a duplicated edge are caught by the catalogue rules', () => {
   const estate = {
     cmdb_ci: [ci('a'), ci('b')],
     cmdb_rel_ci: [
@@ -133,11 +143,20 @@ test('a self-referencing relationship is HIGH, and a duplicated edge is reported
   const coverage = { cmdb_ci: COMPLETE('cmdb_ci', 2), cmdb_rel_ci: COMPLETE('cmdb_rel_ci', 3) };
   const findings = new EstateRules(estate, coverage, 90, NOW).analyze();
 
-  const self = findings.find((f) => f.rule_id === 'REL-SELF');
+  /* CMDB-062 and CMDB-069 replaced REL-SELF and REL-DUPLICATE on 16 Sep 2026: same
+     two defects, now scored in D6 with the catalogue's severity and guards. */
+  const self = findings.find((f) => f.rule_id === 'CMDB-062');
+  assert.ok(self, 'the self-referencing edge was not reported');
+  assert.deepEqual(self.target_ids, ['a']);
+  /* Base Critical; the materiality floor lowers where it is REPORTED, never what
+     it is charged (decision of 16 Sep 2026). */
+  assert.equal(self.base_severity, 'CRITICAL');
+  assert.equal(self.deduction_severity, 'CRITICAL');
   assert.equal(self.severity, 'HIGH');
-  const dup = findings.filter((f) => f.rule_id === 'REL-DUPLICATE');
+  const dup = findings.filter((f) => f.rule_id === 'CMDB-069');
   assert.equal(dup.length, 1);
-  assert.deepEqual(dup[0].target_ids.sort(), ['r2', 'r3']);
+  assert.deepEqual(dup[0].target_ids.sort(), ['a', 'b']);
+  assert.match(dup[0].description, /2 identical/);
 });
 
 test('an inactive user holding admin outranks one holding an ordinary role', () => {
@@ -449,6 +468,7 @@ function keysetDouble({ rows, count = rows.length, hidden = new Set(), mutate = 
 const relRow = (i) => ({
   sys_id: `r${String(i).padStart(5, '0')}`, sys_updated_on: '2026-09-01 00:00:00',
   parent: 'p', child: 'c', type: 't', 'type.name': 'n',
+  sys_created_by: 'admin', sys_created_on: '2026-09-01 00:00:00',
 });
 
 test('reading fewer rows than the platform counts is limited, not complete', async () => {

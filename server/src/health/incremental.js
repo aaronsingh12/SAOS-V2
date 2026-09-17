@@ -227,7 +227,21 @@ export async function planScan({
   }
 
   /* 2. One stamp per input table of every candidate, taken once even when shared. */
-  const inputsOf = (m) => [...new Set([...(baselines[m].dependencies || []), ...moduleTables([m])])].filter((t) => TABLES[t]);
+  /*
+   * AN OPT-IN TABLE NOBODY READ IS NOT AN INPUT.
+   *
+   * The dependency tracker records every table a rule TOUCHED, and the rules do
+   * touch `ctx.estate.sys_audit` — they have to, to discover it is absent and
+   * say so. But `sys_audit` is opt-in: unless a caller named it, it was never
+   * read, so it cannot have contributed to the result and cannot invalidate it.
+   * Without this, every CMDB scan would find an input with no stamp, conclude it
+   * must re-read, and no module would ever be reusable again — the exact
+   * optimisation the planner exists for, undone by a table that was deliberately
+   * skipped. An opt-in table that HAS a stamp was genuinely read, and is checked
+   * like any other.
+   */
+  const inputsOf = (m) => [...new Set([...(baselines[m].dependencies || []), ...moduleTables([m])])]
+    .filter((t) => TABLES[t] && (!TABLES[t].optIn || baselines[m].stamps?.[t]));
   const tables = [...new Set(candidates.flatMap(inputsOf))].sort();
   const logged = tables.length ? await deletionLoggedTables(client, tables) : null;
   stopped();
