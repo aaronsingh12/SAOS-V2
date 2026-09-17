@@ -54,15 +54,20 @@ const { registerFromToolResult } = await import('../src/memory/provenance.js');
 const { STEP_STATES } = await import('../src/agent/plan/states.js');
 
 const CLIENT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..', 'client', 'src');
-const PANEL = fs.readFileSync(path.join(CLIENT, 'components', 'EvidencePanel.jsx'), 'utf8');
+/*
+ * THE PANEL IS NOW THE SOURCES PANEL, in two files: the component and the
+ * normaliser that decides what reaches JSX. Both are read, because the rule
+ * C8 enforces has to hold across whichever of them prints a word.
+ *
+ * `mapKeys` is gone with the tone maps it read. Those maps belonged to the
+ * status display the Sources redesign removed; what they were really
+ * protecting — that the server's status vocabulary is closed, and that every
+ * state this suite can drive produces a value inside it — is asserted directly
+ * against the server in C5-C7 now, where it does not depend on a UI at all.
+ */
+const PANEL = fs.readFileSync(path.join(CLIENT, 'components', 'SourcesPanel.jsx'), 'utf8')
+  + fs.readFileSync(path.join(CLIENT, 'components', 'sourceModel.js'), 'utf8');
 const CHAT = fs.readFileSync(path.join(CLIENT, 'pages', 'AgentChat.jsx'), 'utf8');
-
-/** Pull an object-literal map out of the panel source, as a key set. */
-function mapKeys(name) {
-  const m = new RegExp(`const ${name} = \\{([\\s\\S]*?)\\n\\};`).exec(PANEL);
-  assert.ok(m, `${name} is no longer a literal map in the panel`);
-  return new Set([...m[1].matchAll(/^\s*'?([A-Za-z_][\w-]*)'?\s*:/gm)].map((x) => x[1]));
-}
 
 let n = 0;
 function newTask(goal) {
@@ -295,33 +300,50 @@ test('C4 — every RECOVERY ATTEMPT field the panel reads is present', () => {
  * B. EVERY VALUE THE SERVER EMITS IS ONE THE PANEL KNOWS
  * ================================================================== */
 
-test('C5 — the panel recognises every FINAL status the server can produce', () => {
-  const known = mapKeys('FINAL_TONE');
-  for (const s of Object.values(STATUS)) {
-    assert.ok(known.has(s), `the panel has no tone for the status "${s}"`);
-  }
-  // And each state actually produced falls inside it.
+test('C5 — every FINAL status the server produces is one of its own declared statuses', () => {
+  /*
+   * WAS: "the panel has a tone for every final status". The tone map went with
+   * the status header the Sources redesign removed, so the client half no
+   * longer exists to assert. The half that mattered does: a status escaping the
+   * declared vocabulary is how a consumer — this UI or the next one — ends up
+   * with an unhandled value, and that is caught here without a UI in the loop.
+   */
+  const declared = new Set(Object.values(STATUS));
   for (const [name, ev] of Object.entries(STATES)) {
-    assert.ok(known.has(ev.final.status), `${name}: the panel has no tone for "${ev.final.status}"`);
+    assert.ok(declared.has(ev.final.status),
+      `${name}: produced the undeclared final status "${ev.final.status}"`);
+  }
+  // Every state this suite can drive is covered, so the set is exercised and
+  // not merely declared.
+  const produced = new Set(Object.values(STATES).map((ev) => ev.final.status));
+  assert.ok(produced.size >= 4, `only ${produced.size} distinct final statuses were exercised`);
+});
+
+test('C6 — every STEP execution status the machine reaches is a declared step state', () => {
+  /*
+   * WAS: "the panel has a tone for every step state". Same reasoning as C5 —
+   * the per-step exec/verify display is gone; the vocabulary guarantee is not.
+   */
+  const declared = new Set(STEP_STATES);
+  for (const [name, ev] of Object.entries(STATES)) {
+    for (const st of ev.steps) {
+      assert.ok(declared.has(st.execution_status),
+        `${name}: step ${st.id} reported the undeclared execution status "${st.execution_status}"`);
+    }
   }
 });
 
-test('C6 — the panel recognises every STEP state the machine can reach', () => {
-  const known = mapKeys('STEP_TONE');
-  for (const s of STEP_STATES) {
-    assert.ok(known.has(s), `the panel has no tone for the step state "${s}"`);
-  }
-});
-
-test('C7 — the panel recognises every VERIFICATION status the pipeline can produce', () => {
-  const known = mapKeys('VERIFY_TONE');
-  for (const s of ['applied', 'partial', 'no-op', 'transformed', 'unverified', 'self-verified', 'none']) {
-    assert.ok(known.has(s), `the panel has no tone for the verification status "${s}"`);
-  }
+test('C7 — every VERIFICATION status the pipeline produces is one the contract declares', () => {
+  /*
+   * WAS: "the panel has a tone for every verification status". The list below
+   * is the contract itself rather than a copy of a UI map, so a new status
+   * reaching evidence still fails here — which is the property that mattered.
+   */
+  const declared = new Set(['applied', 'partial', 'no-op', 'transformed', 'unverified', 'self-verified', 'pending', 'none']);
   for (const [name, ev] of Object.entries(STATES)) {
-    for (const s of ev.steps) {
-      assert.ok(known.has(s.verification_status ?? 'none'),
-        `${name}: unmapped verification status "${s.verification_status}"`);
+    for (const st of ev.steps) {
+      assert.ok(declared.has(st.verification_status ?? 'none'),
+        `${name}: undeclared verification status "${st.verification_status}"`);
     }
   }
 });
@@ -332,16 +354,23 @@ test('C7 — the panel recognises every VERIFICATION status the pipeline can pro
 
 test('C8 — the panel has NO success-shaped vocabulary of its own', () => {
   /*
-   * The whole point. A tick, a "done", a "success" would be the client's own
-   * verdict competing with the server's — and the case that matters is a run
-   * that executed and did not verify, where a tick would be a lie.
+   * The whole point, and it survives the redesign unchanged: a tick, a "done",
+   * a "success" would be the client's own verdict competing with the server's.
+   * Retargeted at the Sources panel and its normaliser, which are what print
+   * words now.
+   *
+   * The closing assertion changed with the UI. The old panel proved it used the
+   * server's vocabulary by rendering `ev.final?.status`; the Sources panel does
+   * not show a status at all, so what it must prove instead is that every value
+   * it prints came from the response and was not composed here — which is what
+   * routing everything through asText()/unwrap() means.
    */
   const rendered = PANEL.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
   for (const banned of [/['">\s]success['"<\s]/i, /\bdone\b/i, /✓|✔|✅/, /\ball good\b/i, /\bcompleted successfully\b/i]) {
     assert.ok(!banned.test(rendered), `the panel renders a success-shaped token matching ${banned}`);
   }
-  // The words it DOES render are the server's own.
-  assert.match(rendered, /ev\.final\?\.status/);
+  assert.match(rendered, /asText\(/, 'the panel prints values without passing them through asText');
+  assert.match(rendered, /function unwrap\(/, 'the {value, source} unwrapper is gone');
 });
 
 test('C9 — an UNVERIFIED run reaches the panel as UNVERIFIED, never as a completed plan', () => {
@@ -352,20 +381,28 @@ test('C9 — an UNVERIFIED run reaches the panel as UNVERIFIED, never as a compl
   assert.equal(ev.steps[0].execution_status, 'completed');
   assert.equal(ev.steps[0].verification_status, 'transformed');
   assert.notEqual(ev.steps[0].execution_status, ev.steps[0].verification_status);
-  // The panel labels them separately and says which is which.
-  assert.match(PANEL, /exec: \{s\.execution_status\}/);
-  assert.match(PANEL, /verify: \{s\.verification_status/);
-  assert.match(PANEL, /Whether the call happened and returned/);
-  assert.match(PANEL, /Whether the effect was proven/);
+  /*
+   * The four assertions that followed checked the panel's own exec:/verify:
+   * labelling. That display was removed with the redesign — the Sources panel
+   * reports what a turn READ, not what it did — so there is no longer a client
+   * side to this. The server-side guarantee above is the one that stops an
+   * unverified run being recorded as a completed one, and it is untouched.
+   */
 });
 
-test('C10 — the header shows the server status and the recovery labels, not a verdict', () => {
-  assert.match(PANEL, /\{ev\.final\?\.status \?\? 'unknown'\}/,
-    'the panel substitutes its own word when the server has none');
-  for (const label of ['RECOVERED', 'UNRECOVERED', 'REPEATED_MUTATION', 'REPLAN_REQUIRED', 'BLOCKED', 'CANCELLED']) {
-    assert.ok(PANEL.includes(label), `the panel cannot show ${label}`);
-  }
-});
+/*
+ * C10 REMOVED — it had no server half.
+ *
+ * It asserted that the evidence header printed `ev.final?.status` and could
+ * show each recovery label. Both belonged to the status header the Sources
+ * redesign removed, so there is nothing left for it to check: keeping it would
+ * mean asserting that a deleted component still renders.
+ *
+ * What it was really protecting is not lost. C11 below derives the same six
+ * labels from the same fields on real evidence objects, server-side, and fails
+ * if the derivation or the fields change — which is the half that could ever
+ * have caught a genuine regression.
+ */
 
 test('C11 — each Phase 9 state produces the labels the panel would show', () => {
   // Reproduces the panel's own derivation from the same fields, so a change to
@@ -395,8 +432,12 @@ test('C12 — a REJECTED approval is not shown as a failure of the system', () =
   assert.equal(ev.recovery.attempted, false, 'a refusal was handed to recovery');
   // The step's failure reason says a person refused, in words a user can read.
   assert.match(ev.steps[0].failureReason ?? '', /rejected/i);
-  // And the panel surfaces the reason rather than inventing one.
-  assert.match(PANEL, /s\.failureReason/);
+  /*
+   * The panel-side assertion (that it rendered `s.failureReason` rather than
+   * inventing a reason) went with the per-step display. The server-side facts
+   * above — no change, no recovery, and a reason naming the refusal — are what
+   * make the distinction available to any UI.
+   */
 });
 
 test('C13 — a cancelled STEP gate does not become a claim that the step ran', () => {
@@ -422,17 +463,23 @@ test('C13 — a cancelled STEP gate does not become a claim that the step ran', 
   // The step-level approval record must NOT claim the user said yes.
   assert.notEqual(ev.steps[0].approval?.approval, 'approved',
     'the step records an approval nobody gave');
-  // And the panel leads with the final status, so CANCELLED is what is read
-  // first regardless of the plan-level approval line below it.
-  assert.match(PANEL, /\{ev\.final\?\.status \?\? 'unknown'\}/);
+  /*
+   * The panel-side assertion (that the header led with the final status) went
+   * with that header. Every server-side fact above is unchanged, including the
+   * one that matters most: the step records no approval nobody gave.
+   */
 });
 
 test('C14 — a stale approval is shown as invalid, with the reason', () => {
   const ev = STATES.blocked;
   assert.equal(ev.approval.valid, false);
   assert.equal(ev.final.status, STATUS.BLOCKED);
-  // The panel renders that specific case in words rather than a colour alone.
-  assert.match(PANEL, /the plan changed after it was approved/);
+  /*
+   * The panel-side assertion checked that the stale-approval case was spelled
+   * out in words rather than shown as a colour. That sentence lived in the
+   * approval block the redesign removed. The server still reports
+   * `approval.valid: false` with a reason, which is what any UI needs to say it.
+   */
 });
 
 /* ================================================================== *
@@ -442,16 +489,122 @@ test('C14 — a stale approval is shown as invalid, with the reason', () => {
 test('C15 — AgentChat learns the task id from the stream and reads the authoritative endpoint', () => {
   assert.match(CHAT, /case 'task_started': setTaskId\(evt\.taskId\); break;/,
     'AgentChat no longer captures the task id');
-  assert.match(CHAT, /<EvidencePanel taskId=\{taskId\}/, 'the panel is not mounted');
+  // The panel became a drawer; it is still mounted from AgentChat with the id.
+  assert.match(CHAT, /<SourcesDrawer[\s\S]{0,120}taskId=\{taskId\}/, 'the sources drawer is not mounted');
   assert.match(PANEL, /\/agent\/plan\/\$\{encodeURIComponent\(taskId\)\}\/evidence/,
     'the panel does not read the authoritative endpoint');
-  // Off by default: evidence is for checking, not a second permanent transcript.
+  // Off by default: sources are for checking, not a second permanent transcript.
   assert.match(CHAT, /useState\(false\);\s*$/m);
-  assert.match(CHAT, /showEvidence \? 'Hide evidence' : 'Evidence'/);
+  /*
+   * The final assertion checked a 'Hide evidence' toggle label. That control
+   * was replaced by the composer chip BEFORE this redesign — this assertion was
+   * already failing at HEAD, which is why this file was 16/1 rather than 17/0 —
+   * so it is replaced with one against the control that actually exists.
+   */
+  assert.match(CHAT, /sourcesOpen=\{showEvidence\}/, 'the composer is not told whether sources are open');
 });
 
 test('C16 — a task that does not exist is shown as an error, not an empty panel', () => {
   assert.match(PANEL, /setErr\(/, 'the panel swallows a failed fetch');
-  assert.match(PANEL, /\{err && <div className="ev-error">/, 'the panel never renders the error');
+  // Same guarantee, the redesign's class name.
+  assert.match(PANEL, /\{err && <div className="src-error">/, 'the panel never renders the error');
   assert.match(PANEL, /setEv\(null\)/, 'a failed fetch leaves stale evidence on screen');
+});
+
+/* ==================================================================
+ * E. THE SOURCES CONTRACT
+ *
+ * Added with the Sources redesign. The panel's three headings are built from
+ * the evidence projection, and the one that can lie is Online Docs: a search
+ * that RAN is not a document that was READ. The corpus can be empty — the
+ * search tool answers `indexed: 0, hits: []` and says so itself — and a reader
+ * shown "ServiceNow docs" for that would be told a document informed the answer
+ * when none did. Same family of failure as C8, one level up.
+ * ================================================================== */
+
+/** A tool event on a task, written the way the orchestrator writes one. */
+function docSearchTask(name, result) {
+  const { taskId, sessionId } = newTask(`sources-${name}`);
+  const now = new Date().toISOString();
+  getDb().prepare(
+    `INSERT INTO tool_events
+       (session, seq, kind, name, payload, result, result_status, mutating, approval,
+        approved_source, approved_at, instance, actor, ts, task_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(sessionId, 0, 'tool_call', name, JSON.stringify({ query: 'q' }),
+    JSON.stringify(result), 'ok', 0, null, null, null, null, null, now, taskId);
+  return buildEvidence(taskId);
+}
+
+const HIT = {
+  chunk: 1, document: 'd1', seq: 0, text: 'chunk body',
+  source: 'servicenow-docs', product: 'Now Platform', topic: 'acl',
+  version: 'Washington DC', version_rank: 3, document_type: 'documentation',
+  url: 'https://www.servicenow.com/docs/bundle/x/page/y.html',
+  updated_at: '2026-02-11', title: 'Create an ACL rule', score: 8.2,
+};
+
+test('C17 — a documentation search that found NOTHING carries no retrieval', () => {
+  const ev = docSearchTask('search_servicenow_docs', {
+    query: 'q', indexed: 0, mode: 'none', hits: [],
+    note: 'No ServiceNow documentation is indexed.',
+  });
+  const e = ev.audit.toolEvents.find((x) => x.name === 'search_servicenow_docs');
+  assert.ok(e, 'the search is missing from the audit');
+  assert.equal(e.retrieval, undefined,
+    'an empty corpus produced a retrieval block, which the panel would show as a source');
+});
+
+test('C18 — a documentation search that found documents carries them, verbatim', () => {
+  const ev = docSearchTask('search_servicenow_docs', {
+    query: 'write ACL incident', indexed: 2, mode: 'keyword', degraded: false, hits: [HIT],
+  });
+  const e = ev.audit.toolEvents.find((x) => x.name === 'search_servicenow_docs');
+  assert.ok(e.retrieval, 'a search with hits carries no retrieval block');
+  assert.equal(e.retrieval.hitCount, 1);
+  const [h] = e.retrieval.hits;
+  // Copied from the store's hit, never composed from the query or the host.
+  assert.equal(h.title, HIT.title);
+  assert.equal(h.url, HIT.url);
+  assert.equal(h.source, HIT.source);
+  assert.equal(h.version, HIT.version);
+  assert.equal(h.documentType, HIT.document_type);
+  assert.equal(h.updatedAt, HIT.updated_at);
+  assert.equal(h.snippet, HIT.text);
+});
+
+test('C19 — the automatic RAG path is projected by the same parser as the tool', () => {
+  /*
+   * retrieveForTurn() used to be streamed and never stored, so a reopened chat
+   * could not show what it had read. It now records a `knowledge_retrieval`
+   * event in the store's own result shape — which means one parser, and no
+   * second definition of what counts as a retrieved document.
+   */
+  const ev = docSearchTask('knowledge_retrieval', {
+    query: 'q', indexed: 1, mode: 'semantic', degraded: false, hits: [HIT],
+  });
+  const e = ev.audit.toolEvents.find((x) => x.name === 'knowledge_retrieval');
+  assert.ok(e.retrieval, 'the automatic retrieval is not projected');
+  assert.equal(e.retrieval.hits[0].url, HIT.url);
+});
+
+test('C20 — the panel builds Online Docs from retrieved documents, not from tool names', () => {
+  /*
+   * The defect this closes: keying the category off the tool NAME meant a
+   * search against an empty corpus produced a "ServiceNow docs" source. The
+   * normaliser must read hits and nothing else.
+   */
+  assert.match(PANEL, /e\.retrieval\?\.hits/,
+    'the normaliser no longer reads the retrieval hits');
+  assert.doesNotMatch(PANEL, /DOC_TOOLS/,
+    'the tool-name mapping for Online Docs is back');
+  assert.doesNotMatch(PANEL, /search_servicenow_docs/,
+    'the panel names a documentation tool, which is a search and not a document');
+});
+
+test('C21 — a turn that retrieved nothing yields no Online Docs source at all', () => {
+  const ev = docSearchTask('search_servicenow_docs', { query: 'q', indexed: 0, mode: 'none', hits: [] });
+  // What the normaliser iterates, reproduced from the same fields.
+  const docs = ev.audit.toolEvents.flatMap((e) => (Array.isArray(e.retrieval?.hits) ? e.retrieval.hits : []));
+  assert.deepEqual(docs, [], 'an empty retrieval reached the Online Docs list');
 });

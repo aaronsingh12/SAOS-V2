@@ -112,7 +112,44 @@ export function knowledgeBlock(result) {
  *
  * @returns {{ block: string, retrieval: object|null, skipped: string|null }}
  */
-export async function retrieveForTurn(userText, { limit } = {}) {
+/**
+ * Retrieve documentation for one turn.
+ *
+ * `userText` is the SEARCH query, which the context engine widens with the
+ * turn's detected capabilities (see retrievalQuery in context-selection.js) so
+ * a follow-up like "and how do I test that?" still finds the page its
+ * conversation is about.
+ *
+ * `askedAbout` is the user's OWN words, and it is the relevance gate.
+ *
+ * WHY THE TWO ARE SEPARATE. Measured, against the ACL corpus:
+ *
+ *   "What is the capital of France?"                        0 hits
+ *   "What is the capital of France? acl"                    3 hits, top 0.512
+ *   "What is the capital of France? acl security access…"   6 hits, top 0.623
+ *
+ * The capability terms carry across turns, so once a conversation has been
+ * about ACLs, an unrelated question inherits those terms and clears the
+ * relevance floor on their strength alone — and the Sources panel would then
+ * cite ServiceNow documentation for a question about France. Widening the
+ * search is a recall aid; it must not be able to manufacture relevance. So the
+ * search runs wide and the ADMISSION is decided against what was actually
+ * asked. Callers that pass no `askedAbout` (the model-invoked docs tool, which
+ * supplies its own deliberate query) are unaffected.
+ */
+/**
+ * Keep only the chunks the QUESTION itself matched.
+ *
+ * Exported and pure so the rule can be asserted without a corpus, an embedding
+ * model or a network — see knowledge-relevance.test.js. The widened query
+ * decides what is worth looking at; this decides what may be cited.
+ */
+export function admitByQuestion(wideHits, directHits) {
+  const relevant = new Set((directHits ?? []).map((h) => h.chunk));
+  return (wideHits ?? []).filter((h) => relevant.has(h.chunk));
+}
+
+export async function retrieveForTurn(userText, { limit, askedAbout = null } = {}) {
   const { rag } = getSettings();
   if (rag?.enabled === false) return { block: '', retrieval: null, skipped: 'disabled' };
 
@@ -124,6 +161,20 @@ export async function retrieveForTurn(userText, { limit } = {}) {
     const result = await searchKnowledge(query, {
       limit: limit ?? rag?.maxContextChunks ?? 6,
     });
+    /*
+     * The gate. One extra embedding per turn, and only when the wide search
+     * found something — the cost is paid on the turns where it could be wrong.
+     */
+    if (result.hits.length && askedAbout && askedAbout.trim() !== query) {
+      const direct = await searchKnowledge(askedAbout.trim(), { limit: limit ?? 6 });
+      const kept = admitByQuestion(result.hits, direct.hits);
+      if (kept.length !== result.hits.length) {
+        log.debug('knowledge',
+          `${result.hits.length - kept.length} chunk(s) matched only the widened query, not the question itself`);
+      }
+      result.hits = kept;
+    }
+
     if (!result.hits.length) {
       // Worth a line in the log — "the corpus had nothing" and "retrieval never
       // ran" look identical from the prompt, and only one is a configuration

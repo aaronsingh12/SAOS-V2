@@ -19,7 +19,7 @@ import KnowledgePanel, { KnowledgeAside } from '../components/KnowledgePanel.jsx
 import AppBuildPanel from '../components/AppBuildPanel.jsx';
 import { writeOutcome, captureReason, approvalProvenance } from '../components/writeOutcome.js';
 import { elevationOutcome } from '../components/elevationOutcome.js';
-import EvidencePanel from '../components/EvidencePanel.jsx';
+import { SourcesDrawer } from '../components/SourcesPanel.jsx';
 import PlanPanel from '../components/PlanPanel.jsx';
 import SkillsPanel from '../components/SkillsPanel.jsx';
 import TaskHistory from '../components/TaskHistory.jsx';
@@ -1557,10 +1557,6 @@ export default function AgentChat() {
           </div>
         )}
 
-        {showEvidence && taskId && (
-          <EvidencePanel taskId={taskId} onClose={() => setShowEvidence(false)} />
-        )}
-
         {/* The agent itself runs disconnected — it just cannot do anything
             useful to an instance, so this is a banner rather than a gate. */}
         <DisconnectedBanner />
@@ -1981,6 +1977,16 @@ export default function AgentChat() {
           })}
         </div>
 
+        {/* Sources sits in the same row as Activity and wears the same shell,
+            so the two open, close and reflow identically. They are mutually
+            exclusive: two panels both claiming the row would each take width
+            from the transcript. */}
+        <SourcesDrawer
+          open={showEvidence}
+          taskId={taskId}
+          onClose={() => setShowEvidence(false)}
+        />
+
         <ActivityDrawer
           open={activityOpen}
           rows={activity}
@@ -1989,7 +1995,7 @@ export default function AgentChat() {
           progress={progress}
           skills={activeSkills}
           updateSet={latestCapture}
-          onOpenEvidence={() => setShowEvidence(true)}
+          onOpenEvidence={() => { setActivityOpen(false); setShowEvidence(true); }}
           onClose={() => setActivityOpen(false)}
         />
         </div>
@@ -2020,7 +2026,13 @@ export default function AgentChat() {
           stopping={stopping}
           model={meta}
           hasEvidence={Boolean(taskId)}
-          onOpenEvidence={() => setShowEvidence(true)}
+          sourcesOpen={showEvidence}
+          onOpenEvidence={() => {
+            setShowEvidence((v) => {
+              if (!v) setActivityOpen(false);
+              return !v;
+            });
+          }}
         />
 
         <ActivityIndicator
@@ -2028,7 +2040,12 @@ export default function AgentChat() {
           running={running}
           status={status}
           open={activityOpen}
-          onToggle={() => setActivityOpen((v) => !v)}
+          onToggle={() => setActivityOpen((v) => {
+            // Mutually exclusive with Sources: both claim the same row beside
+            // the transcript, and two open panels would each take width from it.
+            if (!v) setShowEvidence(false);
+            return !v;
+          })}
         />
         </div>
       </div>

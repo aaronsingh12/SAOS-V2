@@ -112,7 +112,7 @@ function ActivityPanel({
         )}
         {onOpenEvidence && taskId && (
           <button type="button" className="btn ghost sm" onClick={onOpenEvidence}>
-            Evidence
+            Sources
           </button>
         )}
       </header>

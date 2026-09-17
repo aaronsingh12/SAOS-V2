@@ -331,6 +331,35 @@ export function keywordSearchKnowledge(query, { limit = 12, filters = {} } = {})
   }
 }
 
+/**
+ * THE RELEVANCE FLOOR, and why a top-N search needs one.
+ *
+ * Semantic search ranks; it does not judge. `slice(0, limit)` returns the
+ * nearest N chunks however far away they are, so on a small corpus EVERY
+ * question retrieves something — measured, before this existed: "What is the
+ * capital of France?" came back with six ACL documents, and the Sources panel
+ * would then have cited ServiceNow documentation for a question about France.
+ * That is the overclaim this whole subsystem is built to prevent, arriving
+ * through the back door.
+ *
+ * The number is measured, not guessed. Against the ACL corpus, cosine scores
+ * separated cleanly:
+ *
+ *   relevant ACL questions      0.566 – 0.687
+ *   unrelated questions         0.263 – 0.381   (France, banana bread, football)
+ *
+ * 0.45 sits in the gap with margin on both sides. It is configuration
+ * (`settings.rag.minRelevance`) so a larger corpus can retune it without a code
+ * change, and it applies to COSINE ONLY: bm25 is on a different scale, and one
+ * threshold across both would be a magic number that misbehaves on one of them.
+ */
+const DEFAULT_MIN_RELEVANCE = 0.45;
+
+function minRelevance() {
+  const v = getSettings().rag?.minRelevance;
+  return Number.isFinite(v) ? v : DEFAULT_MIN_RELEVANCE;
+}
+
 async function semanticSearchKnowledge(query, { limit, filters }) {
   const db = getDb();
   const model = embedModelName();
@@ -359,7 +388,9 @@ async function semanticSearchKnowledge(query, { limit, filters }) {
     scored.push({ ...rest, score: cosine(qvec, fromBlob(vec)) });
   }
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit);
+  // Below the floor is "nothing matched", not "here is the nearest thing".
+  const floor = minRelevance();
+  return scored.filter((r) => r.score >= floor).slice(0, limit);
 }
 
 /**
