@@ -1,5 +1,6 @@
 import { table } from './client.js';
-import { readInstanceState, writeInstanceState, boundHost, registerPostInstallHook } from './fluent.js';
+import { readInstanceState, writeInstanceState, boundHost, registerPostInstallHook, resolveManagedArtifact, activateManagedFlow } from './fluent.js';
+import { flows } from './flows.js';
 import { log } from '../logging.js';
 
 /**
@@ -68,6 +69,79 @@ const APPLIERS = {
       return rows.length ? rows[0].active === 'true' : null;
     },
   },
+
+  /**
+   * A flow is meant to be PUBLISHED on this instance.
+   *
+   * ── THE DRIFT ────────────────────────────────────────────────────────────
+   *
+   * `now-sdk install` re-applies the whole application from source, and a flow
+   * written from source arrives as a DRAFT: `active=false, status=draft,
+   * latest_snapshot=''`. Publishing is not part of the source model — it is an
+   * act performed against the instance afterwards, through the platform's
+   * activation processor. So every install silently un-publishes every flow
+   * that had been published, including ones nobody touched: deploy an
+   * unrelated subflow, and the flow that was live this morning is a draft that
+   * will never run again, with nothing anywhere saying so.
+   *
+   * That is the same shape as the table-active drift above — state the SDK
+   * model cannot express, undone by the next install — so it gets the same
+   * answer rather than a second mechanism: record the intent, re-apply it
+   * after every deploy, and READ IT BACK.
+   *
+   * ── WHAT IS AND IS NOT CLAIMED ───────────────────────────────────────────
+   *
+   * `current` is the four-way published proof (`flows.publishedProof`), never
+   * `active` alone — an active header with no snapshot is not published, and
+   * this reconciler must not report it as if it were. When that proof cannot
+   * be read the state is UNKNOWN: reported as such, never written over on the
+   * assumption that unknown means unpublished.
+   *
+   * The re-apply is `activateManagedFlow`, which is the one proven publish
+   * path: resolve by name inside the bound scope, ask the platform's own
+   * processor, and verify with the same four-way read. Nothing here writes to
+   * `sys_hub_flow` directly — that door is closed on purpose (flows.js).
+   *
+   * Only `value: true` is reconcilable. There is no un-publish call, so an
+   * intent to leave something a draft is an intent nothing could keep, and
+   * `validate` refuses to record it rather than accepting a promise it cannot
+   * honour.
+   */
+  flow_published: {
+    describe: (i) => `"${i.target}" published`,
+    validate(intent) {
+      if (intent.value !== true) {
+        throw Object.assign(new Error(
+          'A flow_published intent can only be `true`. The platform offers an activation call and no un-publish call, '
+          + 'so "this flow should stay a draft" is a promise this reconciler could not keep — and recording an intent '
+          + 'nothing re-applies is worse than not recording it.',
+        ), { status: 400 });
+      }
+    },
+    async read(intent) {
+      const found = await resolveManagedArtifact(intent.target);
+      /* The artifact is gone, or its name is now ambiguous: nothing to re-apply,
+       * and choosing between candidates is exactly what the resolver refuses. */
+      if (!found.ok) return { found: false, note: found.message };
+      const proof = await flows.publishedProof(found.sysId).catch((err) => ({ published: null, note: err.message }));
+      return {
+        found: true,
+        sysId: found.sysId,
+        current: proof.published === true,
+        /* UNKNOWN is its own answer: neither published nor a reason to publish. */
+        unknown: proof.published === null,
+        note: proof.note ?? null,
+      };
+    },
+    async write(intent) {
+      const res = await activateManagedFlow(intent.target);
+      if (!res.ok) throw new Error(res.message || `"${intent.target}" was not published (${res.stage ?? 'activate'}).`);
+    },
+    async readBack(intent, sysId) {
+      const proof = await flows.publishedProof(sysId).catch(() => ({ published: null }));
+      return proof.published === true ? true : proof.published;
+    },
+  },
 };
 
 const keyOf = (intent) => `${intent.kind}:${intent.target}`;
@@ -93,6 +167,10 @@ export function recordIntendedState({ kind, target, value, why = null }, host = 
   }
   if (!host) throw Object.assign(new Error('No instance is bound, so an intent has nowhere to be filed.'), { status: 409 });
   if (!target) throw Object.assign(new Error(`A ${kind} intent needs a target.`), { status: 400 });
+  /* A kind may refuse a value it could never re-apply. Refusing at RECORD time
+   * is the point: an unkeepable intent discovered at reconcile time has already
+   * been trusted for however many installs happened in between. */
+  APPLIERS[kind].validate?.({ kind, target, value, why });
 
   const intent = { kind, target, value, why, recordedAt: new Date().toISOString(), instance: host };
   const stored = { ...(readInstanceState(host)?.intendedState ?? {}) };
@@ -152,6 +230,22 @@ export async function reconcileIntents(intents, { appliers = APPLIERS, emit = ()
         // reason for an intent to have nothing to act on — but it is reported
         // rather than silently skipped, so a stale intent is visible.
         applied.push({ kind: intent.kind, target: intent.target, outcome: 'target-absent', ok: true, note: 'nothing to re-apply' });
+        continue;
+      }
+      if (found.unknown) {
+        /*
+         * The state could not be determined. Writing anyway would act on a
+         * guess, and reporting ok would certify a state nobody read — so this
+         * is a loud, named failure with the reason attached, and the caller
+         * decides. (Same rule as publishedVerdict's `published: null`.)
+         */
+        applied.push({
+          kind: intent.kind, target: intent.target, outcome: 'state-unknown', ok: false,
+          note: found.note ?? 'the current state could not be read, so nothing was re-applied',
+        });
+        log.error('reconcile',
+          `could not tell whether ${applier.describe(intent)} still holds: ${found.note ?? 'unreadable'}. `
+          + 'Nothing was re-applied, and this is NOT a report that the state is correct.');
         continue;
       }
       if (found.current === intent.value) {

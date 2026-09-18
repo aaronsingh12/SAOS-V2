@@ -1022,14 +1022,66 @@ function fromCatalogue(rule) {
   };
 }
 
+/**
+ * Guidance for an ITSM catalogue rule, from the workbook's own articulation — the
+ * same reasoning as `fromCatalogue`: the catalogue states the defect, why it
+ * matters, how it is detected, the known wrong case and the remediation lane, so
+ * nothing here is a paraphrase. The `catalogue` block keeps the CMDB field names
+ * so the detail view renders one shape; an ITSM rule has no dimension, and its
+ * lanes are the ones the workbook names (it may name more than one).
+ */
+function fromItsmCatalogue(rule) {
+  const lanes = rule.remediationLane?.lanes || [];
+  return {
+    headline: rule.title,
+    problem: rule.whatItMeans,
+    why: rule.whyItMatters,
+    decision: 'human',
+    aiAction: AI_ACTION.INVESTIGATE,
+    manualSteps: [
+      `Confirm it in your own instance — the detection logic is re-runnable: ${rule.detectionLogic}`,
+      `Rule out the known wrong case first: ${rule.falsePositiveGuard}`,
+      ...(lanes.length ? lanes.map((n) => LANE_STEP[n]) : [`Remediation, as the workbook states it: ${rule.remediationLane?.text || 'not stated'}`]),
+    ],
+    verify: `Re-run the ITSM health check: ${rule.id} should no longer fire.`,
+    effort: MIN(15, 5, 'No per-rule estimate has been written for this catalogue rule yet; this is a generic placeholder.'),
+    catalogue: {
+      id: rule.id, domain: 'ITSM', group: rule.group, groupName: rule.group, base: rule.base, dimension: null, lane: lanes[0] ?? null,
+      sourceTables: rule.sourceTables, detectionLogic: rule.detectionLogic, threshold: rule.threshold,
+      confidenceBasis: rule.confidenceBasis, evidenceToShow: rule.evidenceToShow,
+      falsePositiveGuard: rule.falsePositiveGuard, remediationLane: rule.remediationLane?.text ?? null, crossDomainLink: rule.crossDomainLink,
+    },
+  };
+}
+
+/*
+ * The ITSM catalogue is REGISTERED, not imported: health/itsm is reached only
+ * through the health facade (index.js), which registers a resolver
+ * `ruleId → adapted ITSM rule | null` when it loads. The remediation layer —
+ * imported by scopes.js and proposal.js — never imports the engine.
+ */
+let itsmCatalogueRule = () => null;
+export function registerItsmCatalogue(resolve) {
+  if (typeof resolve !== 'function') throw new TypeError('registerItsmCatalogue needs a resolver function');
+  itsmCatalogueRule = resolve;
+}
+
+/** The catalogue guidance for a rule id — CMDB catalogue, then the ITSM catalogue — or null. */
+function catalogueGuidance(ruleId) {
+  const cmdb = catalogueRule(ruleId);
+  if (cmdb) return fromCatalogue(cmdb);
+  const itsm = typeof ruleId === 'string' && ruleId.startsWith('ITSM-') ? itsmCatalogueRule(ruleId) : null;
+  return itsm ? fromItsmCatalogue(itsm) : null;
+}
+
 /** Everything the detail view needs for one finding. */
 export function remediationFor(finding) {
-  const rule = catalogueRule(finding.rule_id);
-  const entry = REMEDIATION[finding.rule_id] || (rule ? fromCatalogue(rule) : FALLBACK);
+  const guidance = catalogueGuidance(finding.rule_id);
+  const entry = REMEDIATION[finding.rule_id] || guidance || FALLBACK;
   return {
     ruleId: finding.rule_id,
-    known: Boolean(REMEDIATION[finding.rule_id] || rule),
-    catalogue: entry.catalogue ?? (rule ? fromCatalogue(rule).catalogue : null),
+    known: Boolean(REMEDIATION[finding.rule_id] || guidance),
+    catalogue: entry.catalogue ?? guidance?.catalogue ?? null,
     headline: entry.headline,
     problem: entry.problem,
     why: entry.why,
@@ -1040,7 +1092,16 @@ export function remediationFor(finding) {
       ? 'This finding states a fact; choosing the fix needs a judgement the data cannot supply. The agent will gather evidence and propose — it will not decide for you.'
       : 'This finding states its own fix. The agent can apply it, and you still approve the write at the gate.',
     tables: referencedTables(finding, entry),
-    manualSteps: entry.manualSteps,
+    /*
+     * A GROUPED finding expands into one step per class (decision 6 of 16 Sep 2026):
+     * the finding is one line in the trust gate, and the fix is still per class.
+     */
+    manualSteps: finding.grouped_classes?.length
+      ? [
+        ...entry.manualSteps,
+        ...finding.grouped_classes.map(({ cls, cis }) => `Create or extend an identification rule covering \`${cls}\` (${Number(cis).toLocaleString('en-US')} CI(s)) — one update set per class, tested in sub-production first.`),
+      ]
+      : entry.manualSteps,
     verify: entry.verify,
     effort: estimateEffort(entry, (finding.target_ids || []).length),
     prompt: buildAgentPrompt(finding, entry),

@@ -277,7 +277,7 @@ test('§35 the evidence survives a fresh read of the database', async () => {
 
 test('§44 persisting a diagnosis added no migration', async () => {
   const version = getDb().prepare('PRAGMA user_version').get();
-  assert.equal(Object.values(version)[0], 28, 'the schema version changed');
+  assert.equal(Object.values(version)[0], 29, 'the schema version changed');
 });
 
 test('§49 the audit chain is reconstructible from durable rows alone', async () => {

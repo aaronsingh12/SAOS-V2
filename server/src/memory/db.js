@@ -1317,6 +1317,28 @@ const MIGRATIONS = [
       );
     `);
   },
+
+  // 29 — ITSM CATALOGUE PARAMETERS, per instance (ITSM Phase 5).
+  //
+  // The 139-rule catalogue resolves every threshold through three layers:
+  // workbook default → instance override → runtime override (DECISIONS.md §4).
+  // Until now the instance layer existed only in memory, so a real scan could
+  // never fill the 29 parameters the workbook leaves to the customer. One row per
+  // (instance, rule, parameter key); the value is typed JSON, validated against
+  // the declaration before it is written (an override cannot invent a parameter).
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS health_itsm_parameters (
+        instance_key  TEXT NOT NULL,
+        rule_id       TEXT NOT NULL,
+        param_key     TEXT NOT NULL,
+        value_json    TEXT NOT NULL,
+        set_by        TEXT,
+        set_at        TEXT NOT NULL,
+        PRIMARY KEY (instance_key, rule_id, param_key)
+      );
+    `);
+  },
 ];
 
 /**

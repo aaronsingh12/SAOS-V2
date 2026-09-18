@@ -33,6 +33,14 @@
 const OPERATORS = [
   'ISNOTEMPTY', 'ISEMPTY', 'ANYTHING', 'EMPTYSTRING',
   'STARTSWITH', 'ENDSWITH', 'INSTANCEOF', 'BETWEEN',
+  /*
+   * The change operators, longest first so `stateCHANGESTO3` is not read as
+   * CHANGES with the value `TO3` — a different condition wearing the same
+   * characters (src/agent/test/trigger.js makes the same point). Without them
+   * a flow trigger condition of `stateCHANGES` reads as an unparsed clause,
+   * which is reported as a fault in a condition that is perfectly valid.
+   */
+  'VALCHANGES', 'CHANGESFROM', 'CHANGESTO', 'CHANGES',
   'NOT ?LIKE', 'NOT ?IN', 'NSAMEAS', 'SAMEAS', 'DYNAMIC',
   'LIKE', 'IN',
   '!=', '>=', '<=', '=', '>', '<',

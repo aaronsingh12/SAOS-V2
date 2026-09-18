@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { log } from '../logging.js';
 import { startBuildRun, finishBuildRun, auditedEmit, csvCell } from '../memory/audit.js';
 import { boundInstance } from '../servicenow/instance-binding.js';
-import { runHealthCheck, MAX_FINDINGS } from '../health/index.js';
+import { runHealthCheck, MAX_FINDINGS, buildParameterRegistry, describeParameters, validateRuntimeParameters, itsmMeasureHistoryFrom } from '../health/index.js';
 import { TABLES, DEFAULT_TABLES } from '../health/tables.js';
 import { AGENTS, RULE_VERSION, SEVERITIES } from '../health/rules.js';
 import { remediationFor } from '../health/remediation.js';
@@ -17,12 +17,12 @@ import {
   openRun, completeRun, failRun, cancelRun, runInFlight, trend, scopesForRun,
   listRuns, getRun, latestRun, listFindings, getFinding, deleteRun, abandonOrphanedRuns, cmdbMeasureHistory,
   moduleBaselines, tableSettings, recordScanOutcome, setTableIncremental, scanStateTable, moduleResults,
-  composedView, listModuleFindings,
+  composedView, listModuleFindings, itsmParameterOverrides, setItsmParameterOverride, clearItsmParameterOverride, itsmHistoryRuns,
 } from '../health/store.js';
 import {
   setFindingState, clearFindingState, stateMap, STATE_VOCABULARY,
 } from '../health/finding-state.js';
-import { scopeVocabulary, normaliseScope, normaliseModules, MODULE_KEYS, scopeOf as scopeOfFinding } from '../health/scopes.js';
+import { scopeVocabulary, normaliseScope, normaliseModules, MODULE_KEYS, scopeOf as scopeOfFinding, scopeOfRule } from '../health/scopes.js';
 import { INCREMENTAL_DEFAULTS } from '../health/incremental.js';
 
 export const healthRouter = Router();
@@ -40,10 +40,17 @@ export const healthRouter = Router();
  * and the audit trail. This router never imports the instance client.
  */
 
-/** Attach per-scope summaries to a run — stored, or computed for an older one. */
+/**
+ * Attach per-scope summaries to a run — stored, or computed for an older one — and
+ * name the scope of every skipped check, routed exactly as its findings are
+ * (`scopeOfRule`), so a module tab lists its own skips and not the whole run's.
+ */
 function withScopes(run) {
   if (!run?.manifest) return run;
-  return { ...run, manifest: { ...run.manifest, scopes: scopesForRun(run) } };
+  const skipped = Array.isArray(run.manifest.skipped_checks)
+    ? run.manifest.skipped_checks.map((s) => ({ ...s, scope: scopeOfRule(s.rule) }))
+    : run.manifest.skipped_checks;
+  return { ...run, manifest: { ...run.manifest, scopes: scopesForRun(run), skipped_checks: skipped } };
 }
 
 /** GET /api/health/meta — the rule pack, the allow-list, and what is bound. */
@@ -173,6 +180,8 @@ async function executeRun(entry, { emit, auditRun, options }) {
     const acceptedRules = [...stateMap().values()].filter((st) => st.state === 'accepted')
       .map((st) => ({ fingerprint: st.fingerprint, ruleId: st.ruleId }));
     const measureHistory = cmdbMeasureHistory();
+    /* ITSM catalogue parameters: declarations + this instance's stored overrides, and this run's runtime overrides. */
+    const itsmRegistry = buildParameterRegistry(itsmParameterOverrides());
     /* What each module's current result was computed from, and the per-table
        settings — read here, because the run itself never touches the database. */
     const result = await runHealthCheck({
@@ -181,6 +190,7 @@ async function executeRun(entry, { emit, auditRun, options }) {
       measureHistory,
       baselines: moduleBaselines(),
       tableSettings: tableSettings(),
+      itsm: { parameters: itsmRegistry.registry, runtime: options.itsmParameters ?? {}, rejected: itsmRegistry.rejected, measureHistory: itsmMeasureHistoryFrom(itsmHistoryRuns()) },
       user: boundInstance().username,
       signal: controller.signal,
       onProgress: async (p) => emit({ type: 'progress', ...p }),
@@ -266,12 +276,15 @@ healthRouter.post('/runs', (req, res) => {
     });
   }
 
-  const { tables, staleDays, explain = true, limit, modules: requestedModules, reuse = true } = req.body || {};
+  const { tables, staleDays, explain = true, limit, modules: requestedModules, reuse = true, itsmParameters } = req.body || {};
   /* Refused before a run row exists: an unknown module is a bad request, not a failed scan. */
   let modules;
   try { modules = normaliseModules(requestedModules); } catch (err) {
     return res.status(err.status || 422).json({ message: err.message });
   }
+  /* Runtime ITSM parameter overrides are checked against their declarations up front, for the same reason. */
+  const parameterProblems = validateRuntimeParameters(itsmParameters);
+  if (parameterProblems.length) return res.status(422).json({ message: `Invalid itsmParameters: ${parameterProblems.join('; ')}` });
   const auditRun = startBuildRun({
     kind: 'health_check',
     label: bound.url,
@@ -304,9 +317,49 @@ healthRouter.post('/runs', (req, res) => {
       explain,
       limit: Number(limit) || undefined,
       staleDays: Number(staleDays) || undefined,
+      itsmParameters: itsmParameters ?? undefined,
     },
   });
   return undefined;
+});
+
+/*
+ * ITSM CATALOGUE PARAMETERS (ITSM Phase 5).
+ *
+ * The instance layer of DECISIONS.md §4: workbook default → INSTANCE OVERRIDE →
+ * runtime override. Stored locally per bound instance — nothing is written to
+ * ServiceNow. A value is validated against its declaration before it is stored,
+ * and an UNDEFINED parameter is never given a suggested value.
+ */
+healthRouter.get('/itsm/parameters', (req, res, next) => {
+  try {
+    const overrides = itsmParameterOverrides();
+    const built = buildParameterRegistry(overrides);
+    res.json({ parameters: describeParameters(built.registry), overrides, rejected: built.rejected });
+  } catch (err) { next(err); }
+});
+
+healthRouter.put('/itsm/parameters/:ruleId/:key', (req, res, next) => {
+  try {
+    const { ruleId, key } = req.params;
+    const value = req.body?.value;
+    if (value === undefined) return res.status(422).json({ message: 'A value is required.' });
+    try {
+      buildParameterRegistry([]).registry.setInstanceOverride(ruleId, key, value);
+    } catch (err) {
+      return res.status(422).json({ message: err.message });
+    }
+    setItsmParameterOverride({ ruleId, key, value, by: boundInstance().username ?? null });
+    const parameter = describeParameters(buildParameterRegistry(itsmParameterOverrides()).registry).find((p) => p.rule_id === ruleId && p.key === key);
+    return res.json({ parameter });
+  } catch (err) { return next(err); }
+});
+
+healthRouter.delete('/itsm/parameters/:ruleId/:key', (req, res, next) => {
+  try {
+    const removed = clearItsmParameterOverride({ ruleId: req.params.ruleId, key: req.params.key });
+    res.status(removed ? 200 : 404).json({ removed });
+  } catch (err) { next(err); }
 });
 
 /** GET /api/health/runs/active — the check running against this instance, if any. */

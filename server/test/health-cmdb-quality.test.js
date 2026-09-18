@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  blendFor, DIMENSION_KIND, BLEND_BY_KIND,
   BAND_WEIGHT, CMDB_CATALOGUE, CMDB_DIMENSIONS,
   effectiveBand, scoreCmdbQuality,
 } from '../src/health/cmdb-quality.js';
@@ -19,7 +20,7 @@ import { GATE_RULES, cmdbInScope, jobInterval } from '../src/health/cmdb-gate.js
  *      record (w = 100) but does NOT gate.
  *   4. The section is the EFFECTIVE band.
  *
- * Corrections of 18 Sep 2026:
+ * Corrections of 16 Sep 2026:
  *   5. Systemic ≠ gate: config_absence and measured_kpi gate; posture neither gates nor scores.
  *   6. A record is charged for its OWN context: `deduction_severity`, never the
  *      class-wide pattern's reporting severity. Patterns deduct nothing.
@@ -28,8 +29,17 @@ import { GATE_RULES, cmdbInScope, jobInterval } from '../src/health/cmdb-gate.js
 
 /* ════════════════════════ the catalogue ════════════════════════ */
 
-test('the catalogue is the tracker: 141 CMDB rules, ten dimensions weighing exactly 100', () => {
-  assert.equal(Object.keys(CMDB_CATALOGUE).length, 141);
+test('the catalogue is the tracker: 143 CMDB rules, ten dimensions weighing exactly 100', () => {
+  /*
+   * 141 as articulated, plus the bulk-touch pair minted Sep 2026: CMDB-142
+   * charges the CIs a mass write hides from every age-based rule, and CMDB-143
+   * measures the share. The dimension WEIGHTS do not move when a rule is added —
+   * a dimension's weight is what it is worth, not how many rules happen to
+   * measure it — so this assertion is the guard on that.
+   */
+  assert.equal(Object.keys(CMDB_CATALOGUE).length, 143);
+  assert.equal(CMDB_CATALOGUE['CMDB-142'].dimension, 'D7');
+  assert.equal(CMDB_CATALOGUE['CMDB-143'].systemicKind, 'measured_kpi');
   assert.deepEqual(CMDB_DIMENSIONS.map((d) => d.key), ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8', 'D9', 'D10']);
   assert.equal(CMDB_DIMENSIONS.reduce((n, d) => n + d.weight, 0), 100);
   assert.deepEqual(Object.fromEntries(CMDB_DIMENSIONS.map((d) => [d.key, d.weight])),
@@ -413,4 +423,99 @@ test('job intervals come from the job itself', () => {
 test('every implemented catalogue rule is in the catalogue, and the gate rules are all implemented', () => {
   for (const id of IMPLEMENTED_CATALOGUE_RULES) assert.ok(CMDB_CATALOGUE[id], `${id} is implemented but not catalogued`);
   for (const id of GATE_RULES) assert.ok(IMPLEMENTED_CATALOGUE_RULES.has(id));
+});
+
+/* ════════════ the blend is per dimension TYPE, not one ratio ════════════ */
+
+test('a dimension blends by the SHAPE of its question, not by one global ratio', () => {
+  /*
+   * Measured on dev424910 when D10 completed: record part 96.0, KPI part 0.0.
+   * The record half was near-inert BY DESIGN (consequence scoping makes a long
+   * tail of unreferenced laptops quiet), while the KPI half said something stark
+   * and true. At 70/30 the dimension read 67.2; the blend alone decided it.
+   */
+  assert.equal(DIMENSION_KIND.D10, 'estate');
+  assert.equal(DIMENSION_KIND.D1, 'record');
+  assert.equal(DIMENSION_KIND.D6, 'mixed');
+
+  assert.deepEqual(blendFor('D10'), { ...BLEND_BY_KIND.estate, kind: 'estate' });
+  assert.deepEqual(blendFor('D1'), { ...BLEND_BY_KIND.record, kind: 'record' });
+  /* An unknown dimension takes the middle ratio rather than the record one. */
+  assert.equal(blendFor('D99').kind, 'mixed');
+  /* An explicit caller blend still wins, and is labelled as the override it is. */
+  assert.deepEqual(blendFor('D10', { record: 1, kpi: 0 }), { record: 1, kpi: 0, kind: 'override' });
+
+  /* Consumption weights its KPI half heaviest; completeness weights records. */
+  assert.ok(BLEND_BY_KIND.estate.kpi > BLEND_BY_KIND.mixed.kpi);
+  assert.ok(BLEND_BY_KIND.mixed.kpi > BLEND_BY_KIND.record.kpi);
+  for (const b of Object.values(BLEND_BY_KIND)) {
+    assert.equal(Number((b.record + b.kpi).toFixed(6)), 1, 'a blend must sum to 1');
+  }
+});
+
+test('the dimension publishes WHICH blend it used, so a score can be re-derived', () => {
+  const q = scoreCmdbQuality({
+    findings: [],
+    kpis: [{ rule_id: 'CMDB-141', pass_pct: 0, numerator: 0, denominator: 10, basis: 'b' }],
+    implemented: new Set(['CMDB-141']),
+  });
+  const d10 = q.dimensions.find((d) => d.key === 'D10');
+  /* KPI only, so no blend applies and none is claimed. */
+  assert.equal(d10.blend, null);
+  assert.equal(d10.score, 0);
+});
+
+test('a dimension discloses when its KPI half rests on one measurement, and when that measurement also gates', () => {
+  /*
+   * dev424910: D10's KPI half is 70% of the dimension, CMDB-117/118 abstain below
+   * their volume floor, and CMDB-141 carries all of it — and is also a gate
+   * blocker. 28.8 must not be read as a broad consumption assessment.
+   */
+  const q = scoreCmdbQuality({
+    findings: [{ rule_id: 'CMDB-141', severity: 'SYSTEMIC', target_ids: [], fingerprint: 'g', title: 'x' }],
+    kpis: [{ rule_id: 'CMDB-141', pass_pct: 0, numerator: 0, denominator: 52, basis: 'b' }],
+    implemented: new Set(['CMDB-141', 'CMDB-117', 'CMDB-118']),
+  });
+  const d10 = q.dimensions.find((d) => d.key === 'D10');
+  assert.deepEqual(d10.kpi_basis.measured, ['CMDB-141']);
+  assert.deepEqual(d10.kpi_basis.unmeasured.sort(), ['CMDB-117', 'CMDB-118']);
+  assert.deepEqual(d10.kpi_basis.also_gating, ['CMDB-141']);
+  const text = d10.caveats.join(' ');
+  assert.match(text, /rests on ONE measurement — CMDB-141 — while CMDB-117, CMDB-118 produced no measurement/);
+  assert.match(text, /not as a broad assessment of the dimension/);
+  assert.match(text, /hearing the same signal twice/);
+});
+
+test('a dimension discloses a KPI part that is ABSENT, not only one that is partial (the D1 checkpoint gap)', () => {
+  /*
+   * CMDB checkpoint, dev424910: D1 has CMDB-021 built, it produced no measurement,
+   * and 73.8 was the record mean alone with no caveat — while D7 and D10, whose
+   * KPI halves were only PARTIAL, both disclosed theirs.
+   */
+  const q = scoreCmdbQuality({
+    findings: [f('CMDB-012', 'CRITICAL', ['a'])],
+    inScope: { ids: ['a', 'b'], basis: 't' },
+    implemented: built('CMDB-012', 'CMDB-021'),
+  });
+  const d1 = q.dimensions.find((d) => d.key === 'D1');
+  assert.equal(d1.score, 80, 'the disclosure changes no number');
+  assert.deepEqual(d1.kpi_basis, { share: 0, measured: [], unmeasured: ['CMDB-021'], also_gating: [] });
+  assert.match(d1.caveats.join(' '), /Its KPI part is ABSENT on this run: CMDB-021 is built for this dimension and produced no measurement/);
+  assert.match(d1.caveats.join(' '), /the 70\/30 record blend was not applied/);
+
+  /* A dimension with no KPI rule built says nothing about KPIs — there is no gap to disclose. */
+  const plain = scoreCmdbQuality({ findings: [f('CMDB-012', 'CRITICAL', ['a'])], inScope: { ids: ['a', 'b'], basis: 't' }, implemented: built('CMDB-012') });
+  const p1 = plain.dimensions.find((d) => d.key === 'D1');
+  assert.equal(p1.kpi_basis, null);
+  assert.equal(/KPI part is ABSENT/.test(p1.caveats.join(' ')), false);
+
+  /* The mirror: KPI-only while a record rule that could have charged was built. */
+  const mirror = scoreCmdbQuality({
+    findings: [],
+    kpis: [{ rule_id: 'CMDB-141', pass_pct: 40, numerator: 4, denominator: 10, basis: 'b' }],
+    inScope: { ids: [], basis: 't' },
+    implemented: built('CMDB-141', 'CMDB-121'),
+  });
+  const d10 = mirror.dimensions.find((d) => d.key === 'D10');
+  assert.match(d10.caveats.join(' '), /Its record part is ABSENT on this run: CMDB-121 is built/);
 });

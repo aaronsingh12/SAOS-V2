@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { CMDB_CATALOGUE, scoreCmdbQuality } from '../src/health/cmdb-quality.js';
-import { EstateRules, IMPLEMENTED_CATALOGUE_RULES } from '../src/health/rules.js';
+import { EstateRules, IMPLEMENTED_CATALOGUE_RULES, scoringComparability } from '../src/health/rules.js';
 import { UNIQUENESS_RULES, similarity, digitsOnlyDifference, normaliseName, cmdbUniquenessRules } from '../src/health/cmdb-uniqueness.js';
 import { buildSignals } from '../src/health/cmdb-signals.js';
 import { cmdbInScope } from '../src/health/cmdb-gate.js';
 
 /*
- * Health Assist — Group 4 (Uniqueness, D3), built 18 Sep 2026.
+ * Health Assist — Group 4 (Uniqueness, D3), built 16 Sep 2026.
  *
  *   - Exact identity sets (serial, IP, MAC, FQDN, correlation_id) → CMDB-035/036/037.
  *   - Sets sharing a member are one identity cluster: one charge per record (dedupe_key).
@@ -100,7 +100,7 @@ test('CMDB-036 fires per address set; excludes loopback, link-local, 0.0.0.0, VI
 });
 
 test('CMDB-037: a cross-source collision is REPORTED at reduced confidence, and skipped only for registered key spaces', () => {
-  /* Decision 5 of 19 Sep: a correlation_id shared across two sources is usually
+  /* Decision 5 of 16 Sep 2026: a correlation_id shared across two sources is usually
      the IRE merge this group hunts, so it is surfaced for review — silenced only
      where the estate has registered those sources as their own key spaces. */
   const estate = { cmdb_ci: [
@@ -158,7 +158,7 @@ test('CMDB-033 fires when one member is related and the other is not, at 5x — 
   const { r, byRule } = run(estate);
   const [x] = byRule('CMDB-033');
   assert.deepEqual([...x.target_ids].sort(), ['bare', 'rel']);
-  /* Confirmed 19 Sep: the 5x is the DEFECT's charge and lands on the empty twin;
+  /* Confirmed 16 Sep 2026: the 5x is the DEFECT's charge and lands on the empty twin;
      the populated twin is the victim and pays an ordinary duplicate charge. */
   assert.deepEqual(x.deduction_multiplier_by_record, { bare: 5 });
   assert.equal(x.deduction_multiplier, undefined, 'the 5x was applied to every member of the set');
@@ -238,7 +238,7 @@ test('CMDB-034 reports every cross-class name pair except an allowlisted one or 
     cmdb_rel_ci: [{ sys_id: 'r', parent: 'p', child: 'q' }],
   };
   const { byRule, skipped } = run(estate);
-  /* Decision 6 of 19 Sep: the printer/software-package pair is REPORTED — an
+  /* Decision 6 of 16 Sep 2026: the printer/software-package pair is REPORTED — an
      event resolving that name by text can bind to either — just at lower
      confidence, with the branches named. */
   assert.deepEqual(ids(byRule('CMDB-034')).sort(), [['driver', 'printer'], ['dup-a', 'dup-b']]);
@@ -260,7 +260,7 @@ test('CMDB-034 reports every cross-class name pair except an allowlisted one or 
 });
 
 test('the data-quality dimensions skip Retired, Stolen and Absent CIs, and keep the ones with no status at all', () => {
-  /* Decision 7 of 19 Sep. The lifecycle dimension (CMDB-085/087) is what judges
+  /* Decision 7 of 16 Sep 2026. The lifecycle dimension (CMDB-085/087) is what judges
      those statuses; uniqueness charging a retired CI for a shared serial is noise. */
   const estate = { cmdb_ci: [
     ci('live', 'cmdb_ci_server', { serial_number: 'DUP-1' }),
@@ -310,7 +310,8 @@ test('CMDB-038 needs three snapshots; it fires on a sustained rise and not on a 
   const now = first.r.measures.duplicate_sets;
   assert.equal(now.count, 4);
 
-  const snap = (at, keys) => ({ at, count: keys.length, keys, complete: true });
+  /* A derived measure: the fixture must say which model it was measured under. */
+  const snap = (at, keys, key = scoringComparability().key) => ({ at, count: keys.length, keys, complete: true, comparability_key: key });
   const rising = run(estate, { history: { duplicate_sets: [snap('2026-09-04T06:00:00Z', [now.keys[0]]), snap('2026-09-11T06:00:00Z', now.keys.slice(0, 2))] } });
   const [x] = rising.r.findings.filter((f) => f.rule_id === 'CMDB-038');
   assert.ok(x, 'a sustained rise did not fire');
@@ -321,4 +322,15 @@ test('CMDB-038 needs three snapshots; it fires on a sustained rise and not on a 
 
   const burst = run(estate, { history: { duplicate_sets: [snap('2026-09-04T06:00:00Z', [now.keys[0]]), snap('2026-09-11T06:00:00Z', now.keys)] } });
   assert.equal(burst.r.findings.filter((f) => f.rule_id === 'CMDB-038').length, 0, 'a one-time burst fired as a trend');
+
+  /*
+   * REGRESSION (17 Sep 2026). CMDB-134 required the comparability key for
+   * duplicate-set membership and CMDB-038 read the same measure without it. The
+   * same sustained rise, measured under ANOTHER model, is now invisible to 038 —
+   * not because 038 checks, but because the history layer never hands it over.
+   */
+  const older = run(estate, { history: { duplicate_sets: [snap('2026-09-04T06:00:00Z', [now.keys[0]], 'older-model'), snap('2026-09-11T06:00:00Z', now.keys.slice(0, 2), null)] } });
+  assert.equal(older.r.findings.filter((f) => f.rule_id === 'CMDB-038').length, 0, 'CMDB-038 trended duplicate sets across scoring models');
+  assert.match(older.skipped('CMDB-038')[0].reason, /Needs 3 snapshots of duplicate-set membership; 1 exist/);
+  assert.equal(older.r.history.set_aside.duplicate_sets.count, 2);
 });

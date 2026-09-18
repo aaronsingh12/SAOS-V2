@@ -1,0 +1,39 @@
+{
+  "setup": {
+    "table": "incident",
+    "payload": {
+      "short_description": "Test incident for work note verification",
+      "impact": "3",
+      "urgency": "3"
+    },
+    "update": {
+      "impact": "1",
+      "urgency": "1"
+    }
+  },
+  "wait": {
+    "flowName": "Add Work Note for P1 Incidents Without Assignment Group",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "value": "NowForge: P1 with no assignment group - needs triage."
+      },
+      "note": "verifies that the promised work note was added"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      }
+    }
+  ]
+}

@@ -207,6 +207,26 @@ test('an unknown rule gets an honest fallback rather than an invented fix', () =
   assert.match(r.why, /not a sign the finding is wrong/);
 });
 
+test('an ITSM catalogue finding gets the workbook\'s own articulation, not the generic fallback', async () => {
+  /* the health facade registers the ITSM catalogue when it loads — as the server does at startup */
+  await import('../src/health/index.js');
+  const r = remediationFor(finding({ rule_id: 'ITSM-020', table: 'incident' }));
+  assert.equal(r.known, true, 'an ITSM catalogue rule was reported as undocumented');
+  assert.equal(r.headline, 'Resolution notes empty or below a meaningful length');
+  assert.equal(r.catalogue.id, 'ITSM-020');
+  assert.equal(r.catalogue.domain, 'ITSM');
+  assert.equal(r.catalogue.dimension, null, 'an ITSM rule was given a CMDB dimension');
+  assert.ok(r.catalogue.detectionLogic && r.catalogue.falsePositiveGuard && r.catalogue.crossDomainLink, 'articulation fields missing');
+  assert.equal(r.decision, 'human');
+  assert.equal(r.aiAction, AI_ACTION.INVESTIGATE, 'a catalogue rule offered to fix itself');
+  assert.match(r.manualSteps[0], /detection logic is re-runnable/);
+  assert.match(r.verify, /ITSM-020 should no longer fire/);
+  /* the eleven legacy ITSM rules keep their hand-written entries */
+  assert.equal(remediationFor(finding({ rule_id: 'ITSM-INC-UNASSIGNED', table: 'incident' })).catalogue, null);
+  /* an id shaped like a catalogue id but outside it still falls back honestly */
+  assert.equal(remediationFor(finding({ rule_id: 'ITSM-999', table: 'incident' })).known, false);
+});
+
 test('the mechanical label promises approval, not autonomy', () => {
   const r = remediationFor(finding({ rule_id: 'REL-SELF', table: 'cmdb_rel_ci' }));
   assert.equal(r.aiActionLabel, 'Fix with AI');

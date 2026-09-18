@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TABLES, sliceWhere, specHash } from './tables.js';
 import { MODULE_KEYS, moduleTables, normaliseModules, scopeOfRule } from './scopes.js';
+import { itsmEngineKey } from './itsm/engine-key.js';
 
 /**
  * INCREMENTAL SCANNING — skip a module whose inputs have not changed.
@@ -90,13 +91,17 @@ function engineSourceHash() {
  * Per module: what, besides the rows, decides its findings. Accepted risks are
  * split by module, so accepting an ITSM finding does not invalidate CMDB.
  */
-export function engineKeys({ staleDays = null, acceptedRules = [] } = {}) {
+export function engineKeys({ staleDays = null, acceptedRules = [], itsmParameters = undefined } = {}) {
   const source = engineSourceHash();
   const out = {};
   for (const m of MODULE_KEYS) {
     const accepted = acceptedRules.filter((a) => scopeOfRule(a.ruleId) === m).map((a) => a.fingerprint).sort();
+    /* DECISION 8: the ITSM module's key also covers the catalogue rules' definitions,
+       parameters, engine versions, configuration and dependency state. Only ITSM's. */
+    /* Built from the scan's own registry (declarations + this instance's overrides), so an override change moves it. */
+    const itsm = m === 'itsm' ? itsmEngineKey(itsmParameters ? { parameters: itsmParameters } : {}).key : undefined;
     out[m] = crypto.createHash('sha256')
-      .update(JSON.stringify({ source, staleDays, accepted }))
+      .update(JSON.stringify({ source, staleDays, accepted, ...(itsm ? { itsm } : {}) }))
       .digest('hex').slice(0, 16);
   }
   return out;
@@ -167,6 +172,42 @@ function compareStamps(before, after) {
 }
 
 /**
+ * A client that STAMPS A TABLE THE FIRST TIME ANYTHING READS IT — before that
+ * read (ITSM Phase 5).
+ *
+ * The ITSM catalogue reads through its own capability pipeline: object
+ * resolution, verified readers, choice lists, the dictionary, bounded graph
+ * reads. Which tables that touches depends on the instance and the configuration,
+ * and a static list derived from the rule files missed ten of the twenty-five
+ * tables one fixture run read. So nothing is listed: every table is stamped at
+ * first contact, before the request that reads it, which is the same ordering
+ * the extractor and the CMDB meta reads keep (a change DURING the scan is caught
+ * by the next check, never absorbed into the stamp). A client without
+ * `changeStamp` records nothing, and a module with no stamps is always re-read.
+ */
+export function stampingClient(client, { now = new Date() } = {}) {
+  if (typeof client?.changeStamp !== 'function') return { client, stamps: async () => null };
+  const first = new Map();
+  const stampOnce = (t) => {
+    if (typeof t !== 'string' || !t) return null;
+    if (!first.has(t)) {
+      const takenAt = new Date().toISOString();
+      first.set(t, stampNow(client, t, '', now).then((st) => ({ table: t, query: '', ...st, taken_at: takenAt })));
+    }
+    return first.get(t);
+  };
+  const wrapped = { ...client };
+  for (const name of ['query', 'count', 'countBy', 'aggregate']) {
+    if (typeof client[name] !== 'function') continue;
+    wrapped[name] = async (t, ...args) => { await stampOnce(t); return client[name](t, ...args); };
+  }
+  return {
+    client: wrapped,
+    stamps: async () => Object.fromEntries(await Promise.all([...first.entries()].sort(([a], [b]) => a.localeCompare(b)).map(async ([t, p]) => [t, await p]))),
+  };
+}
+
+/**
  * Take stamps for a list of sources — used for the CMDB meta reads, whose
  * slices are not tables in the allow-list.
  */
@@ -227,7 +268,21 @@ export async function planScan({
   }
 
   /* 2. One stamp per input table of every candidate, taken once even when shared. */
-  const inputsOf = (m) => [...new Set([...(baselines[m].dependencies || []), ...moduleTables([m])])].filter((t) => TABLES[t]);
+  /*
+   * AN OPT-IN TABLE NOBODY READ IS NOT AN INPUT.
+   *
+   * The dependency tracker records every table a rule TOUCHED, and the rules do
+   * touch `ctx.estate.sys_audit` — they have to, to discover it is absent and
+   * say so. But `sys_audit` is opt-in: unless a caller named it, it was never
+   * read, so it cannot have contributed to the result and cannot invalidate it.
+   * Without this, every CMDB scan would find an input with no stamp, conclude it
+   * must re-read, and no module would ever be reusable again — the exact
+   * optimisation the planner exists for, undone by a table that was deliberately
+   * skipped. An opt-in table that HAS a stamp was genuinely read, and is checked
+   * like any other.
+   */
+  const inputsOf = (m) => [...new Set([...(baselines[m].dependencies || []), ...moduleTables([m])])]
+    .filter((t) => TABLES[t] && (!TABLES[t].optIn || baselines[m].stamps?.[t]));
   const tables = [...new Set(candidates.flatMap(inputsOf))].sort();
   const logged = tables.length ? await deletionLoggedTables(client, tables) : null;
   stopped();
@@ -279,6 +334,22 @@ export async function planScan({
           const why = compareStamps(s, metaNow[i]);
           plan.meta[key] = { table: s.table, changed: Boolean(why), reason: why };
           if (why) changes.push(`${s.table} (${key}): ${why}`);
+        });
+      }
+    }
+
+    /* The ITSM catalogue's reads — every table it touched, compared whole (ITSM Phase 5). */
+    if (m === 'itsm') {
+      const before = b.metaStamps;
+      if (!before) {
+        changes.push('its catalogue reads were recorded before change stamps existed');
+      } else {
+        const entries = Object.entries(before);
+        const now2 = await pool(entries, concurrency, ([, st]) => { stopped(); return stampNow(client, st.table, st.query ?? '', now); });
+        entries.forEach(([key, st], i) => {
+          const why = compareStamps(st, now2[i]);
+          plan.meta[`itsm:${key}`] = { table: st.table, changed: Boolean(why), reason: why };
+          if (why) changes.push(`${st.table} (read by the ITSM catalogue): ${why}`);
         });
       }
     }

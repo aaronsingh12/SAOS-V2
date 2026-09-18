@@ -1,0 +1,5554 @@
+{
+  "generated": "2026-09-17",
+  "summary": {
+    "rules": 139,
+    "emptied_tables": [
+      "incident",
+      "problem",
+      "change_request",
+      "task_sla",
+      "kb_knowledge",
+      "m2m_kb_task",
+      "sys_user_delegate",
+      "sysapproval_approver"
+    ],
+    "by_category": {
+      "REQUIRES_POPULATION": 95,
+      "NOT_EVALUABLE_OFFLINE": 39,
+      "JUDGED_OVER_WHAT_REMAINS": 4,
+      "DETERMINATE_WHEN_EMPTY": 1
+    },
+    "empty_estate": {
+      "status": {
+        "evaluated": 75,
+        "unavailable": 37,
+        "unconfigured": 26,
+        "skipped": 1
+      },
+      "verdict": {
+        "inconclusive": 72,
+        "none": 64,
+        "fail": 3
+      },
+      "undetermined": {
+        "empty_population": 67,
+        "none": 67,
+        "nothing_judgeable": 2,
+        "input_inconclusive": 3
+      }
+    },
+    "placeholder_run": {
+      "rules": 39,
+      "status": {
+        "none": 100,
+        "evaluated": 26,
+        "unavailable": 12,
+        "unconfigured": 1
+      },
+      "verdict": {
+        "none": 113,
+        "inconclusive": 25,
+        "fail": 1
+      }
+    },
+    "passes_over_nothing": 0
+  },
+  "rows": [
+    {
+      "rule_id": "ITSM-001",
+      "rule": "Priority matrix producing a single dominant priority (>70% in one band)",
+      "engine": "aggregate",
+      "shape": "share",
+      "workbook": {
+        "detection_logic": "Priority distribution over the window; flag where one band exceeds threshold share",
+        "threshold": "Default 70% in one band. Window default 90 days."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "share of incidents in the largest priority band"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "share of incidents in the largest priority band"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (share of incidents in the largest priority band))"
+    },
+    {
+      "rule_id": "ITSM-002",
+      "rule": "Categorisation taxonomy with categories never used, or one category absorbing most volume",
+      "engine": "configuration",
+      "shape": "compare choice_usage",
+      "workbook": {
+        "detection_logic": "Category usage distribution against the configured choice list; flag unused categories and any category above threshold share",
+        "threshold": "Unused = zero use in 180 days. Dominance threshold default 40%."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "incident usage of category in the window against 3 configured choice(s)"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident usage of category in the window against 3 configured choice(s)"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident usage of category in the window against 3 configured choice(s)))"
+    },
+    {
+      "rule_id": "ITSM-003",
+      "rule": "No SLA definition attached to a priority band",
+      "engine": "configuration",
+      "shape": "compare sla_per_band",
+      "workbook": {
+        "detection_logic": "Priority bands with incident volume but no matching SLA definition start condition",
+        "threshold": "Any band with non-zero volume and no SLA"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "incident with priority set — the bands with volume"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident with priority set — the bands with volume"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident with priority set — the bands with volume))"
+    },
+    {
+      "rule_id": "ITSM-004",
+      "rule": "Assignment rules absent, so routing is fully manual",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Incident volume with no matching assignment rule at creation",
+        "threshold": "Report as a ratio of total volume"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_dependency) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-005",
+      "rule": "Impact and urgency fields not driving priority (priority set manually, overriding matrix)",
+      "engine": "configuration",
+      "shape": "compare lookup_mismatch",
+      "workbook": {
+        "detection_logic": "Incidents whose priority differs from the matrix result for their impact and urgency values",
+        "threshold": "Report as a ratio and by group"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "incident with impact and urgency set; records whose inputs have no lookup row are not judged"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident with impact and urgency set; records whose inputs have no lookup row are not judged"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident with impact and urgency set; records whose inputs have no lookup row are not judged))"
+    },
+    {
+      "rule_id": "ITSM-006",
+      "rule": "Category-subcategory combinations invalid or orphaned",
+      "engine": "configuration",
+      "shape": "compare dependent_choice_pairs",
+      "workbook": {
+        "detection_logic": "Incident category/subcategory pairs not present in the configured dependent choice set",
+        "threshold": "Any invalid pair with non-zero volume"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "incident with subcategory set"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident with subcategory set"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident with subcategory set))"
+    },
+    {
+      "rule_id": "ITSM-007",
+      "rule": "Auto-close duration set so short that resolution verification is impossible",
+      "engine": "composite",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Auto-close duration below threshold, correlated against reopen rate and reopen timing",
+        "threshold": "Default minimum 3 business days. Compare against the reopen timing distribution."
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-008",
+      "rule": "Resolution code list with a dominant catch-all value (\"Other\", \"Resolved\")",
+      "engine": "aggregate",
+      "shape": "share",
+      "workbook": {
+        "detection_logic": "Resolution code distribution; flag where a catch-all or generic value exceeds threshold share",
+        "threshold": "Default 30% in one generic value"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "share of closures carrying a generic close code"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (share of closures carrying a generic close code)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-009",
+      "rule": "State model with unreachable or dead-end states",
+      "engine": "configuration",
+      "shape": "compare choice_usage",
+      "workbook": {
+        "detection_logic": "States with zero records (unreachable) or records in a state with no outbound transition and age above threshold",
+        "threshold": "Age threshold default 30 days for dead-end detection"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "incident usage of state against 4 configured choice(s)"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident usage of state against 4 configured choice(s)"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident usage of state against 4 configured choice(s)))"
+    },
+    {
+      "rule_id": "ITSM-010",
+      "rule": "Mandatory fields enforced at the wrong state (too late to be useful)",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Mandatory enforcement at closure states for fields whose operational value is at triage",
+        "threshold": "Field-to-stage value mapping configurable"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-011",
+      "rule": "Notification rules firing to inactive users or empty groups",
+      "engine": "configuration",
+      "shape": "compare recipients_resolve",
+      "workbook": {
+        "detection_logic": "Notification rules whose recipients resolve to inactive users or empty groups",
+        "threshold": "Active membership resolved live"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "notifications",
+          "basis": "notification rules and their recipients"
+        },
+        "undetermined": null,
+        "partial": "false_positive_risk",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "notifications",
+          "basis": "notification rules and their recipients"
+        },
+        "undetermined": null,
+        "partial": "false_positive_risk",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "JUDGED_OVER_WHAT_REMAINS",
+      "reading": "fails over a population the emptied tables do not hold (2 notifications); Phase 4 declared false_positive_risk: Recipients derived from record fields (recipient_fields) and event parameters are not resolved — only the explicit user / group lists. The guard \"recipient deactivated within a grace period with a delegate configured\" is not applied."
+    },
+    {
+      "rule_id": "ITSM-012",
+      "rule": "Business hours / schedule not applied to SLA calculation",
+      "engine": "configuration",
+      "shape": "compare rows_where",
+      "workbook": {
+        "detection_logic": "SLA definitions with no schedule, or whose schedule contradicts the commitment they enforce",
+        "threshold": "Compare against the service commitment where one exists"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "configuration rows",
+          "basis": "the name rows the selector is tested on"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "configuration rows",
+          "basis": "the name rows the selector is tested on"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "JUDGED_OVER_WHAT_REMAINS",
+      "reading": "fails over a population the emptied tables do not hold (1 configuration rows); Phase 4 declared detection_gap: Only \"SLA definitions with no schedule\" is evaluated. \"Whose schedule contradicts the commitment they enforce\" needs the service commitment, which is UNDEFINED."
+    },
+    {
+      "rule_id": "ITSM-013",
+      "rule": "Custom incident states added without corresponding SLA handling",
+      "engine": "configuration",
+      "shape": "compare states_absent_from_sla_conditions",
+      "workbook": {
+        "detection_logic": "Custom states not referenced in any SLA pause or stop condition, with non-zero record volume",
+        "threshold": "Any custom state absent from SLA conditions"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident volume per state — a custom state is judged by its volume"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident volume per state — a custom state is judged by its volume)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-014",
+      "rule": "Incident form with excessive custom fields, unpopulated",
+      "engine": "configuration",
+      "shape": "compare custom_field_population",
+      "workbook": {
+        "detection_logic": "Custom incident fields with population rate below threshold",
+        "threshold": "Default 5% populated"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "fields",
+          "basis": "incident fields prefixed u_, rates over 4 record(s)"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 0,
+          "unit": "fields",
+          "basis": "incident fields prefixed u_, rates over 0 record(s)"
+        },
+        "undetermined": "nothing_judgeable",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (nothing_judgeable: 1 fields in scope (incident fields prefixed u_, rates over 0 record(s)), none of which the detection could answer for)"
+    },
+    {
+      "rule_id": "ITSM-015",
+      "rule": "Knowledge suggestion not enabled on incident",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Knowledge suggestion disabled or unconfigured on incident where a knowledge base exists with published articles",
+        "threshold": "Fires only where published articles exist"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-016",
+      "rule": "Percentage of incidents with no CI and no service reference",
+      "engine": "aggregate",
+      "shape": "count ratio",
+      "workbook": {
+        "detection_logic": "COUNT(incidents with both fields empty) / COUNT(incidents) in the window",
+        "threshold": "Default threshold 40%. Window default 90 days."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "incidents with neither CI nor business service / all incidents in the window"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incidents with neither CI nor business service / all incidents in the window"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incidents with neither CI nor business service / all incidents in the window))"
+    },
+    {
+      "rule_id": "ITSM-017",
+      "rule": "Percentage of incidents referencing a bare CI rather than a Business Service",
+      "engine": "aggregate",
+      "shape": "count ratio",
+      "workbook": {
+        "detection_logic": "COUNT(incidents with cmdb_ci but no business_service) / COUNT(incidents with either)",
+        "threshold": "Default threshold 50%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incidents referencing a bare CI / incidents referencing either"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incidents referencing a bare CI / incidents referencing either"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incidents referencing a bare CI / incidents referencing either))"
+    },
+    {
+      "rule_id": "ITSM-018",
+      "rule": "Incident assigned to a group with zero active members",
+      "engine": "reference_integrity",
+      "shape": "check members_active",
+      "workbook": {
+        "detection_logic": "Open incidents whose assignment group resolves to zero active members",
+        "threshold": "Active membership resolved live"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where active=true → assignment_group (members_active)"
+        },
+        "undetermined": "nothing_judgeable",
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where active=true → assignment_group (members_active)"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where active=true → assignment_group (members_active)))"
+    },
+    {
+      "rule_id": "ITSM-019",
+      "rule": "Incident referencing a retired or non-existent CI",
+      "engine": "reference_integrity",
+      "shape": "check state",
+      "workbook": {
+        "detection_logic": "Incidents referencing a CI sys_id with no record, or a CI in a retired state",
+        "threshold": "Report the two cases separately"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "incident where cmdb_ciISNOTEMPTY → cmdb_ci (state)"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where cmdb_ciISNOTEMPTY → cmdb_ci (state)"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where cmdb_ciISNOTEMPTY → cmdb_ci (state)))"
+    },
+    {
+      "rule_id": "ITSM-020",
+      "rule": "Resolution notes empty or below a meaningful length",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Resolved incidents with empty resolution notes or length below threshold",
+        "threshold": "Length threshold default 20 characters after trimming"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where resolved_atISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-021",
+      "rule": "Resolution notes containing only a copy of the short description",
+      "engine": "text_analysis",
+      "shape": "similarity",
+      "workbook": {
+        "detection_logic": "Resolved incidents where close_notes similarity to short_description exceeds threshold",
+        "threshold": "Similarity threshold default 0.9"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where resolved_atISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-022",
+      "rule": "Caller field populated with a service account or generic user",
+      "engine": "reference_integrity",
+      "shape": "check exists",
+      "workbook": {
+        "detection_logic": "Incidents whose caller resolves to a service account, integration user, or a user above a volume threshold",
+        "threshold": "Volume threshold configurable; service account detection from naming and role pattern"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where caller_idISNOTEMPTY → caller_id (exists)"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where caller_idISNOTEMPTY → caller_id (exists))) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-023",
+      "rule": "Short description duplicated across large volumes (template pasting)",
+      "engine": "text_analysis",
+      "shape": "frequency",
+      "workbook": {
+        "detection_logic": "Short description values appearing above a volume threshold, normalised",
+        "threshold": "Volume threshold configurable relative to total volume"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-024",
+      "rule": "Category not matching the resolution code pattern for that category",
+      "engine": "aggregate",
+      "shape": "joint_share",
+      "workbook": {
+        "detection_logic": "Category and close code pairs occurring far outside the expected joint distribution",
+        "threshold": "Expected distribution derived from the estate's own data, minimum volume per category required"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "specification_gap"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "specification_gap"
+      },
+      "empty_with_placeholders": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "specification_gap"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unconfigured, specification_gap) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-025",
+      "rule": "Close code and close notes inconsistent",
+      "engine": "text_analysis",
+      "shape": "pattern_scan",
+      "workbook": {
+        "detection_logic": "Incidents whose close notes content contradicts the close code semantics",
+        "threshold": "Consistency rules per close code, derived from the estate's own dominant patterns"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where close_codeISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where close_codeISNOTEMPTY)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-026",
+      "rule": "Incident with no work notes at all through its lifecycle",
+      "engine": "audit_history",
+      "shape": "source journal_count",
+      "workbook": {
+        "detection_logic": "Resolved incidents with zero work note entries",
+        "threshold": "Any occurrence; report by group and priority"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where resolved_atISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-027",
+      "rule": "Attachment-only resolution with no text record",
+      "engine": "temporal_correlation",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Resolved incidents with empty close notes but attachments added near resolution",
+        "threshold": "Timing window configurable"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_table) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-028",
+      "rule": "Free-text fields containing PAN, Aadhaar, account numbers, or other identifiers (DPDP exposure)",
+      "engine": "text_analysis",
+      "shape": "pattern_scan",
+      "workbook": {
+        "detection_logic": "Free-text fields matching identifier patterns, counted by field and pattern type",
+        "threshold": "Pattern set per identifier type, with checksum validation where the format supports it"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "incident"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident))"
+    },
+    {
+      "rule_id": "ITSM-029",
+      "rule": "Location or department unpopulated where routing depends on it",
+      "engine": "configuration",
+      "shape": "compare rules_referencing_fields",
+      "workbook": {
+        "detection_logic": "Incidents with empty location or department where an assignment rule evaluates those fields",
+        "threshold": "Fires only where routing rules reference the fields"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": null,
+          "judged": null,
+          "unit": "incident records",
+          "basis": "incident where active=true, routed on location"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where active=true, routed on location"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "DETERMINATE_WHEN_EMPTY",
+      "reading": "no active assignment rule references the fields → pass (the workbook threshold \"Fires only where routing rules reference the fields\"); a rule references one → the records in scope are the population, and here: inconclusive (empty_population)"
+    },
+    {
+      "rule_id": "ITSM-030",
+      "rule": "Reopen rate above threshold, by group and by resolution code",
+      "engine": "aggregate",
+      "shape": "count ratio, 3 variants",
+      "workbook": {
+        "detection_logic": "COUNT(reopened incidents) / COUNT(resolved incidents), by group and by close code",
+        "threshold": "Default threshold 8%. Escalate above 15%."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 3,
+        "population": {
+          "total": 9,
+          "judged": 9,
+          "unit": "incident records (summed over variants)",
+          "basis": "estate: 3 of 3; by group: 3 of 3; by close code: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records (summed over variants)",
+          "basis": "estate: 0 of 0; by group: 0 of 0; by close code: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant estate: no incident records in scope (reopened / resolved))"
+    },
+    {
+      "rule_id": "ITSM-031",
+      "rule": "Auto-close used as the primary closure mechanism (resolution never verified)",
+      "engine": "aggregate",
+      "shape": "count ratio",
+      "workbook": {
+        "detection_logic": "COUNT(auto-closed incidents) / COUNT(closed incidents)",
+        "threshold": "Default threshold 70%"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "auto-closed / closed"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (auto-closed / closed)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-032",
+      "rule": "Reassignment count distribution with a long tail (ticket ping-pong)",
+      "engine": "aggregate",
+      "shape": "count",
+      "workbook": {
+        "detection_logic": "Reassignment count distribution; flag the tail above threshold and the group pairs involved",
+        "threshold": "Tail threshold default 4 reassignments"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "resolved incidents at or above the reassignment tail threshold (distribution by reassignment count is the evidence)"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "resolved incidents at or above the reassignment tail threshold (distribution by reassignment count is the evidence)"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (resolved incidents at or above the reassignment tail threshold (distribution by reassignment count is the evidence)))"
+    },
+    {
+      "rule_id": "ITSM-033",
+      "rule": "SLA breach rate above threshold",
+      "engine": "aggregate",
+      "shape": "count ratio, 2 variants",
+      "workbook": {
+        "detection_logic": "COUNT(breached SLAs) / COUNT(SLAs attached), by definition and by group",
+        "threshold": "Threshold from the customer's own commitment; default 10%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "task_sla records (summed over variants)",
+          "basis": "estate: 2 of 2; by definition: 2 of 2"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "task_sla records (summed over variants)",
+          "basis": "estate: 0 of 0; by definition: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant estate: no task_sla records in scope (breached SLAs / SLAs attached))"
+    },
+    {
+      "rule_id": "ITSM-034",
+      "rule": "SLA paused or cancelled at abnormal rates (gaming)",
+      "engine": "audit_history",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Pause and cancel rates by group and by definition, against the estate distribution; plus paused duration exceeding active duration",
+        "threshold": "Default flag at 2x the estate mean rate"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_dependency) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-035",
+      "rule": "Resolution time distribution with a spike immediately before SLA expiry",
+      "engine": "temporal_correlation",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Resolution time distribution relative to SLA target; flag a spike in the final decile before expiry",
+        "threshold": "Spike threshold default 2x the expected density for that interval"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_dependency) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-036",
+      "rule": "Incidents resolved and closed within seconds of creation (bulk closure)",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Incidents whose create-to-close interval is below threshold, grouped by closing user and by time window",
+        "threshold": "Default threshold 60 seconds"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "incident where closed_atISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where closed_atISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where closed_atISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-037",
+      "rule": "Backlog ageing beyond threshold by priority",
+      "engine": "record_predicate",
+      "shape": "5 variants",
+      "workbook": {
+        "detection_logic": "Open incidents exceeding age threshold per priority band, with trend",
+        "threshold": "Age thresholds per priority; defaults 2 days P1, 5 days P2, 15 days P3"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "incident records (summed over variants)",
+          "basis": "P1: 1 of 1; P2: 0 of 0; P3: 0 of 0"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records (summed over variants)",
+          "basis": "P1: 0 of 0; P2: 0 of 0; P3: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records (summed over variants)",
+          "basis": "P1: 0 of 0; P2: 0 of 0; P3: 0 of 0; P4: 0 of 0; P5: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant P1: no incident records in scope (incident where active=true^priority=1))"
+    },
+    {
+      "rule_id": "ITSM-038",
+      "rule": "P1 raised manually where automated conditions existed",
+      "engine": "temporal_correlation",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Manually created P1 incidents with a correlated alert in the preceding window that did not auto-create",
+        "threshold": "Correlation window configurable, default 30 minutes"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_table) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-039",
+      "rule": "P1 volume without corresponding Problem records",
+      "engine": "linkage",
+      "shape": "expect absent",
+      "workbook": {
+        "detection_logic": "COUNT(P1 incidents with no linked Problem) / COUNT(P1 incidents)",
+        "threshold": "Default threshold 30%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "incident records",
+          "basis": "incident where priority=1"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where priority=1"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where priority=1))"
+    },
+    {
+      "rule_id": "ITSM-040",
+      "rule": "Incidents created by the same caller repeatedly for the same issue (unresolved root cause)",
+      "engine": "text_analysis",
+      "shape": "cluster",
+      "workbook": {
+        "detection_logic": "Caller and description-cluster pairs with repeat volume above threshold in the window",
+        "threshold": "Similarity threshold and repeat count configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-041",
+      "rule": "First-call resolution rate declining",
+      "engine": "aggregate",
+      "shape": "percentage, count ratio, trend",
+      "workbook": {
+        "detection_logic": "COUNT(incidents resolved with zero reassignments) / COUNT(resolved), trended",
+        "threshold": "Requires at least 3 windows"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "resolved with zero reassignments / resolved, trended across runs"
+        },
+        "undetermined": "insufficient_history",
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "resolved with zero reassignments / resolved, trended across runs"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (resolved with zero reassignments / resolved, trended across runs))"
+    },
+    {
+      "rule_id": "ITSM-042",
+      "rule": "Assignment to an individual rather than a group",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Incidents with assigned_to populated and assignment_group empty, or assignment patterns concentrated on individuals",
+        "threshold": "Report as a ratio and by individual"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "incident records",
+          "basis": "incident where active=true"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where active=true"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where active=true))"
+    },
+    {
+      "rule_id": "ITSM-043",
+      "rule": "On-hold reason not captured",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "On-hold transitions with empty hold reason",
+        "threshold": "Any occurrence; report as a ratio"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "incident records",
+          "basis": "incident where active=true"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where active=true"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where active=true))"
+    },
+    {
+      "rule_id": "ITSM-044",
+      "rule": "Incidents resolved by the caller themselves",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Resolved incidents where caller_id equals resolved_by, joined to the caller's role set",
+        "threshold": "Report separately for callers with and without fulfiller roles"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where resolved_atISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-045",
+      "rule": "No major incident process configured despite P1 volume",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "P1 volume above threshold with zero or near-zero major incident records and no major incident configuration",
+        "threshold": "P1 volume threshold configurable"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-046",
+      "rule": "Major incident raised with no communication plan or task",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Major incidents with no communication plan record or communication task",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-047",
+      "rule": "Major incident closed with no post-incident review",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Closed major incidents with no linked post-incident review",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-048",
+      "rule": "Major incident with no linked Problem record",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Major incidents with no linked Problem",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-049",
+      "rule": "Major incident with no affected service populated",
+      "engine": "record_predicate",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Major incidents with no service reference populated",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-050",
+      "rule": "Major incident timeline gaps (no updates for extended periods)",
+      "engine": "audit_history",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Major incidents with update gaps exceeding threshold during the active period",
+        "threshold": "Gap threshold default 30 minutes during an active major incident"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-051",
+      "rule": "Major incident candidate criteria never triggering",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Candidate criteria configured with zero trigger events, where P1s meeting those criteria exist",
+        "threshold": "Any occurrence with qualifying P1s present"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-052",
+      "rule": "Post-incident review actions created but never closed",
+      "engine": "record_predicate",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Open PIR actions beyond age threshold",
+        "threshold": "Age threshold default 90 days"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-053",
+      "rule": "Problem process effectively unused — Problem-to-Incident ratio near zero",
+      "engine": "aggregate",
+      "shape": "count ratio",
+      "workbook": {
+        "detection_logic": "COUNT(Problem records created) / COUNT(incidents created) in the window",
+        "threshold": "Default threshold 0.5%. Escalate below 0.1%."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "problems created / incidents created"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "problems created / incidents created"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (problems created / incidents created))"
+    },
+    {
+      "rule_id": "ITSM-054",
+      "rule": "Recurring incident patterns with no corresponding Problem record",
+      "engine": "text_analysis",
+      "shape": "cluster",
+      "workbook": {
+        "detection_logic": "Incident clusters above volume threshold with no linked Problem",
+        "threshold": "Cluster volume threshold and similarity threshold configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-055",
+      "rule": "P1 and major incidents with no Problem raised",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "P1 and major incidents closed with no linked Problem",
+        "threshold": "Any occurrence; report as a ratio"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-056",
+      "rule": "Problem records created but never progressed past initial state",
+      "engine": "audit_history",
+      "shape": "source audit",
+      "workbook": {
+        "detection_logic": "Problems in the initial state beyond age threshold with no state change",
+        "threshold": "Age threshold default 30 days"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "problem records",
+          "basis": "problem where active=true^sys_created_on<2026-08-17 12:00:00"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=true^sys_created_on<2026-08-17 12:00:00"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=true^sys_created_on<2026-08-17 12:00:00))"
+    },
+    {
+      "rule_id": "ITSM-057",
+      "rule": "Percentage of incident volume attributable to known problems",
+      "engine": "linkage",
+      "shape": "expect absent",
+      "workbook": {
+        "detection_logic": "COUNT(incidents linked to a Problem) / COUNT(incidents) in the window, split by Problem state",
+        "threshold": "Report by Problem state; no single threshold"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "incident records",
+          "basis": "every incident record"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "every incident record"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (every incident record))"
+    },
+    {
+      "rule_id": "ITSM-058",
+      "rule": "Top ten incident clusters by short-description similarity with no Problem",
+      "engine": "text_analysis",
+      "shape": "cluster",
+      "workbook": {
+        "detection_logic": "Top N clusters by volume with no Problem link, ranked by aggregate resolution effort",
+        "threshold": "N default 10; effort derived from resolution time"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where resolved_atISNOTEMPTY)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-059",
+      "rule": "Problem raised only by one group (process not adopted estate-wide)",
+      "engine": "aggregate",
+      "shape": "share",
+      "workbook": {
+        "detection_logic": "Problem creation distribution by group, against incident volume distribution",
+        "threshold": "Flag where Problem creation concentration far exceeds incident concentration"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "share of problems raised by the single largest group"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (share of problems raised by the single largest group)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-060",
+      "rule": "Problem records with no linked incidents",
+      "engine": "linkage",
+      "shape": "expect absent",
+      "workbook": {
+        "detection_logic": "Problems with zero linked incidents",
+        "threshold": "Any occurrence; report by state"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "problem records",
+          "basis": "every problem record"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "every problem record"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (every problem record))"
+    },
+    {
+      "rule_id": "ITSM-061",
+      "rule": "Problems open beyond age threshold with no state change",
+      "engine": "audit_history",
+      "shape": "source audit",
+      "workbook": {
+        "detection_logic": "Open Problems with no state change beyond age threshold",
+        "threshold": "Age threshold default 90 days"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "problem records",
+          "basis": "problem where active=true^sys_created_on<2026-06-18 12:00:00"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=true^sys_created_on<2026-06-18 12:00:00"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=true^sys_created_on<2026-06-18 12:00:00))"
+    },
+    {
+      "rule_id": "ITSM-062",
+      "rule": "Root cause field empty on closed Problems",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Closed Problems with empty root cause",
+        "threshold": "Any occurrence; report as a ratio"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "problem records",
+          "basis": "problem where active=false"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=false"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=false))"
+    },
+    {
+      "rule_id": "ITSM-063",
+      "rule": "Workaround empty on Problems with open linked incidents",
+      "engine": "linkage",
+      "shape": "expect any_in_state",
+      "workbook": {
+        "detection_logic": "Problems with open linked incidents and empty workaround",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "problem records",
+          "basis": "problem where workaroundISEMPTY"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where workaroundISEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where workaroundISEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-064",
+      "rule": "Problem closed with no permanent fix and no accepted-risk decision",
+      "engine": "linkage",
+      "shape": "expect absent",
+      "workbook": {
+        "detection_logic": "Closed Problems with no linked Change, no Known Error, and no accepted-risk record",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "problem records",
+          "basis": "problem where active=false^known_error=false"
+        },
+        "undetermined": null,
+        "partial": "false_positive_risk",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=false^known_error=false"
+        },
+        "undetermined": "empty_population",
+        "partial": "false_positive_risk",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=false^known_error=false))"
+    },
+    {
+      "rule_id": "ITSM-065",
+      "rule": "Problem with no assigned owner, or owner inactive",
+      "engine": "reference_integrity",
+      "shape": "2 variants",
+      "workbook": {
+        "detection_logic": "Problems with empty owner, or owner resolving to an inactive user or empty group",
+        "threshold": "Active membership resolved live"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "problem records (summed over variants)",
+          "basis": "owner: 1 of 1; group: 1 of 1"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records (summed over variants)",
+          "basis": "owner: 0 of 0; group: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant owner: no problem records in scope (problem where active=true → assigned_to (active)))"
+    },
+    {
+      "rule_id": "ITSM-066",
+      "rule": "Known Error records not published to knowledge",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Known Errors with no published knowledge article, or with an article in draft",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-067",
+      "rule": "Problem not linked to a CI or service",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Problems with both CI and service references empty",
+        "threshold": "Any occurrence; report as a ratio"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "problem records",
+          "basis": "every problem record"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "every problem record"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (every problem record))"
+    },
+    {
+      "rule_id": "ITSM-068",
+      "rule": "Problem tasks created but never completed",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Open Problem tasks beyond age threshold",
+        "threshold": "Age threshold default 60 days"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_table"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_table) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-069",
+      "rule": "Problem closed while linked incidents remain open",
+      "engine": "linkage",
+      "shape": "expect any_in_state",
+      "workbook": {
+        "detection_logic": "Closed Problems with one or more open linked incidents",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "problem records",
+          "basis": "problem where active=false"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=false"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=false))"
+    },
+    {
+      "rule_id": "ITSM-070",
+      "rule": "Root cause text below meaningful length or restating the symptom",
+      "engine": "text_analysis",
+      "shape": "similarity",
+      "workbook": {
+        "detection_logic": "Closed Problems with root cause below length threshold, or similarity to description above threshold",
+        "threshold": "Length threshold default 40 characters; similarity threshold 0.85"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "problem records",
+          "basis": "problem where active=false"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=false"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=false))"
+    },
+    {
+      "rule_id": "ITSM-071",
+      "rule": "Problem with no linked Change where a fix was clearly required",
+      "engine": "text_analysis",
+      "shape": "pattern_scan",
+      "workbook": {
+        "detection_logic": "Closed Problems with a root cause indicating a configuration or code fix, and no linked Change",
+        "threshold": "Root cause classification from close code and text pattern"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=false^rfcISEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=false^rfcISEMPTY)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-072",
+      "rule": "Problem state regressing repeatedly",
+      "engine": "audit_history",
+      "shape": "source audit",
+      "workbook": {
+        "detection_logic": "Problems with more than N backward state transitions",
+        "threshold": "Default 2 backward transitions"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "problem records",
+          "basis": "every problem record"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "every problem record"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (every problem record))"
+    },
+    {
+      "rule_id": "ITSM-073",
+      "rule": "Problem priority not aligned to the aggregate impact of linked incidents",
+      "engine": "linkage",
+      "shape": "expect any_in_state",
+      "workbook": {
+        "detection_logic": "Problems whose priority is inconsistent with their linked incident aggregate volume and priority",
+        "threshold": "Alignment matrix configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "every problem record"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (every problem record)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-074",
+      "rule": "Incident volume for a resolved Problem not declining post-closure (fix ineffective)",
+      "engine": "temporal_correlation",
+      "shape": "before_after",
+      "workbook": {
+        "detection_logic": "Linked incident rate in the N days after closure compared against the N days before",
+        "threshold": "Window default 90 days either side. Flag where the decline is below threshold."
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem where active=false^closed_atISNOTEMPTY, after-window 90 days elapsed"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem where active=false^closed_atISNOTEMPTY, after-window 90 days elapsed)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-075",
+      "rule": "Problem recurrence — same root cause appearing in multiple Problem records",
+      "engine": "text_analysis",
+      "shape": "cluster",
+      "workbook": {
+        "detection_logic": "Problem clusters by root cause similarity above threshold",
+        "threshold": "Similarity threshold default 0.8, minimum cluster size 2"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "problem records",
+          "basis": "problem"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records",
+          "basis": "problem"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no problem records in scope (problem))"
+    },
+    {
+      "rule_id": "ITSM-076",
+      "rule": "Known Error articles with no views or no linkage from incidents",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Known Error articles with zero views or zero incident linkage in the window",
+        "threshold": "Window default 90 days"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-077",
+      "rule": "Average time from incident cluster emergence to Problem creation",
+      "engine": "composite",
+      "shape": "combine cluster_to_problem_latency",
+      "workbook": {
+        "detection_logic": "Mean and distribution of (Problem created - cluster first occurrence) across linked clusters",
+        "threshold": "Report distribution, not a single threshold"
+      },
+      "populated": {
+        "status": "skipped",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "input"
+      },
+      "empty": {
+        "status": "skipped",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "input"
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (input_inconclusive: input ITSM-054 no incident records in scope (incident)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-078",
+      "rule": "Permanent fix implemented but no validation recorded",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Problems with a permanent fix recorded and no validation entry or post-implementation review",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-079",
+      "rule": "Problems closed as \"cannot reproduce\" above threshold",
+      "engine": "aggregate",
+      "shape": "count ratio, 2 variants",
+      "workbook": {
+        "detection_logic": "COUNT(Problems closed as cannot reproduce) / COUNT(closed Problems), by group",
+        "threshold": "Default threshold 20%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "population": {
+          "total": 4,
+          "judged": 4,
+          "unit": "problem records (summed over variants)",
+          "basis": "estate: 2 of 2; by group: 2 of 2"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "problem records (summed over variants)",
+          "basis": "estate: 0 of 0; by group: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant estate: no problem records in scope (problems closed as cannot reproduce / closed problems))"
+    },
+    {
+      "rule_id": "ITSM-080",
+      "rule": "Standard change catalogue empty or unused — everything routed as Normal",
+      "engine": "aggregate",
+      "shape": "count ratio",
+      "workbook": {
+        "detection_logic": "Standard change template count and usage against total change volume",
+        "threshold": "Default threshold 20% of changes as standard for a mature estate"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "standard changes / all changes"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "standard changes / all changes"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (standard changes / all changes))"
+    },
+    {
+      "rule_id": "ITSM-081",
+      "rule": "Approval routing with no defined approver group for a change type",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Change types with volume but no configured approver group",
+        "threshold": "Any type with non-zero volume"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-082",
+      "rule": "CAB not configured, or CAB meeting workflow unused",
+      "engine": "configuration",
+      "shape": "compare absent_despite_volume",
+      "workbook": {
+        "detection_logic": "CAB configuration absent, or zero CAB meeting records in the window despite change volume",
+        "threshold": "Window default 90 days"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records in the window",
+          "basis": "absence matters only where change_request has volume"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records in the window",
+          "basis": "absence matters only where change_request has volume"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in the window in scope (absence matters only where change_request has volume))"
+    },
+    {
+      "rule_id": "ITSM-083",
+      "rule": "Risk assessment not configured, or risk always computed as the same value",
+      "engine": "aggregate",
+      "shape": "share",
+      "workbook": {
+        "detection_logic": "Risk value distribution; flag where one value exceeds threshold share, or where risk assessment is unconfigured",
+        "threshold": "Default 80% in one risk value"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "share of changes carrying the single most common risk value"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "share of changes carrying the single most common risk value"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (share of changes carrying the single most common risk value))"
+    },
+    {
+      "rule_id": "ITSM-084",
+      "rule": "No conflict detection configured",
+      "engine": "composite",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Conflict detection unconfigured, or configured with zero detections despite overlapping changes existing",
+        "threshold": "Report both cases; the second is ITSM-138"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-085",
+      "rule": "Blackout and maintenance windows not defined",
+      "engine": "configuration",
+      "shape": "compare absent, 2 variants",
+      "workbook": {
+        "detection_logic": "Absence of blackout or maintenance window definitions where change volume exists",
+        "threshold": "Any absence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "presence check (summed over variants)",
+          "basis": "blackout: 1 of 1; maintenance: 1 of 1"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "presence check (summed over variants)",
+          "basis": "blackout: 1 of 1; maintenance: 1 of 1"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "JUDGED_OVER_WHAT_REMAINS",
+      "reading": "fails over a population the emptied tables do not hold (2 presence check (summed over variants)); Phase 4 declared evidence_gap: \"Where change volume exists\" is not gated — absence is reported regardless of change volume."
+    },
+    {
+      "rule_id": "ITSM-086",
+      "rule": "Emergency change path with the same approval requirements as Normal (so it gets bypassed)",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Emergency change approval step count and turnaround compared against Normal",
+        "threshold": "Flag where emergency approval burden is not materially lighter"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-087",
+      "rule": "Change model states allowing closure without implementation evidence",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Change models allowing closure with empty close notes and no implementation evidence fields required",
+        "threshold": "Any model permitting evidenceless closure"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-088",
+      "rule": "Approval delegation configured to inactive users",
+      "engine": "reference_integrity",
+      "shape": "check active, 2 variants",
+      "workbook": {
+        "detection_logic": "Active delegations whose delegate resolves to an inactive user",
+        "threshold": "Active delegation records only"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "sys_user_delegate records (summed over variants)",
+          "basis": "open-ended: 1 of 1; bounded: 1 of 1"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "sys_user_delegate records (summed over variants)",
+          "basis": "open-ended: 0 of 0; bounded: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant open-ended: no sys_user_delegate records in scope (sys_user_delegate where starts<=2026-09-16 12:00:00^endsISEMPTY → delegate (active)))"
+    },
+    {
+      "rule_id": "ITSM-089",
+      "rule": "Standard change templates with no expiry or review date",
+      "engine": "record_predicate",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Standard templates with no expiry or review date, or past review date",
+        "threshold": "Review period from policy; default 12 months"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-090",
+      "rule": "Risk matrix fields not mandatory",
+      "engine": "configuration",
+      "shape": "compare custom_field_population",
+      "workbook": {
+        "detection_logic": "Risk matrix input fields with no mandatory enforcement and population rate below threshold",
+        "threshold": "Population threshold default 80%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "fields",
+          "basis": "change_request fields (mandatory ones judged as enforced), rates over 3 record(s)"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 3,
+          "judged": 0,
+          "unit": "fields",
+          "basis": "change_request fields (mandatory ones judged as enforced), rates over 0 record(s)"
+        },
+        "undetermined": "nothing_judgeable",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (nothing_judgeable: 3 fields in scope (change_request fields (mandatory ones judged as enforced), rates over 0 record(s)), none of which the detection could answer for)"
+    },
+    {
+      "rule_id": "ITSM-091",
+      "rule": "Change types customised without corresponding approval logic",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Custom change types with volume and no matching approval workflow condition",
+        "threshold": "Any custom type with non-zero volume"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-092",
+      "rule": "No post-implementation review step for high-risk changes",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "High-risk change types with no PIR step configured, or zero PIR records for high-risk changes",
+        "threshold": "Risk bands configurable"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-093",
+      "rule": "Change calendar not published or not consumed",
+      "engine": "configuration",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Calendar unconfigured or unpublished, or published with negligible access",
+        "threshold": "Access threshold where log data is available"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-094",
+      "rule": "Percentage of changes with no CI and no service reference",
+      "engine": "aggregate",
+      "shape": "count ratio",
+      "workbook": {
+        "detection_logic": "COUNT(changes with both fields empty) / COUNT(changes) in the window",
+        "threshold": "Default threshold 30%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "changes with neither CI nor business service / all changes"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "changes with neither CI nor business service / all changes"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (changes with neither CI nor business service / all changes))"
+    },
+    {
+      "rule_id": "ITSM-095",
+      "rule": "Change referencing a retired or non-existent CI",
+      "engine": "reference_integrity",
+      "shape": "check state",
+      "workbook": {
+        "detection_logic": "Changes referencing a CI sys_id with no record, or a CI in a retired state",
+        "threshold": "Report the two cases separately"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "change_request where cmdb_ciISNOTEMPTY → cmdb_ci (state)"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request where cmdb_ciISNOTEMPTY → cmdb_ci (state)"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (change_request where cmdb_ciISNOTEMPTY → cmdb_ci (state)))"
+    },
+    {
+      "rule_id": "ITSM-096",
+      "rule": "Implementation plan empty",
+      "engine": "record_predicate",
+      "shape": "predicates, 2 variants",
+      "workbook": {
+        "detection_logic": "Approved or closed changes with empty implementation plan",
+        "threshold": "Any occurrence; report by type and risk band"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records (summed over variants)",
+          "basis": "approved: 3 of 3; closed: 0 of 0"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "approved: 0 of 0; closed: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant approved: no change_request records in scope (change_request where approval=approved))"
+    },
+    {
+      "rule_id": "ITSM-097",
+      "rule": "Backout plan empty",
+      "engine": "record_predicate",
+      "shape": "predicates, 2 variants",
+      "workbook": {
+        "detection_logic": "Approved or closed changes with empty backout plan",
+        "threshold": "Any occurrence; escalate for high-risk and production changes"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records (summed over variants)",
+          "basis": "approved: 3 of 3; closed: 0 of 0"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "approved: 0 of 0; closed: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant approved: no change_request records in scope (change_request where approval=approved))"
+    },
+    {
+      "rule_id": "ITSM-098",
+      "rule": "Test plan empty on high-risk changes",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "High-risk changes with empty test plan",
+        "threshold": "Risk bands configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "every change_request record"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (every change_request record)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-099",
+      "rule": "Risk and impact fields unpopulated",
+      "engine": "record_predicate",
+      "shape": "2 variants",
+      "workbook": {
+        "detection_logic": "Changes with risk or impact unpopulated at approval",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 6,
+          "judged": 6,
+          "unit": "change_request records (summed over variants)",
+          "basis": "risk: 3 of 3; impact: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "risk: 0 of 0; impact: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant risk: no change_request records in scope (change_request where approval=approved))"
+    },
+    {
+      "rule_id": "ITSM-100",
+      "rule": "Planned start and end dates absent or in the past at approval",
+      "engine": "record_predicate",
+      "shape": "2 variants",
+      "workbook": {
+        "detection_logic": "Changes with empty planned dates at approval, or planned start earlier than approval date",
+        "threshold": "Report the two cases separately; the second feeds ITSM-108"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 6,
+          "judged": 6,
+          "unit": "change_request records (summed over variants)",
+          "basis": "start_date empty: 3 of 3; end_date empty: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "start_date empty: 0 of 0; end_date empty: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant start_date empty: no change_request records in scope (change_request where approval=approved))"
+    },
+    {
+      "rule_id": "ITSM-101",
+      "rule": "Assignment group with zero active members",
+      "engine": "reference_integrity",
+      "shape": "check members_active",
+      "workbook": {
+        "detection_logic": "Open changes whose assignment group resolves to zero active members",
+        "threshold": "Active membership resolved live"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request where active=true → assignment_group (members_active)"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request where active=true → assignment_group (members_active)"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (change_request where active=true → assignment_group (members_active)))"
+    },
+    {
+      "rule_id": "ITSM-102",
+      "rule": "Justification or business reason empty",
+      "engine": "record_predicate",
+      "shape": "predicates, 2 variants",
+      "workbook": {
+        "detection_logic": "Approved or closed changes with empty justification",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records (summed over variants)",
+          "basis": "approved: 3 of 3; closed: 0 of 0"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "approved: 0 of 0; closed: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant approved: no change_request records in scope (change_request where approval=approved))"
+    },
+    {
+      "rule_id": "ITSM-103",
+      "rule": "Change closed with no close code or close notes",
+      "engine": "record_predicate",
+      "shape": "2 variants",
+      "workbook": {
+        "detection_logic": "Closed changes with empty close code or close notes",
+        "threshold": "Report the two cases separately"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 6,
+          "judged": 6,
+          "unit": "change_request records (summed over variants)",
+          "basis": "close_code empty: 3 of 3; close_notes empty: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "close_code empty: 0 of 0; close_notes empty: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant close_code empty: no change_request records in scope (change_request where active=false))"
+    },
+    {
+      "rule_id": "ITSM-104",
+      "rule": "Backout plan text identical across many changes (template pasting)",
+      "engine": "text_analysis",
+      "shape": "frequency",
+      "workbook": {
+        "detection_logic": "Backout plan values appearing above a volume threshold, normalised",
+        "threshold": "Volume threshold configurable relative to change volume"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (change_request)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-105",
+      "rule": "Affected CI list containing a single CI where the change clearly spans more",
+      "engine": "relationship_graph",
+      "shape": "question dependents",
+      "workbook": {
+        "detection_logic": "Changes with a single affected CI whose description or type indicates broader scope, or whose primary CI has dependent CIs not declared",
+        "threshold": "Scope inference from change type and CI relationship depth"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records referencing a CI",
+          "basis": "change_request where cmdb_ciISNOTEMPTY, cmdb_ci set"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records referencing a CI in scope (change_request where cmdb_ciISNOTEMPTY, cmdb_ci set)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-106",
+      "rule": "Unauthorised change rate — CI modified with no corresponding approved change",
+      "engine": "temporal_correlation",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Configuration modifications on change-controlled objects with no approved change covering the object and timestamp",
+        "threshold": "Scope to change-controlled object classes; correlation window configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "sys_audit records",
+          "basis": "sys_audit where tablename=cmdb_ci^documentkey.sys_class_nameINplaceholder"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no sys_audit records in scope (sys_audit where tablename=cmdb_ci^documentkey.sys_class_nameINplaceholder)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-107",
+      "rule": "Emergency change ratio above threshold (emergency used to bypass control)",
+      "engine": "aggregate",
+      "shape": "count ratio, 2 variants",
+      "workbook": {
+        "detection_logic": "COUNT(emergency changes) / COUNT(all changes), overall and by group and approver",
+        "threshold": "Default threshold 10%. Escalate above 25%."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "population": {
+          "total": 6,
+          "judged": 6,
+          "unit": "change_request records (summed over variants)",
+          "basis": "estate: 3 of 3; by group: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "estate: 0 of 0; by group: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant estate: no change_request records in scope (emergency changes / all changes))"
+    },
+    {
+      "rule_id": "ITSM-108",
+      "rule": "Retrospective change rate — changes raised after implementation",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Changes whose creation or approval timestamp postdates the actual implementation evidence",
+        "threshold": "Correlation against CI audit where available; otherwise against actual start field"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "change_request where work_startISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request where work_startISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (change_request where work_startISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-109",
+      "rule": "Self-approval — requester and approver the same person",
+      "engine": "linkage",
+      "shape": "expect any_in_state",
+      "workbook": {
+        "detection_logic": "Changes where an approval record's approver equals the requester",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "change_request where requested_byISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request where requested_byISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (change_request where requested_byISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-110",
+      "rule": "Approval granted outside the approver's authority level",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Approvals where the approver's authority level is below that required for the change risk band",
+        "threshold": "Authority matrix from the customer's own delegation policy"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-111",
+      "rule": "Change implemented outside its approved window",
+      "engine": "record_predicate",
+      "shape": "2 variants",
+      "workbook": {
+        "detection_logic": "Changes whose actual implementation falls outside the approved planned window beyond tolerance",
+        "threshold": "Tolerance configurable, default 1 hour"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 5,
+          "judged": 5,
+          "unit": "change_request records (summed over variants)",
+          "basis": "started early: 2 of 2; ended late: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "started early: 0 of 0; ended late: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant started early: no change_request records in scope (change_request where approval=approved^work_startISNOTEMPTY^start_dateISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-112",
+      "rule": "Change implemented during a blackout period",
+      "engine": "temporal_correlation",
+      "shape": "schedule_intersection",
+      "workbook": {
+        "detection_logic": "Changes whose implementation window intersects a defined blackout period",
+        "threshold": "Requires blackout windows to be defined; report ITSM-085 where they are not"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "capability"
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request where work_startISNOTEMPTY^work_endISNOTEMPTY with work_start and work_end"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (change_request where work_startISNOTEMPTY^work_endISNOTEMPTY with work_start and work_end))"
+    },
+    {
+      "rule_id": "ITSM-113",
+      "rule": "Change success rate below threshold",
+      "engine": "aggregate",
+      "shape": "count ratio, 4 variants",
+      "workbook": {
+        "detection_logic": "COUNT(changes closed successful) / COUNT(closed changes), by type, risk band and group",
+        "threshold": "Default threshold 90%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 4,
+        "population": {
+          "total": 12,
+          "judged": 12,
+          "unit": "change_request records (summed over variants)",
+          "basis": "estate: 3 of 3; by type: 3 of 3; by risk: 3 of 3; by group: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "estate: 0 of 0; by type: 0 of 0; by risk: 0 of 0; by group: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant estate: no change_request records in scope (closed successful / closed with a close code))"
+    },
+    {
+      "rule_id": "ITSM-114",
+      "rule": "Failed change rate with no corresponding backout executed",
+      "engine": "linkage",
+      "shape": "expect absent",
+      "workbook": {
+        "detection_logic": "Failed changes with no backout task completed or backout evidence recorded",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "undefined_table"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "undefined_table"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "undefined_table"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_table) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-115",
+      "rule": "Changes closed as Successful with a linked incident created within the window",
+      "engine": "temporal_correlation",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Successful changes with an incident on the same or dependent CI within the window after implementation",
+        "threshold": "Window default 72 hours. CI correlation includes dependent CIs where relationships exist."
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "change_request where close_code=successful^cmdb_ciISNOTEMPTY^work_endISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (change_request where close_code=successful^cmdb_ciISNOTEMPTY^work_endISNOTEMPTY)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-116",
+      "rule": "Approval turnaround near-zero (rubber-stamping)",
+      "engine": "linkage",
+      "shape": "expect any_in_state",
+      "workbook": {
+        "detection_logic": "Approvals with turnaround below threshold, grouped by approver and change type",
+        "threshold": "Default threshold 120 seconds. Report the distribution, not only the outliers."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "every change_request record"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "every change_request record"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (every change_request record))"
+    },
+    {
+      "rule_id": "ITSM-117",
+      "rule": "Standard change used for work that meets Normal change criteria",
+      "engine": "composite",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Standard changes whose affected CIs, risk indicators or description fall outside the template scope",
+        "threshold": "Template scope from the template definition"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-118",
+      "rule": "Conflict detected but overridden with no justification",
+      "engine": "record_predicate",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Detected conflicts with an override and no justification text",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-119",
+      "rule": "Change with no linked incident or problem and no business justification",
+      "engine": "record_predicate",
+      "shape": "predicates",
+      "workbook": {
+        "detection_logic": "Changes with no linked incident, no linked problem, and empty justification",
+        "threshold": "All three absent"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "change_request records",
+          "basis": "every change_request record"
+        },
+        "undetermined": null,
+        "partial": "false_positive_risk",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records",
+          "basis": "every change_request record"
+        },
+        "undetermined": "empty_population",
+        "partial": "false_positive_risk",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records in scope (every change_request record))"
+    },
+    {
+      "rule_id": "ITSM-120",
+      "rule": "Changes repeatedly rescheduled",
+      "engine": "audit_history",
+      "shape": "source audit, 2 variants",
+      "workbook": {
+        "detection_logic": "Changes with more than N planned date changes",
+        "threshold": "Default 3 reschedules"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 6,
+          "judged": 6,
+          "unit": "change_request records (summed over variants)",
+          "basis": "start_date: 3 of 3; end_date: 3 of 3"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records (summed over variants)",
+          "basis": "start_date: 0 of 0; end_date: 0 of 0"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: variant start_date: no change_request records in scope (every change_request record))"
+    },
+    {
+      "rule_id": "ITSM-121",
+      "rule": "Approvals by a single approver across a disproportionate share of changes",
+      "engine": "aggregate",
+      "shape": "share",
+      "workbook": {
+        "detection_logic": "Approvers holding more than threshold share of total approvals",
+        "threshold": "Default 25% of total approvals"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "sysapproval_approver records",
+          "basis": "share of approved change approvals held by the single most frequent approver"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "sysapproval_approver records",
+          "basis": "share of approved change approvals held by the single most frequent approver"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no sysapproval_approver records in scope (share of approved change approvals held by the single most frequent approver))"
+    },
+    {
+      "rule_id": "ITSM-122",
+      "rule": "Change closed without post-implementation review where required",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Closed changes in risk bands requiring PIR with no linked PIR record",
+        "threshold": "Risk bands requiring PIR configurable"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-123",
+      "rule": "Percentage of P1 incidents preceded by a change on the same CI within the window",
+      "engine": "temporal_correlation",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "COUNT(P1 incidents with a preceding change on the same or dependent CI in the window) / COUNT(P1 incidents with a CI reference)",
+        "threshold": "Window default 72 hours. Dependent CI traversal depth default 2."
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "incident records",
+          "basis": "incident where priority=1^cmdb_ciISNOTEMPTY"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where priority=1^cmdb_ciISNOTEMPTY"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where priority=1^cmdb_ciISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-124",
+      "rule": "Change-induced incident rate by group, by type, by CI class",
+      "engine": "composite",
+      "shape": "combine rate_by_dimension",
+      "workbook": {
+        "detection_logic": "Correlated incident count / change count, by group, by type, and by CI class",
+        "threshold": "Same window and traversal parameters as ITSM-123"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "input rules",
+          "basis": "ITSM-123"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 0,
+          "unit": "input rules",
+          "basis": "ITSM-123"
+        },
+        "undetermined": "input_inconclusive",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (input_inconclusive: input ITSM-123 no incident records in scope (incident where priority=1^cmdb_ciISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-125",
+      "rule": "CIs with a repeated change-then-incident pattern",
+      "engine": "composite",
+      "shape": "combine pairs_by_key",
+      "workbook": {
+        "detection_logic": "CIs with more than N correlated change-incident pairs in the window",
+        "threshold": "Default 3 occurrences"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "input rules",
+          "basis": "ITSM-123"
+        },
+        "undetermined": null,
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 0,
+          "unit": "input rules",
+          "basis": "ITSM-123"
+        },
+        "undetermined": "input_inconclusive",
+        "partial": "evidence_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (input_inconclusive: input ITSM-123 no incident records in scope (incident where priority=1^cmdb_ciISNOTEMPTY))"
+    },
+    {
+      "rule_id": "ITSM-126",
+      "rule": "Changes to CIs supporting Business Critical services with no service reference populated",
+      "engine": "relationship_graph",
+      "shape": "question path_to_service",
+      "workbook": {
+        "detection_logic": "Changes whose affected CIs traverse to a Business Critical service, with business_service empty",
+        "threshold": "Traversal depth configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records referencing a CI",
+          "basis": "change_request where cmdb_ciISNOTEMPTY^business_serviceISEMPTY, cmdb_ci set"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records referencing a CI in scope (change_request where cmdb_ciISNOTEMPTY^business_serviceISEMPTY, cmdb_ci set)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-127",
+      "rule": "Change freeze periods with change activity anyway",
+      "engine": "temporal_correlation",
+      "shape": "schedule_intersection",
+      "workbook": {
+        "detection_logic": "Changes implemented during a defined freeze, by type and approver",
+        "threshold": "Requires freeze periods to be defined"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "capability"
+      },
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unconfigured, unconfigured_parameter) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-128",
+      "rule": "Incidents resolved with a resolution code indicating change causation, but no change linked",
+      "engine": "linkage",
+      "shape": "expect absent",
+      "workbook": {
+        "detection_logic": "Incidents with a change-causation close code and no linked change",
+        "threshold": "Close code set configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where resolved_atISNOTEMPTY^close_codeINplaceholder"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where resolved_atISNOTEMPTY^close_codeINplaceholder)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-129",
+      "rule": "Incident, Problem and Change all failing to reference the CMDB — the three processes operating blind",
+      "engine": "composite",
+      "shape": "combine all_breach",
+      "workbook": {
+        "detection_logic": "Reference rates below threshold across all three processes simultaneously",
+        "threshold": "Per-process thresholds; fires only when all three breach"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 3,
+          "judged": 0,
+          "unit": "input rules",
+          "basis": "ITSM-016, ITSM-094, ITSM-067"
+        },
+        "undetermined": "input_inconclusive",
+        "partial": null,
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (input_inconclusive: input ITSM-016 no incident records in scope (incidents with neither CI nor business service / all incidents in the window); ITSM-094 no change_request records in scope (changes with neither CI nor business service / all changes); ITSM-067 no problem records in scope (every problem record)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-130",
+      "rule": "Incident volume on CIs with no relationships (impact analysis structurally impossible)",
+      "engine": "relationship_graph",
+      "shape": "question degree",
+      "workbook": {
+        "detection_logic": "COUNT(incidents on CIs with zero edges) / COUNT(incidents with a CI reference)",
+        "threshold": "Default threshold 25%"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "population": {
+          "total": 3,
+          "judged": 3,
+          "unit": "incident records referencing a CI",
+          "basis": "incident where cmdb_ciISNOTEMPTY, cmdb_ci set"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records referencing a CI",
+          "basis": "incident where cmdb_ciISNOTEMPTY, cmdb_ci set"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records referencing a CI in scope (incident where cmdb_ciISNOTEMPTY, cmdb_ci set))"
+    },
+    {
+      "rule_id": "ITSM-131",
+      "rule": "Change risk assessment computed without CMDB dependency data",
+      "engine": "relationship_graph",
+      "shape": "question dependents",
+      "workbook": {
+        "detection_logic": "Changes whose risk was computed where the affected CIs have zero or minimal relationship depth",
+        "threshold": "Depth threshold configurable"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "change_request records referencing a CI",
+          "basis": "change_request where cmdb_ciISNOTEMPTY^riskISNOTEMPTY, cmdb_ci set"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no change_request records referencing a CI in scope (change_request where cmdb_ciISNOTEMPTY^riskISNOTEMPTY, cmdb_ci set)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-132",
+      "rule": "Recurring incidents on CIs whose CMDB data is stale, traced to a discovery failure",
+      "engine": "composite",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Recurring incident clusters on CIs whose staleness traces to an identified discovery failure",
+        "threshold": "Requires the ITOM cause to be identified; links to ITOM-147"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_dependency) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-133",
+      "rule": "Business Critical service with high incident volume and no Problem records",
+      "engine": "linkage",
+      "shape": "expect absent",
+      "workbook": {
+        "detection_logic": "Business Critical services with incident volume above threshold and zero linked Problems",
+        "threshold": "Volume threshold relative to the service population"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "cmdb_ci_service records",
+          "basis": "every cmdb_ci_service record"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "JUDGED_OVER_WHAT_REMAINS",
+      "reading": "fails over a population the emptied tables do not hold (1 cmdb_ci_service records) (with placeholder parameters); Phase 4 declared detection_gap: Business Critical services with zero linked problems are reported once volume_threshold is set; the Business Critical criticality values are UNDEFINED and not filtered."
+    },
+    {
+      "rule_id": "ITSM-134",
+      "rule": "Assignment groups referenced across all three processes with zero active members",
+      "engine": "composite",
+      "shape": "combine shared_offenders",
+      "workbook": {
+        "detection_logic": "Groups with zero active members referenced by open records in more than one process",
+        "threshold": "Active membership resolved live"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 3,
+          "judged": 1,
+          "unit": "input rules",
+          "basis": "ITSM-018, ITSM-065, ITSM-101"
+        },
+        "undetermined": "input_inconclusive",
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 3,
+          "judged": 0,
+          "unit": "input rules",
+          "basis": "ITSM-018, ITSM-065, ITSM-101"
+        },
+        "undetermined": "input_inconclusive",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (input_inconclusive: input ITSM-018 no incident records in scope (incident where active=true → assignment_group (members_active)); ITSM-065 variant owner: no problem records in scope (problem where active=true → assigned_to (active)); ITSM-101 no change_request records in scope (change_request where active=true → assignment_group (members_active)))"
+    },
+    {
+      "rule_id": "ITSM-135",
+      "rule": "CI owner and incident assignment group inconsistent",
+      "engine": "aggregate",
+      "shape": "joint_share",
+      "workbook": {
+        "detection_logic": "CIs whose owner or support group differs from the dominant incident assignment group for that CI",
+        "threshold": "Dominance threshold configurable; requires minimum incident volume per CI"
+      },
+      "populated": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty": {
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": "unconfigured_parameter"
+      },
+      "empty_with_placeholders": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "dominant assignment group per CI"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (dominant assignment group per CI)) (with placeholder parameters)"
+    },
+    {
+      "rule_id": "ITSM-136",
+      "rule": "Service referenced in incidents but absent from the CSDM model",
+      "engine": "reference_integrity",
+      "shape": "check exists",
+      "workbook": {
+        "detection_logic": "Incident service references with no matching CSDM service record, including free-text service values",
+        "threshold": "Includes free-text and legacy service fields where present"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 1,
+          "judged": 1,
+          "unit": "incident records",
+          "basis": "incident where business_serviceISNOTEMPTY → business_service (exists)"
+        },
+        "undetermined": null,
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "incident records",
+          "basis": "incident where business_serviceISNOTEMPTY → business_service (exists)"
+        },
+        "undetermined": "empty_population",
+        "partial": "detection_gap",
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no incident records in scope (incident where business_serviceISNOTEMPTY → business_service (exists)))"
+    },
+    {
+      "rule_id": "ITSM-137",
+      "rule": "SLA attached to a service with no offering (commitment structurally unenforceable)",
+      "engine": "linkage",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "SLA definitions scoped to services with zero offerings",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_dependency"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_dependency) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-138",
+      "rule": "Change conflict detection producing no results because relationships are missing",
+      "engine": "composite",
+      "shape": "",
+      "workbook": {
+        "detection_logic": "Conflict detection configured with near-zero detections, where overlapping changes on related CIs existed and the relationships are absent",
+        "threshold": "Requires evidence that conflicts existed to be found"
+      },
+      "populated": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty": {
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "population": null,
+        "undetermined": null,
+        "partial": null,
+        "blocker": "undefined_object"
+      },
+      "empty_with_placeholders": null,
+      "category": "NOT_EVALUABLE_OFFLINE",
+      "reading": "does not evaluate on the fixture (unavailable, undefined_object) — no verdict at all, so no pass; when it evaluates, its engine declares a population like every other path"
+    },
+    {
+      "rule_id": "ITSM-139",
+      "rule": "Knowledge articles referenced in resolutions that are retired or unpublished",
+      "engine": "reference_integrity",
+      "shape": "check state",
+      "workbook": {
+        "detection_logic": "Incident resolutions referencing articles in a retired or unpublished state",
+        "threshold": "Any occurrence"
+      },
+      "populated": {
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "population": {
+          "total": 2,
+          "judged": 2,
+          "unit": "m2m_kb_task records",
+          "basis": "m2m_kb_task where task.sys_class_name=incident → kb_knowledge (state)"
+        },
+        "undetermined": null,
+        "partial": null,
+        "blocker": null
+      },
+      "empty": {
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "population": {
+          "total": 0,
+          "judged": 0,
+          "unit": "m2m_kb_task records",
+          "basis": "m2m_kb_task where task.sys_class_name=incident → kb_knowledge (state)"
+        },
+        "undetermined": "empty_population",
+        "partial": null,
+        "blocker": null
+      },
+      "empty_with_placeholders": null,
+      "category": "REQUIRES_POPULATION",
+      "reading": "empty → inconclusive (empty_population: no m2m_kb_task records in scope (m2m_kb_task where task.sys_class_name=incident → kb_knowledge (state)))"
+    }
+  ]
+}

@@ -16,7 +16,7 @@ import { nameShape, validFqdn, validSerial } from '../src/health/cmdb-correctnes
  *   4. CMDB-024, 068, 085, 087, 090, 108 score in their group's dimension.
  *   5. The production escalator never fires on the bare used_for default.
  *
- * Corrections of 18 Sep 2026:
+ * Corrections of 16 Sep 2026:
  *   - CMDB-023 flags only RUNNING against NOT RUNNING stages: Installed + Non-Operational is valid.
  *   - CMDB-030 is a conservative subset and says on every run that it under-detects serials.
  *   - Materiality: a class-wide pattern is ONE finding; records keep their own deduction.
@@ -124,18 +124,19 @@ test('CMDB-023 reads the permitted set from the instance lifecycle mapping: In S
   assert.match(skipped('CMDB-023')[0].reason, /1 CI\(s\) hold a status value the lifecycle mapping does not cover/);
 });
 
-test('CMDB-023 exempts Installed + Non-Operational (Operational + Design) without hardcoding the pair — 18 Sep', () => {
+test('CMDB-023 exempts Installed + Non-Operational (Operational + Design) without hardcoding the pair — 16 Sep 2026', () => {
   const { byRule, skipped } = run({ cmdb_ci: [
     ci('down', 'cmdb_ci_computer', { install_status: '1', operational_status: '2' }),
     ci('stock', 'cmdb_ci_computer', { install_status: '6', operational_status: '1' }),
     ci('retired-running', 'cmdb_ci_computer', { install_status: '7', operational_status: '1' }),
     ci('stock-down', 'cmdb_ci_computer', { install_status: '6', operational_status: '2' }),
   ] });
-  /* 'retired-running' is install_status 7 — outside the data-quality slice as of
-     19 Sep, so correctness no longer judges it; the lifecycle dimension does. */
-  assert.deepEqual(byRule('CMDB-023').map((x) => x.target_ids[0]).sort(), ['stock']);
+  /* Decision 5 of 16 Sep 2026: CMDB-023 is a CONTRADICTION rule, so it judges the full
+     set — a retired CI reported Operational is exactly what it is for. The
+     quality rules in this dimension (CMDB-030 and friends) still skip those CIs. */
+  assert.deepEqual(byRule('CMDB-023').map((x) => x.target_ids[0]).sort(), ['retired-running', 'stock']);
   assert.match(skipped('CMDB-023').map((x) => x.reason).join(' | '), /only one status field can reach/);
-  assert.match(skipped('CMDB-023').map((x) => x.reason).join(' | '), /retired, stolen or absent CI\(s\) are outside the data-quality dimensions/);
+  assert.match(skipped('CMDB-030').map((x) => x.reason).join(' | '), /outside the QUALITY rules of this dimension/);
 });
 
 test('CMDB-023 refuses to run without the mapping — it never falls back to a hardcoded list', () => {

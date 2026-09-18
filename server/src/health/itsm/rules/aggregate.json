@@ -1,0 +1,529 @@
+{
+  "engine": "aggregate",
+  "rules": {
+    "ITSM-001": {
+      "table": "incident",
+      "window": {
+        "$param": "window",
+        "as": "window"
+      },
+      "group_by": [
+        "priority"
+      ],
+      "measure": "share",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "dominance_share"
+        }
+      },
+      "basis": "share of incidents in the largest priority band",
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "The matrix configuration (priority_matrix object, candidate dl_u_priority — UNDEFINED) and the impact/urgency spread the false-positive guard asks for are not read; the distribution detection is complete."
+      }
+    },
+    "ITSM-008": {
+      "table": "incident",
+      "query": "close_codeISNOTEMPTY",
+      "group_by": [
+        "close_code"
+      ],
+      "measure": "share",
+      "of": {
+        "field": "close_code",
+        "op": "in",
+        "value": {
+          "$param": "generic_values"
+        }
+      },
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "catchall_share"
+        }
+      },
+      "basis": "share of closures carrying a generic close code"
+    },
+    "ITSM-016": {
+      "table": "incident",
+      "window": {
+        "$param": "window",
+        "as": "window"
+      },
+      "numerator_query": "cmdb_ciISEMPTY^business_serviceISEMPTY",
+      "denominator_query": "",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "basis": "incidents with neither CI nor business service / all incidents in the window"
+    },
+    "ITSM-017": {
+      "table": "incident",
+      "numerator_query": "cmdb_ciISNOTEMPTY^business_serviceISEMPTY",
+      "denominator_query": "cmdb_ciISNOTEMPTY^ORbusiness_serviceISNOTEMPTY",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "basis": "incidents referencing a bare CI / incidents referencing either"
+    },
+    "ITSM-024": {
+      "table": "incident",
+      "query": "close_codeISNOTEMPTY",
+      "group_by": [
+        "category",
+        "close_code"
+      ],
+      "measure": "joint_share",
+      "primary": "category",
+      "secondary": "close_code",
+      "minimum_group_volume": {
+        "$param": "minimum_volume_per_category"
+      },
+      "threshold": {
+        "op": "lt",
+        "value": {
+          "$param": "anomaly_share"
+        }
+      },
+      "basis": "share of each close code within its category (empirical, DECISIONS.md §2)",
+      "specification_gap": {
+        "missing": "the workbook does not define the statistic behind \"pairs occurring far outside the expected joint distribution\" (within-category share vs expected-under-independence vs another), nor the anomaly threshold, nor the minimum volume per category",
+        "workbook": "Category and close code pairs occurring far outside the expected joint distribution / Expected distribution derived from the estate's own data, minimum volume per category required",
+        "decision": "DECISIONS.md §2: evaluates the observed category × resolution-code relationship; where the workbook does not give enough to determine the anomaly threshold it stays configurable/undefined",
+        "prepared": "the aggregate engine's joint_share measure (observed share of each close code within its category, minimum volume per category, empirical — no reference model) is ready; the judgement is not made until the statistic and thresholds are decided",
+        "resolution": "an explicit decision naming the statistic and setting anomaly_share and minimum_volume_per_category"
+      },
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The anomaly judgement itself — see specification_gap."
+      }
+    },
+    "ITSM-030": {
+      "table": "incident",
+      "numerator_query": "resolved_atISNOTEMPTY^reopen_count>0",
+      "denominator_query": "resolved_atISNOTEMPTY",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "reopen_rate"
+        },
+        "escalate_at": {
+          "$param": "escalate_rate"
+        }
+      },
+      "escalated_severity": "CRITICAL",
+      "basis": "reopened / resolved",
+      "variants": [
+        {
+          "variant": "estate"
+        },
+        {
+          "variant": "by group",
+          "group_by": [
+            "assignment_group"
+          ]
+        },
+        {
+          "variant": "by close code",
+          "group_by": [
+            "close_code"
+          ]
+        }
+      ]
+    },
+    "ITSM-031": {
+      "table": "incident",
+      "numerator_query": [
+        "closed_atISNOTEMPTY",
+        {
+          "$param": "autoclose_closed_by",
+          "as": "clause",
+          "template": "closed_by={}"
+        }
+      ],
+      "denominator_query": "closed_atISNOTEMPTY",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "basis": "auto-closed / closed",
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The clause identifying an auto-closure (autoclose_closed_by) is UNDEFINED and the auto-close configuration object is unresolved."
+      }
+    },
+    "ITSM-032": {
+      "table": "incident",
+      "query": "resolved_atISNOTEMPTY",
+      "group_by": [
+        "reassignment_count"
+      ],
+      "measure": "count",
+      "numerator": {
+        "field": "reassignment_count",
+        "op": "gte",
+        "value": {
+          "$param": "tail_threshold"
+        }
+      },
+      "threshold": {
+        "op": "gt",
+        "value": 0
+      },
+      "basis": "resolved incidents at or above the reassignment tail threshold (distribution by reassignment count is the evidence)",
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "The tail count and the reassignment-count distribution are evaluated; \"the group pairs involved\" (assignment_group transitions from audit) are not shown."
+      }
+    },
+    "ITSM-033": {
+      "table": "task_sla",
+      "numerator_query": "has_breached=true",
+      "denominator_query": "",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "breach_rate"
+        }
+      },
+      "basis": "breached SLAs / SLAs attached",
+      "variants": [
+        {
+          "variant": "estate"
+        },
+        {
+          "variant": "by definition",
+          "group_by": [
+            "sla"
+          ]
+        }
+      ],
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Breach rate overall and by SLA definition. \"By group\" needs the task_sla → task join (assignment_group is on the task); not broken out."
+      }
+    },
+    "ITSM-041": {
+      "table": "incident",
+      "numerator_query": "resolved_atISNOTEMPTY^reassignment_count=0",
+      "denominator_query": "resolved_atISNOTEMPTY",
+      "measure": "percentage",
+      "measure_key": "ITSM-041:first_call_resolution_pct",
+      "trend": {
+        "min_windows": {
+          "$param": "min_windows"
+        },
+        "direction": "falling"
+      },
+      "basis": "resolved with zero reassignments / resolved, trended across runs"
+    },
+    "ITSM-053": {
+      "table": "incident",
+      "numerator_query": {
+        "table": "problem",
+        "query": ""
+      },
+      "denominator_query": {
+        "table": "incident",
+        "query": ""
+      },
+      "threshold": {
+        "op": "lt",
+        "value": {
+          "$param": "threshold"
+        },
+        "escalate_at": {
+          "$param": "escalate_below"
+        }
+      },
+      "escalated_severity": "CRITICAL",
+      "basis": "problems created / incidents created",
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "The workbook gives no window for this ratio; the whole of both tables is counted rather than a window."
+      }
+    },
+    "ITSM-059": {
+      "table": "problem",
+      "group_by": [
+        "assignment_group"
+      ],
+      "measure": "share",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "concentration_ratio"
+        }
+      },
+      "basis": "share of problems raised by the single largest group",
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The problem-side share of the largest group is computed (concentration_ratio UNDEFINED); the comparison against the incident volume distribution is not performed."
+      }
+    },
+    "ITSM-079": {
+      "table": "problem",
+      "numerator_query": [
+        "active=false",
+        {
+          "$clause": {
+            "template": "close_code={}",
+            "value": {
+              "$choice": {
+                "table": "problem",
+                "element": "close_code",
+                "label": "Cannot Reproduce"
+              }
+            }
+          }
+        }
+      ],
+      "denominator_query": "active=false",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "basis": "problems closed as cannot reproduce / closed problems",
+      "variants": [
+        {
+          "variant": "estate"
+        },
+        {
+          "variant": "by group",
+          "group_by": [
+            "assignment_group"
+          ]
+        }
+      ]
+    },
+    "ITSM-083": {
+      "table": "change_request",
+      "query": "riskISNOTEMPTY",
+      "group_by": [
+        "risk"
+      ],
+      "measure": "share",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "dominance_share"
+        }
+      },
+      "basis": "share of changes carrying the single most common risk value",
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Only the risk-value dominance half is evaluated. \"Risk assessment unconfigured\" needs the risk_assessment object, which is UNDEFINED."
+      }
+    },
+    "ITSM-094": {
+      "table": "change_request",
+      "numerator_query": "cmdb_ciISEMPTY^business_serviceISEMPTY",
+      "denominator_query": "",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "basis": "changes with neither CI nor business service / all changes"
+    },
+    "ITSM-107": {
+      "table": "change_request",
+      "numerator_query": [
+        {
+          "$clause": {
+            "template": "type={}",
+            "value": {
+              "$choice": {
+                "table": "change_request",
+                "element": "type",
+                "label": "Emergency"
+              }
+            }
+          }
+        }
+      ],
+      "denominator_query": "",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "threshold"
+        },
+        "escalate_at": {
+          "$param": "escalate_at"
+        }
+      },
+      "escalated_severity": "CRITICAL",
+      "basis": "emergency changes / all changes",
+      "variants": [
+        {
+          "variant": "estate"
+        },
+        {
+          "variant": "by group",
+          "group_by": [
+            "assignment_group"
+          ]
+        }
+      ],
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "Overall and by group. \"By approver\" needs the approval object, which is UNDEFINED."
+      }
+    },
+    "ITSM-113": {
+      "table": "change_request",
+      "numerator_query": [
+        "active=false",
+        {
+          "$clause": {
+            "template": "close_code={}",
+            "value": {
+              "$choice": {
+                "table": "change_request",
+                "element": "close_code",
+                "label": "Successful"
+              }
+            }
+          }
+        }
+      ],
+      "denominator_query": "active=false^close_codeISNOTEMPTY",
+      "threshold": {
+        "op": "lt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "basis": "closed successful / closed with a close code",
+      "variants": [
+        {
+          "variant": "estate"
+        },
+        {
+          "variant": "by type",
+          "group_by": [
+            "type"
+          ]
+        },
+        {
+          "variant": "by risk",
+          "group_by": [
+            "risk"
+          ]
+        },
+        {
+          "variant": "by group",
+          "group_by": [
+            "assignment_group"
+          ]
+        }
+      ]
+    },
+    "ITSM-121": {
+      "requires_tables": [
+        {
+          "table": "sysapproval_approver",
+          "fields": [
+            "approver",
+            "state",
+            "sysapproval"
+          ]
+        }
+      ],
+      "table": "sysapproval_approver",
+      "query": [
+        {
+          "$clause": {
+            "template": "state={}",
+            "value": {
+              "$choice": {
+                "table": "sysapproval_approver",
+                "element": "state",
+                "label": "Approved"
+              }
+            }
+          }
+        },
+        "sysapproval.sys_class_name=change_request"
+      ],
+      "group_by": [
+        "approver"
+      ],
+      "measure": "share",
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "share"
+        }
+      },
+      "basis": "share of approved change approvals held by the single most frequent approver"
+    },
+    "ITSM-135": {
+      "table": "incident",
+      "query": "cmdb_ciISNOTEMPTY",
+      "group_by": [
+        "cmdb_ci",
+        "assignment_group"
+      ],
+      "measure": "joint_share",
+      "primary": "cmdb_ci",
+      "secondary": "assignment_group",
+      "minimum_group_volume": {
+        "$param": "minimum_volume_per_ci"
+      },
+      "threshold": {
+        "op": "gt",
+        "value": {
+          "$param": "dominance_share"
+        }
+      },
+      "basis": "dominant assignment group per CI",
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "The dominant assignment group per CI is computed (both thresholds UNDEFINED); the comparison against the CI's owner / support group (a cmdb_ci read per CI) is not performed."
+      }
+    },
+    "ITSM-080": {
+      "engine": "aggregate",
+      "table": "change_request",
+      "numerator_query": [
+        {
+          "$clause": {
+            "template": "type={}",
+            "value": {
+              "$choice": {
+                "table": "change_request",
+                "element": "type",
+                "label": "Standard"
+              }
+            }
+          }
+        }
+      ],
+      "denominator_query": "",
+      "threshold": {
+        "op": "lt",
+        "value": {
+          "$param": "threshold"
+        }
+      },
+      "basis": "standard changes / all changes",
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "The standard change TEMPLATE count (\"catalogue empty\") is not read: the candidate std_change_producer_version carries no state field on the validation instance, so published vs retired templates cannot be told apart. The usage share is the workbook's threshold and is evaluated."
+      }
+    }
+  }
+}

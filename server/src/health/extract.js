@@ -23,6 +23,9 @@ import { pageAll } from '../servicenow/dba-metadata.js';
 
 /** Coverage statuses that mean rows are usable. Anything else is a reason, not a count. */
 export const USABLE = Object.freeze(['complete', 'limited', 'truncated']);
+/* A read that FAILED — not a table the instance lacks or rows an ACL hides, which
+   are stable facts. A result built on one is never reused (index.js degraded). */
+export const FAILED_READ_STATUSES = Object.freeze(['forbidden', 'unauthorized', 'rate_limited', 'upstream_error', 'invalid_query', 'truncated']);
 
 const PAGE_SIZE = 500;
 const MAX_PER_TABLE = 100_000;
@@ -364,7 +367,10 @@ export function cmdbMetaSources(estate = {}) {
       { key: 'dictionary_custom', table: 'sys_dictionary', query: `nameIN${classes.join(',')}` },
     ] : []),
     { key: 'used_for_defaults', table: 'sys_dictionary', query: 'element=used_for' },
-    { key: 'choices', table: 'sys_choice', query: 'nameSTARTSWITHcmdb^elementINinstall_status,operational_status,discovery_source' },
+    /* Custom attributes somebody added to a CMDB class (CMDB-119, CMDB-123). A
+       targeted read: `u_` elements only, so it stays small on every estate. */
+    { key: 'custom_fields', table: 'sys_dictionary', query: 'nameSTARTSWITHcmdb^elementSTARTSWITHu_' },
+    { key: 'choices', table: 'sys_choice', query: 'nameSTARTSWITHcmdb^elementINinstall_status,operational_status,discovery_source^ORnameSTARTSWITHalm_^elementINinstall_status,substatus' },
     /* Audit rows are only ever inserted, and carry no sys_updated_on: the count decides. */
     { key: 'audit', table: 'sys_audit', query: 'tablenameSTARTSWITHcmdb' },
     { key: 'health_result', table: 'cmdb_health_result', query: '' },
@@ -427,6 +433,15 @@ export async function extractCmdbMeta(estate, { client = table, signal = null } 
       frontier = [...next].filter((n) => !byName[n]);
     }
     meta.classes = { byName };
+  });
+
+  /* Custom attributes on CMDB classes — the only dictionary rows CMDB-119 and
+     CMDB-123 need, read as a narrow slice rather than the whole dictionary. */
+  await attempt('custom_fields', async () => {
+    meta.customFields = await client.query('sys_dictionary', {
+      query: 'nameSTARTSWITHcmdb^elementSTARTSWITHu_^elementISNOTEMPTY',
+      fields: 'name,element,internal_type', limit: 5000, offset: 0, display: 'false',
+    });
   });
 
   /* Mandatory dictionary fields on those classes and their ancestors. */
@@ -643,16 +658,24 @@ export async function extractCmdbMeta(estate, { client = table, signal = null } 
 
   /* ── GROUP 3 (Correctness) ──────────────────────────────────────────── */
 
-  /* Choice lists for the choice fields on cmdb_ci, per class lineage (CMDB-029). */
+  /* Choice lists for the choice fields on cmdb_ci, per class lineage (CMDB-029).
+     The ASSET tables are read too (CMDB-082 / CMDB-086): the two lifecycle models
+     use the same column name and different values — on dev424910 `10` is Consumed
+     on an asset and Absent is `100` on a CI — so the mapping between them is made
+     from the LABELS the instance itself publishes, never from the numbers. */
   await attempt('choices', async () => {
     needHierarchy();
     const rows = [];
     for (const part of chunks(Object.keys(byName))) {
       rows.push(...await client.query('sys_choice', {
         query: `nameIN${part.join(',')}^elementINinstall_status,operational_status,discovery_source`,
-        fields: 'name,element,value,inactive', limit: 5000, offset: 0, display: 'false',
+        fields: 'name,element,value,label,inactive', limit: 5000, offset: 0, display: 'false',
       }));
     }
+    rows.push(...await client.query('sys_choice', {
+      query: 'nameINalm_asset,alm_hardware^elementINinstall_status,substatus',
+      fields: 'name,element,value,label,inactive', limit: 2000, offset: 0, display: 'false',
+    }));
     meta.choices = rows;
   });
 

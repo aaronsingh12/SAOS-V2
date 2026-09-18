@@ -1,10 +1,21 @@
 import crypto from 'node:crypto';
-import { catalogueRule, effectiveBand, POPULATION_MODIFIERS, GATING_KINDS } from './cmdb-quality.js';
+import { parseDate } from './time.js';
+import { catalogueRule, effectiveBand, POPULATION_MODIFIERS, GATING_KINDS, BAND_WEIGHT, CMDB_CATALOGUE, CMDB_DIMENSIONS, DIMENSION_KIND, BLEND_BY_KIND } from './cmdb-quality.js';
 import { cmdbGateRules, GATE_RULES, cmdbInScope } from './cmdb-gate.js';
 import { cmdbCorrectnessRules, CORRECTNESS_RULES } from './cmdb-correctness.js';
 import { cmdbCompletenessRules, COMPLETENESS_RULES } from './cmdb-completeness.js';
 import { cmdbUniquenessRules, UNIQUENESS_RULES } from './cmdb-uniqueness.js';
 import { cmdbIdentificationRules, IDENTIFICATION_RULES } from './cmdb-identification.js';
+import { cmdbRelationshipRules, RELATIONSHIP_RULES, SUBSUMED_BY_GROUP_6 } from './cmdb-relationships.js';
+import { cmdbFreshnessRules, FRESHNESS_RULES } from './cmdb-freshness.js';
+import { cmdbLifecycleRules, LIFECYCLE_RULES } from './cmdb-lifecycle.js';
+import { cmdbGovernanceRules, GOVERNANCE_RULES } from './cmdb-governance.js';
+import { cmdbOwnershipRules, OWNERSHIP_RULES } from './cmdb-ownership.js';
+import { cmdbCsdmRules, CSDM_RULES } from './cmdb-csdm.js';
+import { cmdbConsumptionRules, CONSUMPTION_RULES } from './cmdb-consumption.js';
+import { cmdbScaleRules, SCALE_RULES } from './cmdb-scale.js';
+import { cmdbRecurrencePass, cmdbDriftRules, DRIFT_RULES } from './cmdb-drift.js';
+import { comparableHistory } from './cmdb-history.js';
 import { buildSignals, materialityFor } from './cmdb-signals.js';
 import { TABLES } from './tables.js';
 import { scopeOf, scopeOfRule, MODULE_KEYS, moduleTables } from './scopes.js';
@@ -30,13 +41,47 @@ import { scopeOf, scopeOfRule, MODULE_KEYS, moduleTables } from './scopes.js';
  * as an answer.
  */
 
-export const RULE_VERSION = '2.0.0';
+/*
+ * 3.0.0 (Sep 2026): the full CMDB catalogue (Groups 1–14), consequence scoping,
+ * and per-dimension-type blends. The composite no longer means what 2.0.0's did,
+ * so scores from before and after must not be trended against each other.
+ *
+ * BUMP THIS WHEN A RULE'S DETECTION LOGIC CHANGES. `scoringComparability` hashes
+ * the catalogue, the implemented rule set and the blends, but it cannot see a
+ * change inside a rule's code — this version is how that change is declared.
+ *
+ * 3.0.1 (Sep 2026): the first bump under that discipline, from the Group 14
+ * live run. A CMDB-only scan now STORES the Group 13 findings it used to drop
+ * (findings route by rule prefix, not domain), and CMDB-131 counts a finding as
+ * created only when its rule produced findings on the earlier run. No run keyed
+ * under 3.0.0 had been persisted, so nothing comparable is set aside by it.
+ *
+ * 3.0.2 (17 Sep 2026, CMDB checkpoint): CMDB-124's endpoint tier expects no
+ * edges by default; CMDB-038 can no longer trend duplicate sets measured under
+ * another model (comparability is now a property of the measure); CMDB-128 says
+ * a flat estate is flat. Again no run keyed under 3.0.1 had been persisted.
+ */
+export const RULE_VERSION = '3.0.2';
 
 /** domain key → [DOMAIN, human label]. The closed vocabulary for grouping. */
 export const AGENTS = Object.freeze({
   cmdb_agent: ['CMDB', 'CMDB quality'],
   cmdb_governance_agent: ['CMDB_GOVERNANCE', 'CMDB health governance'],
   relationship_agent: ['RELATIONSHIP', 'Relationship integrity'],
+  /* D7 asks a question neither CMDB nor DISCOVERY owns: not "is the record
+     right" and not "is Discovery healthy", but "is ANYTHING still confirming
+     this record, and how long ago". An estate with no Discovery at all still
+     has an answer, and it is usually the finding. */
+  freshness_agent: ['FRESHNESS', 'Freshness and source coverage'],
+  /* D8 runs the other way round: it judges the records every other dimension
+     excludes, and the question is never "is this good" but "do these two facts
+     about the same thing disagree". */
+  lifecycle_agent: ['LIFECYCLE', 'Lifecycle and retirement'],
+  /* Group 9 asks who ANSWERS for the data, which is not the same question as
+     whether the data is right — so it is posture beside the score, never in it. */
+  attestation_agent: ['ATTESTATION', 'Data Manager and attestation'],
+  /* D9 asks whether the somebody every other finding needs actually exists. */
+  ownership_agent: ['OWNERSHIP', 'Ownership and accountability'],
   csdm_agent: ['CSDM', 'Service model completeness'],
   customization_agent: ['CUSTOMIZATION', 'Business rule review'],
   integration_agent: ['INTEGRATION', 'Integration configuration'],
@@ -61,6 +106,9 @@ export const AGENTS = Object.freeze({
   incident_agent: ['INCIDENT', 'Incident hygiene'],
   change_agent: ['CHANGE', 'Change hygiene'],
   problem_agent: ['PROBLEM', 'Problem hygiene'],
+  /* The 139-rule ITSM catalogue (health/itsm/, wired in ITSM Phase 5). Routed to
+     the ITSM scope; its findings do not count toward the ITSM score. */
+  itsm_agent: ['ITSM', 'ITSM catalogue'],
 });
 
 const SEVERITY_RANK = Object.freeze({ SYSTEMIC: 6, CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 });
@@ -70,7 +118,42 @@ const SEVERITY_RANK = Object.freeze({ SYSTEMIC: 6, CRITICAL: 5, HIGH: 4, MEDIUM:
  * catalogue is not built yet, and a dimension with no built rule is reported as
  * NOT MEASURED — never as a clean 100.
  */
-export const IMPLEMENTED_CATALOGUE_RULES = Object.freeze(new Set([...GATE_RULES, ...COMPLETENESS_RULES, ...CORRECTNESS_RULES, ...UNIQUENESS_RULES, ...IDENTIFICATION_RULES]));
+/**
+ * WHEN CAN TWO SNAPSHOTS BE COMPARED?
+ *
+ * A trend is only as honest as the claim that both ends were measured the same
+ * way. Measured on dev424910: consecutive CMDB runs read 82.1 then 77.0, and
+ * 11,618 then 20,954 findings — every point of that caused by rule changes the
+ * same week. A trend rule comparing them would have announced a decline and
+ * nine thousand new defects in an estate that had not changed.
+ *
+ * The key hashes everything that decides what a finding or a score MEANS: the
+ * rule-pack version, which catalogue rules are implemented, each rule's scoring
+ * attributes (band, dimension, track, kind, systemic kind, intent), the dimension
+ * weights, and the per-type blends. Two runs with different keys are different
+ * measurements, and the trend rules decline to trend them.
+ */
+export function scoringComparability({
+  ruleVersion = RULE_VERSION, blends = BLEND_BY_KIND, kinds = DIMENSION_KIND, implemented = IMPLEMENTED_CATALOGUE_RULES,
+} = {}) {
+  const scoring = Object.values(CMDB_CATALOGUE)
+    .map((r) => [r.id, r.base, r.dimension, r.track, r.kind, r.systemicKind ?? null, r.intent])
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  const payload = {
+    rule_version: ruleVersion,
+    implemented: [...implemented].sort(),
+    scoring,
+    weights: CMDB_DIMENSIONS.map((d) => [d.key, d.weight]),
+    kinds,
+    blends,
+  };
+  return {
+    key: crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16),
+    rule_version: ruleVersion,
+  };
+}
+
+export const IMPLEMENTED_CATALOGUE_RULES = Object.freeze(new Set([...GATE_RULES, ...COMPLETENESS_RULES, ...CORRECTNESS_RULES, ...UNIQUENESS_RULES, ...IDENTIFICATION_RULES, ...RELATIONSHIP_RULES, ...FRESHNESS_RULES, ...LIFECYCLE_RULES, ...GOVERNANCE_RULES, ...OWNERSHIP_RULES, ...CSDM_RULES, ...CONSUMPTION_RULES, ...SCALE_RULES, ...DRIFT_RULES]));
 
 /**
  * The severity vocabulary, with the words a person reads.
@@ -201,22 +284,9 @@ function truth(value) {
   return ['true', '1', 'yes'].includes(String(value).toLowerCase());
 }
 
-/**
- * Parse a ServiceNow timestamp as UTC.
- *
- * The platform stores `sys_updated_on` as `YYYY-MM-DD HH:MM:SS` with no zone and
- * means UTC by it (trap #21 — the display half is session-local). Reading it
- * with the host's zone shifts every staleness calculation by the offset, which
- * on this machine is 5.5 hours, so the `Z` is explicit.
- */
-export function parseDate(value) {
-  if (value == null || value === '') return null;
-  const raw = String(value).trim();
-  const spaced = raw.replace(' ', 'T');
-  const withZone = /(Z|[+-]\d{2}:?\d{2})$/.test(spaced) ? spaced : `${spaced}Z`;
-  const dt = new Date(withZone);
-  return Number.isNaN(dt.getTime()) ? null : dt;
-}
+/* `parseDate` now lives in the leaf module `time.js` — see the note there for
+   the import cycle it was closing. Re-exported so nothing else has to move. */
+export { parseDate } from './time.js';
 
 const DAY_MS = 86_400_000;
 
@@ -272,7 +342,30 @@ export class EstateRules {
     /* Measures recorded on every run (duplicate-set membership, open de-dup
        tasks) and the same measures from earlier runs — the trend rules' input. */
     this.measures = {};
+    /* What makes this run's findings and scores comparable with an earlier run's. */
+    this.comparability = scoringComparability();
     this.history = history || {};
+  }
+
+  /*
+   * HISTORY PASSES THROUGH THE COMPARISON LAYER, ALWAYS. Every assignment — the
+   * constructor's, or a caller's later `rules.history = …` — is stored as given
+   * and read back through `comparableHistory` under THIS engine's key, so a
+   * derived reading from another scoring model never reaches a rule, whichever
+   * rule asks and however the history arrived. See MEASURE_COMPARABILITY.
+   */
+  get history() {
+    const key = this.comparability?.key ?? null;
+    if (!this._history || this._historyKey !== key) {
+      this._history = comparableHistory(this._historySource, key);
+      this._historyKey = key;
+    }
+    return this._history;
+  }
+
+  set history(value) {
+    this._historySource = value || {};
+    this._history = null;
   }
 
   /**
@@ -310,7 +403,7 @@ export class EstateRules {
          materiality pass may later move `severity` but never this. */
       deduction_severity: severity,
       dimension: rule.dimension,
-      /* Systemic gates only when it invalidates what the composite means (18 Sep). */
+      /* Systemic gates only when it invalidates what the composite means (16 Sep 2026). */
       gate: rule.base === 'SYSTEMIC' && GATING_KINDS.has(rule.systemicKind),
       posture: rule.base === 'SYSTEMIC' && !GATING_KINDS.has(rule.systemicKind),
       escalated_to_systemic: rule.base !== 'SYSTEMIC' && severity === 'SYSTEMIC',
@@ -430,7 +523,7 @@ export class EstateRules {
    * those tables are unchanged, and the list comes from what the rules actually
    * read rather than from a list somebody has to keep in step with them.
    */
-  analyze({ modules = null } = {}) {
+  analyze({ modules = null, external = {} } = {}) {
     const want = new Set(modules && modules.length ? modules : MODULE_KEYS);
     const raw = { estate: this.estate, coverage: this.coverage };
     const touched = {};
@@ -442,10 +535,36 @@ export class EstateRules {
      * re-read whenever a business rule changed. A table no module in the family
      * declares is charged to all of them — never to none.
      */
+    /*
+     * WHERE THE ANALYSIS SPENDS ITS TIME (CMDB checkpoint, 17 Sep 2026). Each rule
+     * pack is timed, and the tables it reads are recorded beside the time, so a
+     * slow scan can be traced from a table read to the rules that asked for it.
+     * "Read" means read through `estate` or `coverage` inside that pack: a pack
+     * that reuses rows an earlier pack prepared (the signals) does not list them.
+     */
+    const stages = [];
+    let stageTables = null;
     const note = (prop) => {
       if (typeof prop !== 'string' || !TABLES[prop]) return;
+      stageTables?.add(prop);
       const owners = current.length > 1 ? current.filter((m) => moduleTables([m]).includes(prop)) : current;
       for (const m of (owners.length ? owners : current)) (touched[m] ||= new Set()).add(prop);
+    };
+    const stage = (name, fn) => {
+      const outer = stageTables;
+      const tables = new Set();
+      stageTables = tables;
+      const before = { findings: this.findings.length, skipped: this.skipped.length };
+      const t0 = performance.now();
+      try {
+        return fn();
+      } finally {
+        stages.push({
+          stage: name, ms: Number((performance.now() - t0).toFixed(1)), tables: [...tables].sort(),
+          findings_added: this.findings.length - before.findings, skips_added: this.skipped.length - before.skipped,
+        });
+        stageTables = outer;
+      }
     };
     this.estate = new Proxy(raw.estate, { get: (t, p) => { note(p); return t[p]; } });
     this.coverage = new Proxy(raw.coverage, { get: (t, p) => { note(p); return t[p]; } });
@@ -457,36 +576,73 @@ export class EstateRules {
     };
     try {
       family(['cmdb'], () => {
-        this.signals = buildSignals(this);
-        this.gate = cmdbGateRules(this, this.gateOptions);
-        cmdbCompletenessRules(this);
-        cmdbCorrectnessRules(this);
-        cmdbUniquenessRules(this);
-        cmdbIdentificationRules(this);
-        this.applyMateriality();
-        this.cmdbRules();
-        this.relationshipRules();
-        this.serviceRules();
+        stage('cmdb: signals', () => { this.signals = buildSignals(this); });
+        stage('cmdb: gate (Group 1)', () => { this.gate = cmdbGateRules(this, this.gateOptions); });
+        stage('cmdb: completeness D1 (Group 2)', () => cmdbCompletenessRules(this));
+        stage('cmdb: correctness D2 (Group 3)', () => cmdbCorrectnessRules(this));
+        stage('cmdb: uniqueness D3 (Group 4)', () => cmdbUniquenessRules(this));
+        stage('cmdb: identification D4/D5 (Group 5)', () => cmdbIdentificationRules(this));
+        stage('cmdb: relationships D6 (Group 6)', () => cmdbRelationshipRules(this));
+        stage('cmdb: freshness D7 (Group 7)', () => cmdbFreshnessRules(this));
+        /* D8 consumes measures D7 produces (retired_still_discovered,
+           record_freshness), so it runs after it — never beside it. */
+        stage('cmdb: lifecycle D8 (Group 8)', () => cmdbLifecycleRules(this));
+        stage('cmdb: governance (Group 9)', () => cmdbGovernanceRules(this));
+        /* CMDB-104 ranks ownerless classes by the findings already raised in
+           them, so ownership runs last of the CMDB packs. */
+        stage('cmdb: CSDM (Group 11)', () => cmdbCsdmRules(this));
+        stage('cmdb: consumption D10 (Group 12)', () => cmdbConsumptionRules(this));
+        stage('cmdb: scale (Group 13)', () => cmdbScaleRules(this));
+        stage('cmdb: ownership D9 (Group 10)', () => cmdbOwnershipRules(this));
+        /* Group 14, part one: a finding that recurred after a verified closure is
+           escalated HERE, because materiality recomputes every charge from its
+           modifiers next and must see the escalator. */
+        stage('cmdb: recurrence pass (Group 14)', () => cmdbRecurrencePass(this));
+        stage('cmdb: materiality', () => this.applyMateriality());
+        stage('cmdb: legacy CMDB rules', () => this.cmdbRules());
+        stage('cmdb: legacy relationship rules', () => this.relationshipRules());
+        stage('cmdb: legacy service rules', () => this.serviceRules());
+        /* Group 14, part two: the trend rules compare the COMPLETE set of this
+           run's CMDB findings — patterns and hand-written rules included — with
+           earlier comparable snapshots, so they run last. CMDB-137 needs the
+           composite and runs after scoring, in index.js. */
+        stage('cmdb: drift (Group 14)', () => cmdbDriftRules(this));
       });
-      family(['platform', 'itom'], () => this.platformRules());
-      family(['itom'], () => this.itomRules());
-      family(['itsm'], () => this.itsmRules());
+      family(['platform', 'itom'], () => stage('platform + itom rules', () => this.platformRules()));
+      family(['itom'], () => stage('itom rules', () => this.itomRules()));
+      family(['itsm'], () => {
+        stage('itsm rules', () => this.itsmRules());
+        /*
+         * ITSM PHASE 5 — the 139-rule catalogue. Its runner is asynchronous and
+         * reads through its own capability pipeline, so it runs BEFORE analyze()
+         * (index.js) and its normalized results join here: through the same scope
+         * filter, the same synthesize() (priority and impact are NOT NULL in
+         * storage) and every count, exactly like any other finding.
+         */
+        if (external.itsm) {
+          stage('itsm catalogue (139 rules)', () => {
+            this.findings.push(...external.itsm.findings);
+            this.skipped.push(...external.itsm.skipped);
+          });
+        }
+      });
       this.findings = this.findings.filter((f) => want.has(scopeOf(f)));
       this.skipped = this.skipped.filter((x) => want.has(scopeOfRule(x.rule)));
       /* Impact is traced through the CI graph, and only CMDB findings name CIs,
          so what synthesis reads is a CMDB dependency and nobody else's. */
       current = want.has('cmdb') ? ['cmdb'] : [];
-      try { this.synthesize(); } finally { current = []; }
+      try { stage('synthesis', () => this.synthesize()); } finally { current = []; }
     } finally {
       this.estate = raw.estate;
       this.coverage = raw.coverage;
+      this.timings = { stages };
     }
     this.dependencies = Object.fromEntries([...want].map((m) => [m, [...(touched[m] || [])].sort()]));
     return this.findings;
   }
 
   /**
-   * MATERIALITY — decision 3 of 17 Sep, split by decision 1 of 18 Sep.
+   * MATERIALITY — decision 3 of 17 Sep, split by decision 1 of 16 Sep 2026.
    *
    * Per rule, per class, over the in-scope CIs: a rule affecting at least 20% of
    * a class AND at least 10 CIs is a pattern, not an exception; one affecting
@@ -518,7 +674,22 @@ export class EstateRules {
       m.de_escalators = m.de_escalators.filter((k) => !POPULATION_MODIFIERS.includes(k));
       const rule = catalogueRule(f.rule_id);
       const own = effectiveBand(rule.base, { escalators: m.escalators, deEscalators: m.de_escalators });
-      f.deduction_severity = own;
+      /*
+       * A RULE MAY DECLARE A SMALLER CHARGE FOR A RECORD IT STILL REPORTS.
+       *
+       * CMDB-058 charges an orphaned laptop at LOW and an orphaned database at
+       * CRITICAL: both are holes in the map, and only one of them matters to
+       * impact analysis (decision 3 of Sep 2026). The declaration belongs here,
+       * where the charge is computed, because this pass recomputes it — a rule
+       * setting `deduction_severity` itself would simply be overwritten.
+       *
+       * DOWNGRADE ONLY, and never past an escalation: a band heavier than the
+       * rule's own is ignored, and a record its own context escalated to
+       * Systemic still zeroes, whatever the rule would have preferred.
+       */
+      const capped = f.deduction_band_override;
+      const useCap = capped && own !== 'SYSTEMIC' && BAND_WEIGHT[capped] < BAND_WEIGHT[own];
+      f.deduction_severity = useCap ? capped : own;
       f.escalated_to_systemic = own === 'SYSTEMIC';
       const v = verdicts.get(f.fingerprint);
       if (!v) {
@@ -668,6 +839,18 @@ export class EstateRules {
 
   /* ── Relationship integrity ───────────────────────────────────────────── */
   relationshipRules() {
+    /*
+     * SUBSUMED BY THE CATALOGUE (Group 6, 16 Sep 2026). These three said, in older
+     * words, what CMDB-062, CMDB-069 and CMDB-058 now say with the catalogue's
+     * severity, dimension and guards behind them. Running both would report every
+     * orphan and every duplicate edge twice — once scored, once not.
+     */
+    if (RELATIONSHIP_RULES.every((r) => IMPLEMENTED_CATALOGUE_RULES.has(r))) {
+      for (const [rule, by] of Object.entries(SUBSUMED_BY_GROUP_6)) {
+        this.skipped.push({ rule, table: 'cmdb_rel_ci', reason: `Subsumed by ${by}, which scores in D6 and carries the catalogue's guards` });
+      }
+      return;
+    }
     const relations = this.rows('cmdb_rel_ci', ['parent', 'child', 'type'], { rule: 'REL-SELF' });
     const related = new Set();
     const edgeGroups = new Map();

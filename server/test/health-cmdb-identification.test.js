@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 
 import { CMDB_CATALOGUE, scoreCmdbQuality } from '../src/health/cmdb-quality.js';
 import { EstateRules, IMPLEMENTED_CATALOGUE_RULES } from '../src/health/rules.js';
-import { IDENTIFICATION_RULES, cmdbIdentificationRules } from '../src/health/cmdb-identification.js';
+import { IDENTIFICATION_RULES, cmdbIdentificationRules, CONFIG_ONLY_RULES } from '../src/health/cmdb-identification.js';
 import { buildSignals } from '../src/health/cmdb-signals.js';
+import { remediationFor } from '../src/health/remediation.js';
 
 /*
- * Health Assist — Group 5 (Identification and reconciliation, D4/D5), 19 Sep 2026.
+ * Health Assist — Group 5 (Identification and reconciliation, D4/D5), 16 Sep 2026.
  *
  * Built on the catalogue defaults: IRE bypass 20% (escalate 40%), dead source 30
  * days, attribute strength classified in configuration.
@@ -117,10 +118,18 @@ test('CMDB-045 fires on a class nothing identifies, and an inherited rule counts
     cmdb_identifier_entry: [entry('e1', 'i-hw', 'serial_number')],
   };
   const { byRule } = run(estate);
-  /* cmdb_ci_server inherits the hardware rule; cmdb_ci_appl has nothing. */
-  assert.deepEqual(byRule('CMDB-045').map((f) => f.description.match(/^(\S+)/)[1]), ['cmdb_ci_appl']);
-  assert.match(byRule('CMDB-045')[0].description, /no principal classes are designated/);
-  assert.equal(byRule('CMDB-045')[0].false_positive_guard.evaluated, true);
+  /* cmdb_ci_server inherits the hardware rule; cmdb_ci_appl has nothing.
+     Decision 6 of 16 Sep 2026: ONE grouped finding, classes as the drill-down. */
+  assert.equal(byRule('CMDB-045').length, 1, 'the uncovered classes were not collapsed into one gate finding');
+  const [grouped] = byRule('CMDB-045');
+  assert.match(grouped.description, /^1 class\(es\) have no identification rule/);
+  assert.match(grouped.description, /cmdb_ci_appl \(1 CIs\)/);
+  assert.deepEqual(grouped.grouped_classes.map((x) => x.cls), ['cmdb_ci_appl']);
+  assert.match(grouped.description, /no principal classes are designated/);
+  assert.equal(grouped.false_positive_guard.evaluated, true);
+  /* Remediation expands the group into one fix per class. */
+  const steps = remediationFor(grouped).manualSteps;
+  assert.ok(steps.some((x) => /identification rule covering `cmdb_ci_appl` \(1 CI\(s\)\)/.test(x)), 'remediation did not emit a per-class fix');
 
   const covered = run({ ...estate, cmdb_identifier: [...estate.cmdb_identifier, identifier('i-app', 'App', 'cmdb_ci_appl')], cmdb_identifier_entry: [...estate.cmdb_identifier_entry, entry('e2', 'i-app', 'name')] });
   assert.equal(covered.byRule('CMDB-045').length, 0);
@@ -165,7 +174,7 @@ test('CMDB-054 fires when a descriptive entry is evaluated before an identity en
     ],
   });
   assert.deepEqual(byRule('CMDB-054').map((f) => f.target_ids[0]), ['i-bad']);
-  assert.match(byRule('CMDB-054')[0].description, /evaluates name \(order 100\) before serial_number \(order 200\)/);
+  assert.match(byRule('CMDB-054')[0].description, /evaluates name \(weak, order 100\) before serial_number \(strong, order 200\)/);
   assert.equal(byRule('CMDB-054')[0].confidence, 0.9);
 });
 
@@ -218,6 +227,45 @@ test('CMDB-053 needs runs before it calls anything a trend', () => {
   assert.ok(x, '15 errors against 10 creates did not fire');
   assert.match(x.description, /15 error\(s\) across 3 run\(s\)/);
   assert.match(x.description, /Error codes: IDENTIFICATION_ERROR/);
+});
+
+test('attribute strength is three tiers: a structural COMPOSITE identifies, a single structural attribute does not', () => {
+  /* Decision 1 of 16 Sep 2026. host+install_directory is a place, and identifies;
+     install_directory alone matches every Tomcat on every host. */
+  const { byRule } = run({
+    cmdb_ci: [ci('a', 'cmdb_ci_server')],
+    cmdb_identifier: [
+      identifier('i-composite', 'By place', 'cmdb_ci_server'),
+      identifier('i-single', 'By directory', 'cmdb_ci_server'),
+      identifier('i-network', 'By address', 'cmdb_ci_server'),
+    ],
+    cmdb_identifier_entry: [
+      entry('e1', 'i-composite', 'name,host,install_directory'),
+      entry('e2', 'i-single', 'name,install_directory'),
+      entry('e3', 'i-network', 'name,ip_address'),
+    ],
+  });
+  assert.deepEqual(byRule('CMDB-044').map((f) => f.target_ids[0]), ['i-single'],
+    'a structural composite was read as weak, or a single structural attribute as identity');
+  assert.match(byRule('CMDB-044')[0].description, /weak criteria only/);
+});
+
+test('a dormant rule keeps its defect in a retrievable latent list — pre-ignition, not harmless', () => {
+  /* Rider of 16 Sep 2026. */
+  const { r } = run({
+    cmdb_ci: [ci('a', 'cmdb_ci_server')],
+    cmdb_identifier: [identifier('i-dormant', 'App by name', 'cmdb_ci_appl'), identifier('i-dep', 'Dep', 'cmdb_ci_appl', { independent: 'false' })],
+    cmdb_identifier_entry: [entry('e1', 'i-dormant', 'name'), entry('e2', 'i-dep', 'name')],
+    cmdb_metadata_hosting: [], cmdb_metadata_containment: [],
+  });
+  const latent = r.measures.latent_identification_defects;
+  /* Both rules match by name alone, and one of them is also dependent-only:
+     three defects across two identifiers, each kept with its own rule. */
+  assert.equal(latent.count, 3);
+  assert.deepEqual(latent.by_rule, { 'CMDB-044': 2, 'CMDB-047': 1 });
+  assert.deepEqual(latent.defects.map((x) => `${x.rule_id}:${x.identifier}`).sort(),
+    ['CMDB-044:App by name', 'CMDB-044:Dep', 'CMDB-047:Dep']);
+  assert.equal(r.findings.filter((f) => ['CMDB-044', 'CMDB-047'].includes(f.rule_id)).length, 0, 'a latent defect became a finding');
 });
 
 /* ════════════════════════ D5 — reconciliation ════════════════════════ */
@@ -319,6 +367,31 @@ test('a configuration finding charges no CI: D4 is scored by what the misconfigu
   assert.ok(q.unscored_findings.some((u) => u.rule_id === 'CMDB-047'));
   const d4 = q.dimensions.find((d) => d.key === 'D4');
   assert.equal(d4.record_part, 100, 'a configuration row was charged to the CIs it governs');
+});
+
+test('a dimension whose charging rules all skipped is NOT MEASURED, however many configuration findings it has', () => {
+  /* Measured on dev424910, 16 Sep 2026: D4 and D5 reported a clean 100 while every
+     rule that can deduct had skipped for want of data, and the only findings were
+     configuration ones that deduct nothing. That is the failure "not measured"
+     exists to prevent. */
+  const { r } = run({
+    cmdb_ci: [ci('a'), ci('b')],
+    cmdb_identifier: [identifier('i-name', 'By name', 'cmdb_ci_server')],
+    cmdb_identifier_entry: [entry('e1', 'i-name', 'name')],
+    sys_object_source: [],
+  });
+  const q = scoreCmdbQuality({
+    findings: r.findings, kpis: r.kpis, inScope: { ids: ['a', 'b'], basis: 't' },
+    implemented: IMPLEMENTED_CATALOGUE_RULES, skippedRules: r.skipped, configRules: CONFIG_ONLY_RULES,
+  });
+  const d4 = q.dimensions.find((d) => d.key === 'D4');
+  assert.equal(d4.measured, false, 'a dimension whose charging rules never ran reported a score');
+  assert.equal(d4.score, null);
+  assert.match(d4.not_measured_because, /Every rule here that can charge a record skipped on this run \(CMDB-046, CMDB-050\)/);
+  assert.match(d4.caveats.join(' '), /judge CONFIGURATION/);
+  const d5 = q.dimensions.find((d) => d.key === 'D5');
+  assert.equal(d5.measured, false, 'a dimension made only of configuration rules reported a score');
+  assert.ok(q.gate.blockers.some((b) => b.rule_id === 'CMDB-044'), 'the configuration finding stopped gating');
 });
 
 test('the data-quality dimensions score only the records they judge — retired CIs are the lifecycle dimension\'s', () => {

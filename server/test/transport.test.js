@@ -196,6 +196,21 @@ test('the registry discovers the fluent workspace and reads its claimed scope', 
   assert.equal(fluent.scope, 'x_2002152_nwforge');
   assert.equal(fluent.error, null);
   assert.ok(fluent.sourceCount > 0, 'no managed sources counted');
+  /*
+   * A FRESH CLONE HAS NO now.config.json. It is generated per build and
+   * gitignored, so discovery keyed on it found nothing at all: the Applications
+   * page flagged our own application as unmanaged and the capture sweep could
+   * not key a row to its workspace. The identity read is the tracked template
+   * whenever the generated file is absent, and the entry says which it used.
+   */
+  assert.ok(['generated', 'template'].includes(fluent.identitySource), 'the registry does not say which identity it read');
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+  const generated = path2.join(fluent.dir, 'now.config.json');
+  if (!fs2.existsSync(generated)) {
+    assert.equal(fluent.identitySource, 'template', 'a workspace with no generated config was not read from its tracked template');
+    assert.ok(fluent.configPath.endsWith('now.config.template.json'));
+  }
 });
 
 test('a scope resolves by NAME, and a sys_id is no longer an address', async () => {

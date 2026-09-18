@@ -1,0 +1,169 @@
+{
+  "engine": "audit_history",
+  "rules": {
+    "ITSM-026": {
+      "table": "incident",
+      "scope": "resolved_atISNOTEMPTY",
+      "source": "journal_count",
+      "field": "work_notes",
+      "offend": {
+        "any": [
+          {
+            "path": "derived",
+            "op": "is_null"
+          },
+          {
+            "path": "derived",
+            "op": "equals",
+            "value": 0
+          }
+        ]
+      },
+      "evidence_fields": [
+        "number",
+        "assignment_group",
+        "priority",
+        "resolved_at"
+      ]
+    },
+    "ITSM-034": {
+      "undefined_dependencies": [
+        "the estate-mean pause / cancel rate per group and the \"paused longer than active\" comparison need an aggregate over task_sla joined to the task's group; no engine mode computes a per-group rate against the estate mean"
+      ],
+      "notes": "multiple_of_mean (2×) is declared; the computation is not built in Phase 4."
+    },
+    "ITSM-050": {
+      "requires_objects": [
+        "major_incident"
+      ],
+      "notes": "Major-incident identification is UNDEFINED; the journal-gap derivation (max_gap) exists in the engine."
+    },
+    "ITSM-056": {
+      "table": "problem",
+      "scope": [
+        "active=true",
+        {
+          "$window": {
+            "param": "age_threshold",
+            "field": "sys_created_on",
+            "edge": "older_than"
+          }
+        }
+      ],
+      "source": "audit",
+      "field": "state",
+      "derive": "transition_count",
+      "offend": {
+        "any": [
+          {
+            "path": "derived",
+            "op": "is_null"
+          },
+          {
+            "path": "derived",
+            "op": "equals",
+            "value": 0
+          }
+        ]
+      },
+      "evidence_fields": [
+        "number",
+        "state",
+        "sys_created_on",
+        "assignment_group"
+      ],
+      "notes": "Reading: \"initial state\" = no state transition recorded in sys_audit since creation — no state value is hard-coded."
+    },
+    "ITSM-061": {
+      "table": "problem",
+      "scope": [
+        "active=true",
+        {
+          "$window": {
+            "param": "age_threshold",
+            "field": "sys_created_on",
+            "edge": "older_than"
+          }
+        }
+      ],
+      "source": "audit",
+      "field": "state",
+      "window": {
+        "$param": "age_threshold",
+        "as": "window"
+      },
+      "derive": "transition_count",
+      "offend": {
+        "any": [
+          {
+            "path": "derived",
+            "op": "is_null"
+          },
+          {
+            "path": "derived",
+            "op": "equals",
+            "value": 0
+          }
+        ]
+      },
+      "evidence_fields": [
+        "number",
+        "state",
+        "sys_created_on",
+        "assigned_to"
+      ]
+    },
+    "ITSM-072": {
+      "table": "problem",
+      "scope": "",
+      "source": "audit",
+      "field": "state",
+      "derive": "backward_transitions",
+      "order_source": {
+        "table": "problem",
+        "element": "state"
+      },
+      "offend": {
+        "path": "derived",
+        "op": "gte",
+        "value": {
+          "$param": "backward_transitions"
+        }
+      },
+      "evidence_fields": [
+        "number",
+        "state",
+        "assignment_group"
+      ]
+    },
+    "ITSM-120": {
+      "table": "change_request",
+      "scope": "",
+      "source": "audit",
+      "derive": "transition_count",
+      "offend": {
+        "path": "derived",
+        "op": "gte",
+        "value": {
+          "$param": "reschedules"
+        }
+      },
+      "evidence_fields": [
+        "number",
+        "start_date",
+        "end_date",
+        "state"
+      ],
+      "variants": [
+        {
+          "variant": "start_date",
+          "field": "start_date"
+        },
+        {
+          "variant": "end_date",
+          "field": "end_date"
+        }
+      ]
+    }
+  }
+}

@@ -51,7 +51,7 @@ import catalogue from './catalogue/cmdb.json' with { type: 'json' };
  * (w = 100). It COUNTED, so it is not a blocker: it is listed as "Escalated —
  * Systemic" with the chain that got it there, apart from the gate.
  *
- * ═══ SYSTEMIC IS NOT THE SAME AS GATE (18 Sep) ═══
+ * ═══ SYSTEMIC IS NOT THE SAME AS GATE (16 Sep 2026) ═══
  *
  * A Systemic finding gates only when it invalidates what the composite MEANS.
  * `systemicKind` decides, per rule:
@@ -60,7 +60,7 @@ import catalogue from './catalogue/cmdb.json' with { type: 'json' };
  *   posture         neither gate nor score — shown as Systemic posture (CMDB-038, 056, 091, 104, 112, 131)
  *   derived         shown only (CMDB-116, computed from the composite itself)
  *
- * ═══ A RECORD IS CHARGED FOR ITS OWN CONTEXT, NEVER ITS CLASS'S (18 Sep) ═══
+ * ═══ A RECORD IS CHARGED FOR ITS OWN CONTEXT, NEVER ITS CLASS'S (16 Sep 2026) ═══
  *
  * A per-CI escalator (business-critical support, production, shared
  * infrastructure…) is a property of the CI: at effective Systemic it zeroes
@@ -78,7 +78,60 @@ import catalogue from './catalogue/cmdb.json' with { type: 'json' };
 
 export const BAND_ORDER = Object.freeze(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'SYSTEMIC']);
 export const BAND_WEIGHT = Object.freeze({ SYSTEMIC: 100, CRITICAL: 40, HIGH: 15, MEDIUM: 5, LOW: 1 });
-export const BLEND_DEFAULTS = Object.freeze({ record: 0.7, kpi: 0.3 });
+/**
+ * ═══ THE BLEND IS PER DIMENSION TYPE, NOT ONE GLOBAL RATIO (Sep 2026) ═══
+ *
+ * A dimension score blends its mean RECORD score with the mean pass rate of its
+ * PERCENTAGE rules. One ratio for all ten dimensions assumed they ask the same
+ * shape of question, and they do not.
+ *
+ * Measured on dev424910 when D10 was completed: its record part was 96.0 and its
+ * KPI part 0.0, so the blend alone decided the score — 67.2 at 70/30, 38.4 at
+ * 40/60. And the record part was near-inert BY DESIGN: consequence scoping
+ * correctly makes a long tail of unreferenced laptops quiet, which leaves a mean
+ * of 96 that moves barely at all. Meanwhile the KPI half was saying something
+ * stark and true — no incident in the window named a CI, and impact analysis
+ * returned nothing 52 times out of 52.
+ *
+ * So the ratio follows the SHAPE of the question:
+ *
+ *   record   the defect is a property of a record, and counting records is the
+ *            measurement. Completeness, correctness, uniqueness, lifecycle,
+ *            ownership. (These currently publish no KPIs at all, so the ratio is
+ *            moot for them today — it is declared for when they do.)
+ *   mixed    per-record defects AND an estate-level rate both carry real signal.
+ *            Relationships, freshness, identification, reconciliation.
+ *   estate   the question is about the estate, not about any record. Consumption
+ *            is the clear case: "does anybody use this CMDB" cannot be answered
+ *            by averaging CIs, and a per-record mean will always flatter it.
+ *
+ * This is consequence scoping applied one level up: where a defect is
+ * near-universal and low-consequence per record, the per-record mean stops being
+ * informative, and the dimension's weight belongs with the measure that still is.
+ */
+export const DIMENSION_KIND = Object.freeze({
+  D1: 'record', D2: 'record', D3: 'record', D8: 'record', D9: 'record',
+  /* D4 and D5 are unvalidated on this estate — no rule in either has ever charged
+     a record here — so they take the middle ratio until one does. */
+  D4: 'mixed', D5: 'mixed', D6: 'mixed', D7: 'mixed',
+  D10: 'estate',
+});
+
+export const BLEND_BY_KIND = Object.freeze({
+  record: Object.freeze({ record: 0.7, kpi: 0.3 }),
+  mixed: Object.freeze({ record: 0.6, kpi: 0.4 }),
+  estate: Object.freeze({ record: 0.3, kpi: 0.7 }),
+});
+
+/** The old single ratio, kept as the fallback for a dimension with no declared kind. */
+export const BLEND_DEFAULTS = BLEND_BY_KIND.record;
+
+/** The blend a dimension uses, and why — published with the score. */
+export function blendFor(dimension, override = null) {
+  if (override) return { ...override, kind: 'override' };
+  const kind = DIMENSION_KIND[dimension] || 'mixed';
+  return { ...BLEND_BY_KIND[kind], kind };
+}
 
 export const CMDB_DIMENSIONS = Object.freeze(catalogue.dimensions.map((d) => Object.freeze({ ...d })));
 export const CMDB_CATALOGUE = Object.freeze(Object.fromEntries(catalogue.rules.map((r) => [r.id, Object.freeze(r)])));
@@ -86,7 +139,7 @@ export const CATALOGUE_SOURCE = catalogue.source;
 
 /** The modifier vocabulary, word for word from the Schema tab. */
 /**
- * THE TWO MODIFIER FAMILIES (confirmed 19 Sep).
+ * THE TWO MODIFIER FAMILIES (confirmed 16 Sep 2026).
  *
  *   per_ci      a fact about THIS record — the CI supports a Business Critical
  *               service, runs in production, is shared infrastructure, is
@@ -142,7 +195,7 @@ export const DE_ESCALATORS = Object.freeze({
 });
 
 /* Derived from MODIFIER_FAMILY, never written twice: the population family moves
-   where a finding is reported and never what a record is charged (18 Sep). */
+   where a finding is reported and never what a record is charged (16 Sep 2026). */
 export const POPULATION_MODIFIERS = Object.freeze(
   Object.entries(MODIFIER_FAMILY).filter(([, family]) => family === 'population').map(([key]) => key),
 );
@@ -184,37 +237,105 @@ const labelOf = (key) => ESCALATORS[key] || DE_ESCALATORS[key] || key;
  * @param {object}   args.measures     context measures recorded by the rules — reported, never scored
  */
 export function scoreCmdbQuality({
-  findings = [], kpis = [], inScope = { ids: [], basis: '' }, implemented = new Set(), blend = BLEND_DEFAULTS, measures = {},
-  dimensionScope = {},
+  findings = [], kpis = [], inScope = { ids: [], basis: '' }, implemented = new Set(), blend = null, measures = {},
+  dimensionScope = {}, skippedRules = [], configRules = [],
 } = {}) {
+  /*
+   * A DIMENSION IS MEASURED ONLY IF SOMETHING THAT CAN CHARGE A RECORD RAN.
+   *
+   * Measured on dev424910, 16 Sep 2026: D4 and D5 reported 100 while every rule that
+   * could deduct had skipped — no source attribution, no reconciliation
+   * definitions — and the only findings were configuration ones that deduct
+   * nothing by design. A clean 100 from rules that never ran is exactly the
+   * failure "not measured" exists to prevent.
+   */
+  const didNotRun = new Set(skippedRules.map((x) => (typeof x === 'string' ? x : x.rule)).filter(Boolean));
+  const configOnly = new Set(configRules);
   const scopeIds = new Set(inScope.ids || []);
   /*
-   * A DIMENSION MAY SCORE A NARROWER SET (decision 7 of 19 Sep).
+   * A DIMENSION MAY SCORE A NARROWER SET (decision 7 of 16 Sep 2026).
    *
    * The data-quality dimensions judge records that are supposed to be
    * maintained, so retired, stolen and absent CIs are out of their scope — but
    * they stay in the estate, because the lifecycle dimension exists to evaluate
    * exactly those. A dimension with no entry here scores every in-scope record.
    */
-  const scopeFor = (dim) => (dimensionScope[dim] ? new Set(dimensionScope[dim]) : scopeIds);
+  const baseScopeFor = (dim) => (dimensionScope[dim] ? new Set(dimensionScope[dim]) : scopeIds);
+  /*
+   * A CONTRADICTION rule judges records a quality rule would skip — a retired CI
+   * whose two status fields disagree, an edge into a dead one. Its charge would
+   * otherwise be dropped, because the record is outside the dimension's
+   * quality scope. So the records such a rule actually charged JOIN the
+   * denominator of the dimension that charged them: the mean still describes
+   * exactly the records this dimension judged, no more and no fewer.
+   */
+  let contradictionCharged = null;
+  const chargedByContradiction = () => {
+    if (contradictionCharged) return contradictionCharged;
+    contradictionCharged = {};
+    for (const f of catalogued) {
+      const rule = CMDB_CATALOGUE[f.rule_id];
+      if (rule.intent !== 'contradiction' || rule.track !== 'dimension' || !rule.dimension) continue;
+      if (rule.base === 'SYSTEMIC' || f.pattern || f.unscored_reason || rule.kind !== 'record') continue;
+      (contradictionCharged[rule.dimension] ||= new Set());
+      for (const id of f.target_ids || []) if (scopeIds.has(id)) contradictionCharged[rule.dimension].add(id);
+    }
+    return contradictionCharged;
+  };
+  const scopeCache = new Map();
+  const scopeFor = (dim) => {
+    if (!scopeCache.has(dim)) {
+      const ids = baseScopeFor(dim);
+      const extra = chargedByContradiction()[dim];
+      scopeCache.set(dim, extra?.size ? new Set([...ids, ...extra]) : ids);
+    }
+    return scopeCache.get(dim);
+  };
   const catalogued = findings.filter((f) => CMDB_CATALOGUE[f.rule_id]);
 
   const GATING = GATING_KINDS;
   const deductionBand = (f, id) => f.deduction_by_record?.[id] ?? f.deduction_severity ?? f.severity;
 
+  /*
+   * A KPI CANNOT GATE ON A CAPABILITY THE ESTATE DOES NOT HAVE (decision 2 of
+   * Sep 2026).
+   *
+   * A `measured_kpi` gates because a measured failure invalidates what the
+   * composite means. But when the thing being measured is ABSENT rather than
+   * failing — no service map to traverse from, no Discovery installed to be
+   * behind schedule — a gate would be reporting a policy ("you should own this
+   * product") as a measurement. That is posture: surfaced, non-gating,
+   * non-scoring.
+   *
+   * A rule downgrades itself by setting `systemic_kind_override` on the finding
+   * and must say why in `systemic_kind_override_reason`. The override can only
+   * ever DOWNGRADE: a rule cannot promote itself into the gate, so the gate's
+   * membership stays the catalogue's decision and never a rule pack's.
+   */
+  const kindOf = (f) => {
+    const declared = CMDB_CATALOGUE[f.rule_id].systemicKind;
+    const override = f.systemic_kind_override;
+    return override && !GATING.has(override) ? override : declared;
+  };
+
   /* ── Layer 1: the gate. BASE Systemic AND a gating kind. ── */
   const baseSystemic = catalogued.filter((f) => CMDB_CATALOGUE[f.rule_id].base === 'SYSTEMIC');
   const blockers = baseSystemic
-    .filter((f) => GATING.has(CMDB_CATALOGUE[f.rule_id].systemicKind))
+    .filter((f) => GATING.has(kindOf(f)))
     .map((f) => ({
       rule_id: f.rule_id, fingerprint: f.fingerprint, title: f.title,
-      systemic_kind: CMDB_CATALOGUE[f.rule_id].systemicKind,
+      systemic_kind: kindOf(f),
       headline: f.rule_id === 'CMDB-141',
     }));
   /* Systemic POSTURE: surfaced, never gating, never scored. */
   const posture = baseSystemic
-    .filter((f) => !GATING.has(CMDB_CATALOGUE[f.rule_id].systemicKind))
-    .map((f) => ({ rule_id: f.rule_id, fingerprint: f.fingerprint, title: f.title, systemic_kind: CMDB_CATALOGUE[f.rule_id].systemicKind ?? null }));
+    .filter((f) => !GATING.has(kindOf(f)))
+    .map((f) => ({
+      rule_id: f.rule_id, fingerprint: f.fingerprint, title: f.title,
+      systemic_kind: kindOf(f) ?? null,
+      downgraded_from: f.systemic_kind_override ? CMDB_CATALOGUE[f.rule_id].systemicKind : undefined,
+      downgraded_because: f.systemic_kind_override_reason || undefined,
+    }));
 
   /* ── Escalated to Systemic by the CI's OWN context: it zeroed its record. ── */
   const escalated = catalogued
@@ -281,7 +402,7 @@ export function scoreCmdbQuality({
        * The multiplier is PER RECORD. CMDB-033 charges 5x the CI that is the
        * defect — the empty twin nothing points at — and leaves the populated
        * twin, which is the victim of the duplicate, at its ordinary band
-       * (confirmed 19 Sep).
+       * (confirmed 16 Sep 2026).
        */
       const multiplier = f.deduction_multiplier_by_record?.[id] ?? f.deduction_multiplier ?? 1;
       const w = (BAND_WEIGHT[band in BAND_WEIGHT ? band : rule.base]) * multiplier;
@@ -309,6 +430,9 @@ export function scoreCmdbQuality({
     const inDim = Object.values(CMDB_CATALOGUE).filter((r) => r.dimension === d.key && r.track === 'dimension');
     const built = inDim.filter((r) => implemented.has(r.id));
     const recordBuilt = built.filter((r) => r.kind === 'record');
+    /* Rules that can actually deduct, and did run. */
+    const chargeable = recordBuilt.filter((r) => !configOnly.has(r.id) && !didNotRun.has(r.id));
+    const configHere = recordBuilt.filter((r) => configOnly.has(r.id));
     const measuredKpis = kpiByDim[d.key] || [];
     const caveats = [];
     if (principalCaveat && built.some((r) => r.principalScoped)) {
@@ -323,12 +447,24 @@ export function scoreCmdbQuality({
 
     const dimIds = scopeFor(d.key);
     const dimN = dimIds.size;
-    const hasRecord = recordBuilt.length > 0 && dimN > 0;
+    const hasRecord = chargeable.length > 0 && dimN > 0;
     const hasKpi = measuredKpis.length > 0;
+    if (configHere.length) {
+      caveats.push(`${configHere.length} rule(s) here judge CONFIGURATION (identification rules, precedence definitions). They are reported and can gate, but they deduct from no record, so they do not move this score.`);
+    }
     if (!hasRecord && !hasKpi) {
+      /* Name only what COULD have measured it: the charging record rules and the
+         percentage rules. A configuration rule skipping is not why there is no
+         record score — it could never have produced one. */
+      const skippedHere = [...built.filter((r) => didNotRun.has(r.id)
+        && ((r.kind === 'record' && !configOnly.has(r.id)) || r.kind === 'kpi')).map((r) => r.id)].sort();
       return {
         ...base, measured: false, score: null,
-        not_measured_because: built.length ? 'Its built rules produced no measurement on this run.' : 'No rule in this dimension is built yet.',
+        not_measured_because: !built.length
+          ? 'No rule in this dimension is built yet.'
+          : skippedHere.length
+            ? `Every rule here that can charge a record skipped on this run (${skippedHere.join(', ')}), so there is no record measurement — only the configuration findings above, which deduct nothing.`
+            : 'Its built rules produced no measurement on this run.',
       };
     }
 
@@ -346,9 +482,57 @@ export function scoreCmdbQuality({
       affected = byRecord.size;
     }
     const kpiPart = hasKpi ? measuredKpis.reduce((n, k) => n + k.pass_pct, 0) / measuredKpis.length : null;
+    const dimBlend = blendFor(d.key, blend);
     const score = hasRecord && hasKpi
-      ? blend.record * recordPart + blend.kpi * kpiPart
+      ? dimBlend.record * recordPart + dimBlend.kpi * kpiPart
       : (hasRecord ? recordPart : kpiPart);
+
+    /*
+     * WHAT THE KPI HALF ACTUALLY RESTS ON.
+     *
+     * A dimension's KPI half is the mean of whichever percentage rules produced a
+     * measurement — and on a given estate that can be far fewer than were built.
+     * Measured on dev424910: D10's KPI half is 70% of the dimension, CMDB-117 and
+     * CMDB-118 both abstain below their volume floor, and CMDB-141 carries all of
+     * it alone. A 28.8 read as "a broad assessment of consumption" would be wrong;
+     * it is one measurement. And when that measurement is also a trust-gate
+     * blocker, the estate is being told the same thing twice — once as a score
+     * and once as a gate — which the reader should know before counting it twice.
+     */
+    const kpiBuilt = built.filter((r) => r.kind === 'kpi').map((r) => r.id);
+    let kpiBasis = null;
+    if (hasKpi) {
+      const measuredIds = measuredKpis.map((k) => k.rule_id);
+      const unmeasured = kpiBuilt.filter((id) => !measuredIds.includes(id));
+      const kpiShare = hasRecord ? dimBlend.kpi : 1;
+      const alsoGating = measuredIds.filter((id) => blockers.some((b) => b.rule_id === id));
+      kpiBasis = { share: kpiShare, measured: measuredIds, unmeasured, also_gating: alsoGating };
+      if (unmeasured.length) {
+        /* "Produced no measurement" covers both an abstention (below a volume
+           floor, a table unread) and an empty population (no custom attributes
+           to measure) — the reader needs to know the KPI half is narrow, and the
+           rule's own skip says which. */
+        caveats.push(`Its KPI half (${Math.round(kpiShare * 100)}% of this dimension) rests on ${measuredIds.length === 1 ? 'ONE measurement' : `${measuredIds.length} measurements`} — ${measuredIds.join(', ')} — while ${unmeasured.join(', ')} produced no measurement on this run (each rule's skip says why). Read the score as ${measuredIds.length === 1 ? `what ${measuredIds[0]} says` : 'what those rules say'}, not as a broad assessment of the dimension.`);
+      }
+      if (alsoGating.length) {
+        caveats.push(`${alsoGating.join(', ')} ${alsoGating.length === 1 ? 'is' : 'are'} also a trust-gate blocker, so this estate is hearing the same signal twice — once in this score and once as the gate. It is one problem, not two.`);
+      }
+    } else if (kpiBuilt.length) {
+      /*
+       * THE ZERO CASE (CMDB checkpoint, 17 Sep 2026). The disclosure above fired
+       * only when at least one KPI measured, so a dimension whose KPI half was
+       * entirely absent read as a complete record score with no caveat. Measured on
+       * dev424910: D1 has CMDB-021 built, it produced nothing, and 73.8 was the
+       * record mean alone — silently, while D7 and D10 disclosed a PARTIAL KPI half.
+       */
+      kpiBasis = { share: 0, measured: [], unmeasured: kpiBuilt, also_gating: [] };
+      caveats.push(`Its KPI part is ABSENT on this run: ${kpiBuilt.join(', ')} ${kpiBuilt.length === 1 ? 'is' : 'are'} built for this dimension and produced no measurement (each rule's skip says why), so the score is the record mean alone and the ${Math.round(dimBlend.record * 100)}/${Math.round(dimBlend.kpi * 100)} ${dimBlend.kind} blend was not applied. Read it as what the record rules say, not as the whole dimension.`);
+    }
+    /* The mirror: a KPI-only score while record rules that could have charged produced nothing. */
+    const recordSilent = recordBuilt.filter((r) => !configOnly.has(r.id)).map((r) => r.id);
+    if (hasKpi && !hasRecord && recordSilent.length) {
+      caveats.push(`Its record part is ABSENT on this run: ${recordSilent.join(', ')} ${recordSilent.length === 1 ? 'is' : 'are'} built for this dimension and charged no record (each rule's skip says why), so the score is the KPI mean alone and no blend was applied. Read it as what the percentage rules say, not as the whole dimension.`);
+    }
 
     return {
       ...base,
@@ -356,7 +540,8 @@ export function scoreCmdbQuality({
       score: pct1(score),
       record_part: recordPart == null ? null : pct1(recordPart),
       kpi_part: kpiPart == null ? null : pct1(kpiPart),
-      blend: hasRecord && hasKpi ? { record: blend.record, kpi: blend.kpi } : null,
+      blend: hasRecord && hasKpi ? { record: dimBlend.record, kpi: dimBlend.kpi, kind: dimBlend.kind } : null,
+      kpi_basis: kpiBasis,
       kpis: measuredKpis.map((k) => ({ rule_id: k.rule_id, title: k.title, pass_pct: pct1(k.pass_pct), numerator: k.numerator, denominator: k.denominator, basis: k.basis })),
       records_affected: affected,
       records_scored: dimN,
@@ -396,6 +581,56 @@ export function scoreCmdbQuality({
       coverage_provisional: coverageProvisional,
       coverage_label: coverageProvisional && composite != null ? `Provisional — ${measuredWeight} of 100 weight measured` : null,
       not_measured_because: composite == null ? 'No CMDB Quality dimension produced a measurement yet, so there is nothing to average.' : null,
+      /*
+       * ═══ THE THREE VARIANTS (CMDB-116) ═══
+       *
+       * A naked composite is the most dangerous thing this module can produce:
+       * it is a number somebody will screenshot. The same arithmetic is
+       * therefore published three ways, each qualified by what it does NOT
+       * account for, so the figure cannot be quoted without its caveat.
+       *
+       *   raw       the arithmetic, and nothing else.
+       *   coverage  the arithmetic over the weight actually measured.
+       *   gate      whether the arithmetic means anything at all.
+       *
+       * The GATE variant is the one that matters and is marked `dominant`: when
+       * the trust gate is open, the other two are describing a number nobody
+       * should be acting on yet. CMDB-116 is `derived` and deducts nothing — this
+       * is presentation, not scoring.
+       */
+      variants: composite == null ? [] : [
+        {
+          key: 'raw',
+          label: 'Composite',
+          value: composite,
+          qualifier: `Σ weight × dimension over the ${measuredWeight} weight measured`,
+          caveat: 'The arithmetic alone. It does not say how much of the model was measured, or whether the measurement can be trusted.',
+          dominant: false,
+        },
+        {
+          key: 'coverage',
+          label: coverageProvisional ? 'Coverage-qualified' : 'Full coverage',
+          value: composite,
+          qualifier: `${measuredWeight} of 100 weight measured`,
+          caveat: coverageProvisional
+            ? `${100 - measuredWeight} of 100 weight was NOT measured on this run, so this figure describes ${measuredWeight}% of the model and says nothing about the rest.`
+            : 'Every dimension produced a measurement on this run.',
+          dominant: false,
+        },
+        {
+          key: 'gate',
+          label: gateProvisional ? 'Not trustworthy yet' : 'Trustworthy',
+          value: gateProvisional ? null : composite,
+          qualifier: gateProvisional
+            ? `${blockers.length} trust blocker(s): ${[...new Set(blockers.map((b) => b.rule_id))].join(', ')}`
+            : 'No trust blocker',
+          caveat: gateProvisional
+            ? 'The trust gate is OPEN. Configuration the score depends on is missing or a measured capability has failed, so the number above is arithmetic over data that cannot yet carry it. Clear the blockers before quoting a score.'
+            : 'Nothing invalidates what this score means.',
+          dominant: true,
+        },
+      ],
+      weights_caveat: 'The dimension weights are SAOS defaults and have not been reviewed by this customer (CMDB-116 false-positive guard).',
       definition: 'Σ weight × dimension score over measured dimensions ÷ their weight. A dimension blends its mean record score (a record starts at 100 and loses the weight of each finding on it) with the passing % of its percentage rules.',
     },
     dimensions,

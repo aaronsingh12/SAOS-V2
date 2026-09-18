@@ -1,5 +1,5 @@
 import { modifiersFor, lineageOf, dqActive, DQ_INACTIVE_INSTALL_STATUS } from './cmdb-signals.js';
-import { parseDate } from './rules.js';
+import { parseDate } from './time.js';
 
 /**
  * GROUP 5 — IDENTIFICATION AND RECONCILIATION (D4, D5). CMDB-044 to CMDB-055.
@@ -9,7 +9,7 @@ import { parseDate } from './rules.js';
  * each attribute. They are the causes of Group 4: a name-only identifier or a
  * bypassed IRE is why duplicates exist at all.
  *
- * WHAT THIS INSTANCE ACTUALLY KEEPS (verified on dev424910, 19 Sep 2026):
+ * WHAT THIS INSTANCE ACTUALLY KEEPS (verified on dev424910, 16 Sep 2026):
  *
  *   cmdb_identifier / cmdb_identifier_entry   409 / 471 rows — real data
  *   cmdb_metadata_hosting / _containment      88 / 145 rows — which classes are
@@ -40,6 +40,18 @@ export const IDENTIFICATION_RULES = Object.freeze([
   'CMDB-050', 'CMDB-051', 'CMDB-052', 'CMDB-053', 'CMDB-054', 'CMDB-055',
 ]);
 
+/**
+ * The rules whose finding is about CONFIGURATION, not about a record.
+ *
+ * They name identifiers, reconciliation definitions and precedence rows, so they
+ * deduct from no CI — which means a dimension made only of these has NOT been
+ * measured in the record sense, however many of them ran. The score says so
+ * rather than reporting a clean 100 (see cmdb-quality.js).
+ */
+export const CONFIG_ONLY_RULES = Object.freeze([
+  'CMDB-044', 'CMDB-045', 'CMDB-047', 'CMDB-048', 'CMDB-049', 'CMDB-051', 'CMDB-052', 'CMDB-054', 'CMDB-055',
+]);
+
 export const IDENTIFICATION_DEFAULTS = Object.freeze({
   /* Data-quality dimensions: the lifecycle dimension owns retired CIs. */
   dqInactiveInstallStatus: DQ_INACTIVE_INSTALL_STATUS,
@@ -49,8 +61,21 @@ export const IDENTIFICATION_DEFAULTS = Object.freeze({
    * classification is configuration because it is a judgement — the catalogue
    * says so, and CMDB-054's confidence is 90% for that reason.
    */
-  identityAttributes: Object.freeze(['serial_number', 'ip_address', 'mac_address', 'fqdn', 'correlation_id',
-    'asset_tag', 'object_id', 'uuid', 'bios_uuid', 'host_name', 'dns_domain', 'model_id']),
+  /*
+   * THREE TIERS, not two (decision 1 of 16 Sep 2026).
+   *
+   *   strong      the thing carries it: serial, external key, asset tag, UUID
+   *   medium      the network identifies it (address, fqdn) — reassignable —
+   *               or a STRUCTURAL COMPOSITE does: host + install_directory
+   *   weak        a label somebody typed: name, description
+   *
+   * A SINGLE structural attribute is not identity. "install_directory" alone
+   * matches every Tomcat on every host; "host + install_directory" is a place.
+   * `structuralComposite` is the number required, and it is configuration.
+   */
+  identityAttributes: Object.freeze(['serial_number', 'correlation_id', 'asset_tag', 'uuid', 'bios_uuid', 'object_id']),
+  networkAttributes: Object.freeze(['ip_address', 'mac_address', 'fqdn', 'host_name', 'dns_domain', 'model_id']),
+  structuralComposite: 2,
   /*
    * STRUCTURAL attributes — where a thing LIVES rather than what it is called.
    * A WAR file has no serial; "this host + this install directory" is its
@@ -58,11 +83,15 @@ export const IDENTIFICATION_DEFAULTS = Object.freeze({
    * identity for CMDB-044 and CMDB-054. Measured on dev424910, these are the
    * criteria the shipped identifiers actually use: sys_class_name 140, name 139,
    * host 97, object_id 83, ip_address 83, host_name 76, port 58, container 31,
-   * install_directory 24. Raised for confirmation on 19 Sep.
+   * install_directory 24. Raised for confirmation on 16 Sep 2026.
    */
   structuralAttributes: Object.freeze(['host', 'container', 'install_directory', 'directory', 'config_file', 'path',
     'port', 'tcp_port', 'url', 'sid', 'instance', 'instance_name', 'instance_number', 'server_name', 'farm',
     'cluster_id', 'queue', 'cim_object_path', 'zone', 'partition']),
+  /* Structural criteria that point at ANOTHER CI. They make a composite strong
+     enough to identify, and they are dependent by nature — which is why they do
+     not satisfy CMDB-047's requirement for an independent local criterion. */
+  referenceAttributes: Object.freeze(['host', 'container', 'server_name', 'farm', 'cluster_id', 'zone']),
   descriptiveAttributes: Object.freeze(['name', 'display_name', 'short_description', 'label', 'comments', 'location', 'company', 'manufacturer']),
   ireBypassThresholdPct: 20,        // CMDB-046 — catalogue default
   ireBypassEscalatePct: 40,         // above this the finding escalates
@@ -99,7 +128,7 @@ export function cmdbIdentificationRules(ctx, options = {}) {
      * Charging every CI a bad identifier governs would zero whole classes for
      * one misconfigured row — the damage those CIs actually carry is what the
      * duplicate and completeness rules charge them for. Raised as a decision
-     * point on 19 Sep; this is the conservative default.
+     * point on 16 Sep 2026; this is the conservative default.
      */
     f.unscored_reason = `names ${table} records, not CIs — the defect is configuration, and the CIs it puts at risk are charged by the rules that catch the damage`;
     return f;
@@ -118,7 +147,20 @@ export function cmdbIdentificationRules(ctx, options = {}) {
   const identifiers = (ctx.estate.cmdb_identifier || []).filter((i) => truthy(i.active));
   const entries = (ctx.estate.cmdb_identifier_entry || []).filter((e) => truthy(e.active));
   const entriesOf = (id) => entries.filter((e) => e.identifier === id.sys_id).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-  const isIdentity = (a) => opt.identityAttributes.includes(a) || opt.structuralAttributes.includes(a);
+  /**
+   * The strength of one entry's criteria: 3 strong, 2 medium, 1 weak, 0 unknown.
+   * A structural composite (host + install_directory) reaches medium; one
+   * structural attribute on its own does not.
+   */
+  const TIER_NAME = { 3: 'strong', 2: 'medium', 1: 'weak', 0: 'unclassified' };
+  const tierOf = (attrs) => {
+    if (attrs.some((a) => opt.identityAttributes.includes(a))) return 3;
+    if (attrs.some((a) => opt.networkAttributes.includes(a))) return 2;
+    if (attrs.filter((a) => opt.structuralAttributes.includes(a)).length >= opt.structuralComposite) return 2;
+    if (attrs.some((a) => opt.descriptiveAttributes.includes(a))) return 1;
+    return 0;
+  };
+  const isIdentity = (a) => opt.identityAttributes.includes(a) || opt.networkAttributes.includes(a);
   const isDescriptive = (a) => opt.descriptiveAttributes.includes(a);
   const ciCountIn = (cls) => cis.filter((c) => (hierarchyOk ? line(c.sys_class_name).includes(cls) : c.sys_class_name === cls)).length;
   /*
@@ -135,7 +177,19 @@ export function cmdbIdentificationRules(ctx, options = {}) {
     if (!inForceCount.has(id.applies_to)) inForceCount.set(id.applies_to, ciCountIn(id.applies_to));
     return inForceCount.get(id.applies_to) > 0;
   };
+  /*
+   * LATENT DEFECTS (rider of 16 Sep 2026). A broken identifier on a class nobody has
+   * populated yet is pre-ignition, not harmless: the day that class is populated
+   * it starts making duplicates. It is kept out of the score and out of the
+   * gate — it is creating nothing today — and kept in a retrievable list, with
+   * the rule, the identifier, the class and the defect.
+   */
   const dormant = { 'CMDB-044': 0, 'CMDB-047': 0, 'CMDB-054': 0 };
+  const latentDefects = [];
+  const latent = (rule, id, defect) => {
+    dormant[rule] += 1;
+    latentDefects.push({ rule_id: rule, identifier: id.name, sys_id: id.sys_id, applies_to: id.applies_to, defect });
+  };
 
   if (!identifiersOk) {
     for (const r of ['CMDB-044', 'CMDB-045', 'CMDB-047', 'CMDB-054']) {
@@ -146,11 +200,12 @@ export function cmdbIdentificationRules(ctx, options = {}) {
     for (const id of identifiers) {
       const attrs = [...new Set(entriesOf(id).flatMap((e) => splitAttrs(e.attributes)))];
       if (!attrs.length) continue;
-      if (attrs.some(isIdentity)) continue;
-      if (!attrs.some(isDescriptive)) continue;          // unknown attributes: not judged
-      if (!inForce(id)) { dormant['CMDB-044'] += 1; continue; }
+      const tier = tierOf(attrs);
+      if (tier >= 2) continue;                            // strong, or a sufficient composite
+      if (tier === 0) continue;                           // unknown attributes: not judged
+      if (!inForce(id)) { latent('CMDB-044', id, `matches on ${attrs.join(', ')} — ${TIER_NAME[tier]} criteria only`); continue; }
       configFinding('CMDB-044', 'cmdb_identifier', [id], ['name', 'applies_to', 'independent'],
-        `Identification rule "${id.name}" matches ${id.applies_to} on ${attrs.join(', ')} alone — no serial, address or external key among them. Two devices with the same name are one CI to IRE, and one device renamed is a new CI. ${ciCountIn(id.applies_to).toLocaleString('en-US')} CI(s) are governed by it.`,
+        `Identification rule "${id.name}" matches ${id.applies_to} on ${attrs.join(', ')} alone — ${TIER_NAME[tierOf(attrs)]} criteria only, with no serial, external key, address, or structural composite (${opt.structuralComposite}+ of host, container, install_directory…) among them. Two devices with the same name are one CI to IRE, and one device renamed is a new CI. ${ciCountIn(id.applies_to).toLocaleString('en-US')} CI(s) are governed by it.`,
         { evidence: [fact('cmdb_identifier_entry', 'attributes', attrs.join(', '), 'every criterion this rule matches on')],
           guard: { evaluated: false, note: 'Not machine-checkable: some logical CI types genuinely have no stronger attribute. Confirm no identity attribute is available on this class before accepting the finding.' } });
     }
@@ -165,11 +220,19 @@ export function cmdbIdentificationRules(ctx, options = {}) {
     } else {
       const covers = (cls) => identifiers.some((i) => line(cls).includes(i.applies_to) && entriesOf(i).length);
       const uncovered = scope.filter((cls) => !covers(cls));
-      for (const cls of uncovered) {
-        configFinding('CMDB-045', 'cmdb_class_info', [], ['class'],
-          `${cls} has no identification rule, its own or inherited — IRE cannot recognise a CI of this class it has seen before, so every import creates another one. ${ciCountIn(cls).toLocaleString('en-US')} CI(s) are in it.${fallbackNote}`,
-          { evidence: [fact('cmdb_identifier', 'applies_to chain', line(cls).join(' → '), 'the lineage searched for an applicable rule')],
+      if (uncovered.length) {
+        /*
+         * ONE finding for the estate, not one per class (decision 6 of 16 Sep 2026):
+         * seven separate gate blockers saying the same thing made the trust gate
+         * unreadable. The classes are the drill-down, and remediation emits one
+         * fix per class from `grouped_classes`.
+         */
+        const ranked = uncovered.map((cls) => ({ cls, cis: ciCountIn(cls) })).sort((a, b) => b.cis - a.cis);
+        const f = configFinding('CMDB-045', 'cmdb_class_info', [], ['class'],
+          `${uncovered.length} class(es) have no identification rule, their own or inherited — IRE cannot recognise a CI of those classes it has seen before, so every import creates another one. Worst first: ${ranked.slice(0, 5).map((x) => `${x.cls} (${x.cis.toLocaleString('en-US')} CIs)`).join(', ')}${ranked.length > 5 ? `, and ${ranked.length - 5} more` : ''}.${fallbackNote}`,
+          { evidence: ranked.map((x) => fact('cmdb_class_info', x.cls, `${x.cis} CI(s)`, `lineage searched: ${line(x.cls).join(' → ')}`)),
             guard: { evaluated: true, note: 'Inheritance resolved through the class hierarchy: a rule on any ancestor counts as coverage.' } });
+        f.grouped_classes = ranked;
       }
       if (!uncovered.length && scope.length) skip('CMDB-045', 'cmdb_identifier', `Every one of the ${scope.length} class(es) in scope resolves to an identification rule, its own or an ancestor's`);
     }
@@ -185,9 +248,9 @@ export function cmdbIdentificationRules(ctx, options = {}) {
       if (!entriesOf(id).length) continue;
       const dependent = hierarchyOk ? line(id.applies_to).some((t) => dependentByDesign.has(t)) : dependentByDesign.has(id.applies_to);
       if (metadataOk && dependent) continue;
-      if (!inForce(id)) { dormant['CMDB-047'] += 1; continue; }
+      if (!inForce(id)) { latent('CMDB-047', id, 'no independent criterion'); continue; }
       configFinding('CMDB-047', 'cmdb_identifier', [id], ['name', 'applies_to', 'independent'],
-        `Identification rule "${id.name}" for ${id.applies_to} has no independent criterion: every match depends on a related CI being identified first. If the parent is missing or wrong, this CI cannot be identified at all and a duplicate is created instead.`,
+        `Identification rule "${id.name}" for ${id.applies_to} has no independent criterion: every match depends on a related CI being identified first${entriesOf(id).some((e) => splitAttrs(e.attributes).some((a) => opt.referenceAttributes.includes(a))) ? ` (its criteria include ${entriesOf(id).flatMap((e) => splitAttrs(e.attributes)).filter((a) => opt.referenceAttributes.includes(a)).join(', ')}, which point at another CI — a structural composite is strong enough to identify, but it is still dependent)` : ''}. If the parent is missing or wrong, this CI cannot be identified at all and a duplicate is created instead.`,
         { evidence: [fact('cmdb_identifier', 'independent', 'false', 'the rule identifies only in the context of another CI')],
           guard: { evaluated: metadataOk, note: metadataOk
             ? 'Classes that are dependent BY DESIGN — hosted or contained per cmdb_metadata_hosting / cmdb_metadata_containment — are excluded.'
@@ -198,16 +261,19 @@ export function cmdbIdentificationRules(ctx, options = {}) {
     for (const id of identifiers) {
       const ordered = entriesOf(id);
       if (ordered.length < 2) continue;
-      if (!inForce(id)) { dormant['CMDB-054'] += 1; continue; }
       const strength = ordered.map((e) => {
         const attrs = splitAttrs(e.attributes);
-        return { entry: e, attrs, identity: attrs.some(isIdentity), descriptive: attrs.every(isDescriptive) && attrs.length > 0 };
+        return { entry: e, attrs, tier: tierOf(attrs) };
       });
-      const firstIdentity = strength.findIndex((x) => x.identity);
-      const weakBefore = strength.slice(0, firstIdentity < 0 ? 0 : firstIdentity).filter((x) => x.descriptive);
+      /* Weak before strong, by TIER: a name evaluated before a serial, or before
+         a host+directory composite, wins the match the stronger one should have. */
+      const strongest = Math.max(...strength.map((x) => x.tier));
+      const firstStrongest = strength.findIndex((x) => x.tier === strongest);
+      const weakBefore = strength.slice(0, firstStrongest).filter((x) => x.tier > 0 && x.tier < strongest);
       if (!weakBefore.length) continue;
+      if (!inForce(id)) { latent('CMDB-054', id, `${TIER_NAME[weakBefore[0].tier]} criteria evaluated before ${TIER_NAME[strongest]} ones`); continue; }
       configFinding('CMDB-054', 'cmdb_identifier', [id], ['name', 'applies_to'],
-        `Identification rule "${id.name}" evaluates ${weakBefore.map((x) => x.attrs.join('+')).join(', ')} (order ${weakBefore.map((x) => x.entry.order).join(', ')}) before ${strength[firstIdentity].attrs.join('+')} (order ${strength[firstIdentity].entry.order}). A weak criterion that matches first wins, and the strong one is never consulted — which merges two different CIs rather than splitting one.`,
+        `Identification rule "${id.name}" evaluates ${weakBefore.map((x) => `${x.attrs.join('+')} (${TIER_NAME[x.tier]}, order ${x.entry.order})`).join(', ')} before ${strength[firstStrongest].attrs.join('+')} (${TIER_NAME[strongest]}, order ${strength[firstStrongest].entry.order}). The weaker criterion matches first and wins, and the stronger one is never consulted — which merges two different CIs rather than splitting one.`,
         { confidence: 0.9,
           evidence: [fact('cmdb_identifier_entry', 'order', ordered.map((e) => `${e.order}:${e.attributes}`).join(' | '), 'entry order as IRE evaluates it')],
           guard: { evaluated: false, note: 'Attribute strength is a classification held in configuration, not a fact read from the instance. A class where the descriptive criterion is genuinely reliable is a false positive here.' } });
@@ -225,6 +291,13 @@ export function cmdbIdentificationRules(ctx, options = {}) {
       in_force: identifiers.filter((id) => entriesOf(id).length && inForce(id)).length,
       dormant_with_defects: Object.values(dormant).reduce((a, b) => a + b, 0),
       basis: 'active cmdb_identifier rows with at least one entry; "in force" means the class it applies to holds at least one CI',
+    };
+    /* Out of the score, out of the gate, still retrievable — one row per defect. */
+    ctx.measures.latent_identification_defects = {
+      count: latentDefects.length,
+      by_rule: Object.fromEntries(Object.entries(dormant).filter(([, n]) => n)),
+      defects: latentDefects,
+      basis: 'identification rules with a defect whose class holds no CI on this instance — pre-ignition, not scored',
     };
   }
 

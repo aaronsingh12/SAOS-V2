@@ -1,0 +1,374 @@
+{
+  "engine": "configuration",
+  "rules": {
+    "ITSM-002": {
+      "reader": "sys_choice",
+      "args": {
+        "table": "incident",
+        "element": "category"
+      },
+      "compare": {
+        "name": "choice_usage",
+        "args": {
+          "table": "incident",
+          "field": "category",
+          "window": {
+            "$param": "unused_window",
+            "as": "window"
+          },
+          "dominance_share": {
+            "$param": "dominance_share"
+          },
+          "unused": true
+        }
+      }
+    },
+    "ITSM-003": {
+      "reader": "sla_definition",
+      "args": {
+        "collection": "incident",
+        "activeOnly": true
+      },
+      "compare": {
+        "name": "sla_per_band",
+        "args": {
+          "table": "incident",
+          "field": "priority"
+        }
+      }
+    },
+    "ITSM-004": {
+      "requires_objects": [
+        "assignment_rule"
+      ],
+      "undefined_dependencies": [
+        "\"incident volume with no matching assignment rule at creation\" needs each active assignment rule's condition evaluated against each incident (a platform-side condition evaluator); no engine provides one and the workbook defines no substitute"
+      ],
+      "notes": "The assignment rules themselves (sysrule_assignment) are a verified object; what is missing is the evaluator."
+    },
+    "ITSM-005": {
+      "engine": "configuration",
+      "requires_objects": [
+        "priority_matrix"
+      ],
+      "reader": "priority_matrix",
+      "compare": {
+        "name": "lookup_mismatch",
+        "args": {
+          "table": "incident",
+          "inputs": [
+            "impact",
+            "urgency"
+          ],
+          "output": "priority"
+        }
+      },
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "\"Report as a ratio and by group\": the ratio is reported; the by-group split is not. Records whose impact × urgency pair has no lookup row are counted unverifiable, not mismatched."
+      }
+    },
+    "ITSM-006": {
+      "reader": "sys_choice",
+      "args": {
+        "table": "incident",
+        "element": "subcategory"
+      },
+      "compare": {
+        "name": "dependent_choice_pairs",
+        "args": {
+          "table": "incident",
+          "parent_field": "category",
+          "child_field": "subcategory"
+        }
+      }
+    },
+    "ITSM-009": {
+      "reader": "sys_choice",
+      "args": {
+        "table": "incident",
+        "element": "state"
+      },
+      "compare": {
+        "name": "choice_usage",
+        "args": {
+          "table": "incident",
+          "field": "state",
+          "unused": true
+        }
+      },
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Only \"states with zero records\" (unreachable) is evaluated. \"Records in a state with no outbound transition and age above threshold\" (dead-end) needs the state model's transitions, which are UNDEFINED as an object; deadend_age is declared but unused."
+      }
+    },
+    "ITSM-010": {
+      "requires_objects": [
+        "ui_policy",
+        "data_policy"
+      ],
+      "notes": "Mandatory-enforcement objects (UI / data policies) and the field-to-stage mapping are UNDEFINED."
+    },
+    "ITSM-011": {
+      "requires_objects": [
+        "notification"
+      ],
+      "reader": "notification",
+      "args": {
+        "activeOnly": true
+      },
+      "compare": {
+        "name": "recipients_resolve",
+        "args": {
+          "user_field": "recipient_users",
+          "group_field": "recipient_groups"
+        }
+      },
+      "partial": {
+        "kind": "false_positive_risk",
+        "not_covered": "Recipients derived from record fields (recipient_fields) and event parameters are not resolved — only the explicit user / group lists. The guard \"recipient deactivated within a grace period with a delegate configured\" is not applied."
+      }
+    },
+    "ITSM-012": {
+      "reader": "sla_definition",
+      "args": {
+        "activeOnly": true
+      },
+      "compare": {
+        "name": "rows_where",
+        "args": {
+          "selector": {
+            "field": "schedule",
+            "op": "empty"
+          },
+          "field": "name"
+        }
+      },
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "Only \"SLA definitions with no schedule\" is evaluated. \"Whose schedule contradicts the commitment they enforce\" needs the service commitment, which is UNDEFINED."
+      }
+    },
+    "ITSM-013": {
+      "reader": "sys_choice",
+      "args": {
+        "table": "incident",
+        "element": "state"
+      },
+      "compare": {
+        "name": "states_absent_from_sla_conditions",
+        "args": {
+          "table": "incident",
+          "field": "state",
+          "collection": "incident",
+          "custom_values": {
+            "$param": "custom_state_values"
+          }
+        }
+      }
+    },
+    "ITSM-014": {
+      "reader": "sys_dictionary",
+      "args": {
+        "table": "incident"
+      },
+      "compare": {
+        "name": "custom_field_population",
+        "args": {
+          "table": "incident",
+          "prefix": "u_",
+          "population_rate": {
+            "$param": "population_rate"
+          }
+        }
+      }
+    },
+    "ITSM-015": {
+      "requires_objects": [
+        "knowledge_suggestion"
+      ],
+      "expected_fields": {
+        "knowledge_suggestion": [
+          "table",
+          "active"
+        ]
+      },
+      "notes": "Knowledge-suggestion configuration: candidate cxs_table_config."
+    },
+    "ITSM-029": {
+      "requires_objects": [
+        "assignment_rule"
+      ],
+      "reader": "assignment_rule",
+      "args": {
+        "table": "incident",
+        "activeOnly": true
+      },
+      "compare": {
+        "name": "rules_referencing_fields",
+        "args": {
+          "table": "incident",
+          "fields": [
+            "location",
+            "department"
+          ],
+          "scope": "active=true"
+        }
+      },
+      "notes": "Fires only where an active incident assignment rule condition references the field (the workbook's own guard). Scoped to open incidents."
+    },
+    "ITSM-045": {
+      "requires_objects": [
+        "major_incident"
+      ],
+      "notes": "Major-incident configuration is UNDEFINED; the P1 volume threshold is also UNDEFINED."
+    },
+    "ITSM-051": {
+      "requires_objects": [
+        "major_incident"
+      ],
+      "notes": "Major-incident candidate criteria are UNDEFINED."
+    },
+    "ITSM-081": {
+      "requires_objects": [
+        "approval_routing"
+      ],
+      "notes": "Approval routing is UNDEFINED."
+    },
+    "ITSM-082": {
+      "requires_objects": [
+        "cab"
+      ],
+      "reader": "cab",
+      "args": {
+        "query": [
+          {
+            "$window": {
+              "param": "window",
+              "field": "start",
+              "edge": "within"
+            }
+          }
+        ]
+      },
+      "compare": {
+        "name": "absent_despite_volume",
+        "args": {
+          "volume_table": "change_request",
+          "window": {
+            "$param": "window",
+            "as": "window"
+          }
+        }
+      },
+      "partial": {
+        "kind": "detection_gap",
+        "not_covered": "\"CAB configuration absent\" (a CAB definition object) is not evaluated — only \"zero CAB meeting records in the window despite change volume\"."
+      }
+    },
+    "ITSM-085": {
+      "reader": "schedule",
+      "compare": {
+        "name": "absent",
+        "args": {}
+      },
+      "variants": [
+        {
+          "variant": "blackout",
+          "requires_tables": [
+            {
+              "table": "cmn_schedule_blackout",
+              "fields": [
+                "name",
+                "time_zone"
+              ]
+            }
+          ],
+          "args": {
+            "table": "cmn_schedule_blackout",
+            "withSpans": false
+          }
+        },
+        {
+          "variant": "maintenance",
+          "requires_tables": [
+            {
+              "table": "cmn_schedule_maintenance",
+              "fields": [
+                "name",
+                "time_zone"
+              ]
+            }
+          ],
+          "args": {
+            "table": "cmn_schedule_maintenance",
+            "withSpans": false
+          }
+        }
+      ],
+      "partial": {
+        "kind": "evidence_gap",
+        "not_covered": "\"Where change volume exists\" is not gated — absence is reported regardless of change volume."
+      },
+      "notes": "Blackout / maintenance windows are the platform's cmn_schedule_blackout / cmn_schedule_maintenance classes (both extend cmn_schedule), each confirmed by the DECISION 5 pipeline before the read; no type value is assumed."
+    },
+    "ITSM-086": {
+      "requires_objects": [
+        "approval_routing"
+      ],
+      "notes": "Emergency vs Normal approval burden needs approval routing, which is UNDEFINED."
+    },
+    "ITSM-087": {
+      "requires_objects": [
+        "change_model"
+      ],
+      "expected_fields": {
+        "change_model": [
+          "name",
+          "type",
+          "active"
+        ]
+      },
+      "notes": "Change models: candidate chg_model; evidence-field requirements per state are UNDEFINED."
+    },
+    "ITSM-090": {
+      "reader": "sys_dictionary",
+      "args": {
+        "table": "change_request",
+        "elements": [
+          "risk",
+          "impact"
+        ]
+      },
+      "compare": {
+        "name": "custom_field_population",
+        "args": {
+          "table": "change_request",
+          "prefix": "",
+          "population_rate": {
+            "$param": "population_threshold"
+          },
+          "require_not_mandatory": true
+        }
+      }
+    },
+    "ITSM-091": {
+      "requires_objects": [
+        "approval_routing"
+      ],
+      "notes": "Approval workflow conditions per change type are UNDEFINED."
+    },
+    "ITSM-092": {
+      "requires_objects": [
+        "post_incident_review"
+      ],
+      "notes": "The PIR step / record and the high-risk bands are UNDEFINED."
+    },
+    "ITSM-093": {
+      "requires_objects": [
+        "change_calendar"
+      ],
+      "notes": "The change calendar object and its access log are UNDEFINED."
+    }
+  }
+}

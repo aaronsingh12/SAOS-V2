@@ -41,6 +41,16 @@ const f = (over) => ({ severity: 'MEDIUM', target_ids: ['x'], table: 'cmdb_ci', 
 
 /* ── Every finding lands in exactly one scope ──────────────────────────── */
 
+test('family-label skip ids route to their own module: ITSM, CSDM (CMDB service rules) and SM (ITOM service mapping) — never to Platform', async () => {
+  const { scopeOfRule } = await import('../src/health/scopes.js');
+  assert.equal(scopeOfRule('ITSM'), 'itsm');
+  assert.equal(scopeOfRule('CSDM'), 'cmdb');
+  assert.equal(scopeOfRule('SM'), 'itom');
+  /* a real platform rule still routes to platform, and a look-alike is not captured */
+  assert.equal(scopeOfRule('SEC-INACTIVE-ROLE'), 'platform');
+  assert.equal(scopeOfRule('SMX'), 'platform');
+});
+
 test('every domain the rule pack can emit belongs to exactly one real scope', () => {
   const real = SCOPES.filter((s) => s.domains);
   for (const [, [domain]] of Object.entries(AGENTS)) {
@@ -82,6 +92,24 @@ test('the SQL filter and the in-memory mapping put every finding in the SAME sco
   for (const rule of Object.keys(RULE_SCOPE)) {
     findings.push({
       fingerprint: `fp${i}`, rule_id: rule, agent_id: 'performance_agent', domain: 'PERFORMANCE', table: 'ecc_queue',
+      severity: 'LOW', priority: 'P3', priority_score: 1, confidence: 1, title: 't', target_ids: [`id${i++}`],
+    });
+  }
+  /*
+   * PREFIXED RULES UNDER A FOREIGN DOMAIN — the case the first version of this
+   * test never built. CMDB-124…130 report under PERFORMANCE and were missing from
+   * the CMDB list while counted in its summary; the ITSM catalogue reports under
+   * ITSM; the legacy ITSM family labels skips `ITSM`; an unknown domain with no
+   * prefix is Platform's in memory and must be in SQL too.
+   */
+  const odd = [
+    ['CMDB-124', 'performance_agent', 'PERFORMANCE'], ['ITSM-001', 'itsm_agent', 'ITSM'], ['ITSM-129', 'itsm_agent', 'PERFORMANCE'],
+    ['ITSM', 'incident_agent', 'INCIDENT'], ['DISC-FOO', 'incident_agent', 'INCIDENT'], ['NOPREFIX-1', 'x_agent', 'MYSTERY'],
+    ['CMDBX-1', 'cmdb_agent', 'CMDB'], ['cmdb-lowercase', 'performance_agent', 'PERFORMANCE'],
+  ];
+  for (const [rule, agent, domain] of odd) {
+    findings.push({
+      fingerprint: `fp${i}`, rule_id: rule, agent_id: agent, domain, table: 'cmdb_ci',
       severity: 'LOW', priority: 'P3', priority_score: 1, confidence: 1, title: 't', target_ids: [`id${i++}`],
     });
   }

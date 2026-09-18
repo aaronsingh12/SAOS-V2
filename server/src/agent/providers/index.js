@@ -156,7 +156,7 @@ export async function chatTurn({ system, history, tools, maxTokens, decoding, si
 }
 
 /** One-shot text completion (no tools) — used by the flow blueprint designer. */
-export async function chatOnce({ system, user, maxTokens = 2048, decoding, signal }) {
+export async function chatOnce({ system, user, maxTokens = 2048, decoding, signal, withMeta = false }) {
   const res = await chatTurn({
     system,
     history: [{ role: 'user', text: user }],
@@ -165,5 +165,13 @@ export async function chatOnce({ system, user, maxTokens = 2048, decoding, signa
     decoding,
     signal,
   });
-  return res.text;
+  /*
+   * `withMeta` exists for one reason: a completion that hits the token ceiling
+   * with SOME content already emitted comes back as ordinary text. The caller
+   * cannot tell a finished answer from a severed one, and for generated source
+   * that means a half-written file going to the compiler, which reports a
+   * syntax error that has nothing to do with the real problem. The stop reason
+   * is the only reliable signal, so a caller that cares can ask for it.
+   */
+  return withMeta ? { text: res.text, stopReason: res.stopReason ?? res.finishReason ?? null } : res.text;
 }

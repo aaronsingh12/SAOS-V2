@@ -31,6 +31,8 @@ import {
   buildDependencyGraph,
   callersOf,
 } from './subflows.js';
+import { lintFlowDesign, tablesReferenced } from './flow-design.js';
+import { sdkPromptBlock } from './sdk-catalogue.js';
 import { executeSubflow } from './execution-harness.js';
 import { getSchema, referenceLookup } from './schema.js';
 import { queryFieldRoots } from './conditions.js';
@@ -55,6 +57,39 @@ const STAGED_DIR = path.join(WORKSPACE, 'staged');
 const STATE_FILE = path.join(SERVER_ROOT, 'data/fluent-state.json');
 const CHEATSHEET = path.join(REPO_ROOT, 'docs/fluent-flow-cheatsheet.md');
 
+/* ------------------------------------------------------------------ *
+ * FLOW GATE MODE - what a failed LOCAL check does
+ *
+ * The pre-build gates are two different kinds of thing wearing one name, and
+ * the difference decides whether relaxing them is even coherent:
+ *
+ *   OURS (local): promised literals, blueprint fidelity, artifact type and
+ *   subflow contract, subflow reuse, trigger strategy, flow design. Every one
+ *   is a judgement WE make about generated source. Relaxing them lets a
+ *   candidate the platform would accept reach the instance, which is exactly
+ *   what an implementation phase needs: the authoring path gets exercised
+ *   instead of the linter.
+ *
+ *   THE PLATFORM'S: `$id` identity. `keys.ts` is a flat, project-wide map, and
+ *   a duplicate key aborts `now-sdk build`. Relaxing it unblocks nothing; it
+ *   trades a one-second diagnostic for a multi-minute build failure naming a
+ *   sys_id nobody wrote. It blocks in every mode.
+ *
+ * 'advisory' (default while the SDK authoring path is being proven end to end)
+ *   every check still RUNS, every diagnostic is still emitted and returned on
+ *   `gateAdvisories`, and none of ours stops the candidate.
+ * 'enforce'  a local finding rejects the candidate and spends an attempt.
+ *
+ * Set `NOWFORGE_FLOW_GATES=enforce` to restore enforcement without touching a
+ * line of the checks - nothing here deletes or weakens a rule, and every test
+ * that pins gate behaviour calls the linters directly, so they stay pinned.
+ */
+export const FLOW_GATE_MODES = Object.freeze(['advisory', 'enforce']);
+export function flowGateMode() {
+  const raw = String(process.env.NOWFORGE_FLOW_GATES ?? '').trim().toLowerCase();
+  return FLOW_GATE_MODES.includes(raw) ? raw : 'advisory';
+}
+
 const MAX_ATTEMPTS = 3;
 // Raised from 3 to 4 for the Test 1 Step 1 resume (docs/fluent-research.md §20).
 // A budget is only worth raising because A5 guarantees each attempt asks a
@@ -63,6 +98,12 @@ const MAX_VERIFY_ATTEMPTS = 4;
 const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 const QUICK_TIMEOUT_MS = 2 * 60 * 1000;
+/* How long to keep asking the instance after an install reports failure. The
+ * SDK aborts at a fixed 300s; records have been seen landing minutes later. */
+const SETTLE_WAIT_MS = 5 * 60 * 1000;
+const SETTLE_POLL_MS = 10 * 1000;
+/* Output ceiling for generating a whole Fluent source file. */
+const CODEGEN_MAX_TOKENS = 20000;
 /** The binding probe is one authenticated round trip; the CLI start-up dominates it. */
 const PROBE_TIMEOUT_MS = 120_000;
 
@@ -1226,15 +1267,25 @@ export async function capability({ deep = false, force = false } = {}) {
     path: WORKSPACE, exists: fs.existsSync(WORKSPACE),
     scope: null, appName: null, sources: [], staged: [], error: null,
   };
+  /*
+   * The identity comes from the TRACKED template, falling back to the generated
+   * config (readAppIdentity). Reading only `now.config.json` reported the
+   * workspace as missing on every fresh clone — it is generated per build and
+   * gitignored — and then offered `now-sdk init`, which no path here may run
+   * (the scope is the workspace's, app-create.test.js). A real fresh clone is
+   * missing its dependencies, and that fix is the one below.
+   */
   try {
-    const cfg = JSON.parse(await fsp.readFile(path.join(WORKSPACE, 'now.config.json'), 'utf8'));
-    workspace.scope = cfg.scope;
-    workspace.appName = cfg.name;
+    const identity = await readAppIdentity();
+    workspace.scope = identity.scope;
+    workspace.appName = identity.name;
+    workspace.identity = fs.existsSync(APP_CONFIG_TEMPLATE) ? 'template' : 'generated';
+    workspace.generatedConfig = fs.existsSync(APP_CONFIG);
   } catch (err) {
-    workspace.error = `now.config.json unreadable: ${err.message}`;
+    workspace.error = `workspace identity unreadable: ${err.message}`;
     fixes.push({
-      problem: 'Fluent workspace missing',
-      command: 'now-sdk init --appName "NowForge Flows" --packageName nowforge-flows --scopeName x_2002152_nwforge --template base',
+      problem: 'Fluent workspace identity missing',
+      command: `restore ${path.relative(path.resolve(WORKSPACE, '../..'), APP_CONFIG_TEMPLATE).replace(/\\/g, '/')} — it names the scope this workspace installs into`,
     });
   }
   workspace.sources = await listSourceFiles();
@@ -1537,6 +1588,11 @@ export async function generate(spec, { intent, context, priorSource, priorError,
     artifactType === 'subflow' ? SUBFLOW_RULES : null,
     '--- SYNTAX REFERENCE (authoritative, build-verified) ---',
     cheatsheet,
+    /* The inventory, read from the SDK that will compile this source. The
+     * cheatsheet lists 18 actions and calls seven more "attachment actions";
+     * the installed SDK defines 33, with their real mandatory parameters. A
+     * model cannot call an action it was never told exists. */
+    sdkPromptBlock(),
   ].filter(Boolean).join('\n\n');
 
   const userParts = [`AUTOMATION REQUEST:\n${spec}`];
@@ -1587,7 +1643,22 @@ export async function generate(spec, { intent, context, priorSource, priorError,
   const user = userParts.join('\n\n');
   ledger?.record(user);
 
-  const raw = await chatOnce({ system, user, maxTokens: 12000, decoding });
+  /*
+   * The output ceiling for a whole Fluent source file. Raised from 12000: a
+   * flow with several branches, a subflow contract and annotations is a long
+   * file, and a severed one costs a full generation attempt to discover.
+   */
+  const { text: raw, stopReason } = await chatOnce({ system, user, maxTokens: CODEGEN_MAX_TOKENS, decoding, withMeta: true });
+  if (stopReason === 'length') {
+    /* Loud and specific. The alternative is handing the compiler a file that
+     * stops mid-statement and reading its syntax error as if the model had
+     * written bad code. */
+    throw new Error(
+      `The generated source was cut off by the completion budget (${CODEGEN_MAX_TOKENS} tokens): the model was still `
+      + 'writing when it ran out. Nothing was built. Raise CODEGEN_MAX_TOKENS, or ask for a smaller flow and extend it '
+      + 'with a follow-up request.'
+    );
+  }
   return restoreIds(extractSource(raw), idMap);
 }
 
@@ -1681,6 +1752,29 @@ export async function installWorkspace({ timeoutMs = INSTALL_TIMEOUT_MS, emit = 
    * reverted an out-of-model flag. Skipping the reconciler on failure would
    * leave exactly that case undetected, which is the drift F1 exists to close.
    */
+  const reconciliation = await runPostInstallHooks(emit);
+  return reconciliation.length ? { ...result, reconciliation } : result;
+}
+
+/**
+ * Run every post-install hook, whatever install just ran.
+ *
+ * MEASURED 2026-09-17, and the reason this is a function rather than a loop
+ * inside `installWorkspace`: the hooks only ever ran on THAT path. The DBA,
+ * catalog and app-create paths call it, so their out-of-model state was
+ * reconciled. `deploy()` - the path every FLOW takes - installs through
+ * `runSdk` directly and never called a hook at all.
+ *
+ * So the one kind of state most in need of re-applying after an install, a
+ * published flow, was reconciled on every path except the one that installs
+ * flows. The hook existed, the intent was recorded, and nothing ever replayed
+ * it.
+ *
+ * Never throws: this runs after an install that has already happened, and
+ * turning a completed install into an exception because one flag could not be
+ * re-set would lose the install's own result.
+ */
+async function runPostInstallHooks(emit = () => {}) {
   const reconciliation = [];
   for (const hook of postInstallHooks) {
     try {
@@ -1692,7 +1786,7 @@ export async function installWorkspace({ timeoutMs = INSTALL_TIMEOUT_MS, emit = 
       reconciliation.push({ ran: false, error: err.message });
     }
   }
-  return reconciliation.length ? { ...result, reconciliation } : result;
+  return reconciliation;
 }
 
 export { extractDiagnostics };
@@ -1842,6 +1936,11 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
   let source = null;
   let lastDiagnostics = null;
   const attempts = [];
+  /* Local gate findings that did NOT stop the candidate, kept for the result so
+   * an advisory run still reports everything an enforcing one would have. */
+  const gateAdvisories = [];
+  const gateMode = flowGateMode();
+  if (gateMode !== 'enforce') emit({ type: 'gate_mode', mode: gateMode });
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     emit({ type: 'attempt', attempt, of: MAX_ATTEMPTS });
@@ -1878,16 +1977,24 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
       : artifacts.find((a) => a.kind === 'flow');
     const name = primary?.name || artifacts[0]?.name || intent.name || 'Generated Flow';
 
-    // Pre-build static gate. All three checks run TOGETHER and their diagnostics
+    // Pre-build static gate. Every check runs TOGETHER and their diagnostics
     // are fed back as one message: rejecting on the first problem only would
     // spend an attempt per defect, and the budget is 3.
-    const staticErrors = [];
+    //
+    // `gateMode` decides what a failed LOCAL check does - see FLOW_GATE_MODE.
+    // Nothing below is skipped in either mode: every check still runs and every
+    // diagnostic is still emitted and returned. The mode decides only whether a
+    // local finding STOPS the candidate.
+    const staticErrors = [];      // local findings, blocking in 'enforce'
+    const advisories = [];        // local findings, reported but not blocking
+    const platformErrors = [];    // the SDK/platform's own rules - always blocking
     const stages = [];
+    const localFail = (diagnostic) => (gateMode === 'enforce' ? staticErrors : advisories).push(diagnostic);
 
     // A3 — text the request dictates verbatim must survive into the source.
     const litCheck = checkPromisedLiterals(source, promisedLiterals);
     if (!litCheck.ok) {
-      staticErrors.push(litCheck.diagnostic);
+      localFail(litCheck.diagnostic);
       stages.push('literals');
       emit({ type: 'literals_rejected', attempt, missing: litCheck.missing });
     }
@@ -1903,7 +2010,7 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
     if (promises) {
       const bpCheck = checkBlueprintFidelity(source, promises);
       if (!bpCheck.ok) {
-        staticErrors.push(bpCheck.diagnostic);
+        localFail(bpCheck.diagnostic);
         stages.push('blueprint_fidelity');
         emit({ type: 'blueprint_drift', attempt, drift: bpCheck.drift });
       }
@@ -1913,7 +2020,7 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
     // back, and a subflow's declared contract must be one the body honours.
     const typeCheck = lintArtifactType(source, kind);
     if (!typeCheck.ok) {
-      staticErrors.push(typeCheck.diagnostic);
+      localFail(typeCheck.diagnostic);
       stages.push('artifact_type');
       emit({ type: 'artifact_type_rejected', attempt, artifactType: kind, errors: typeCheck.errors });
     }
@@ -1924,16 +2031,64 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
     // records that have to be kept in step.
     const reuseCheck = lintSubflowReuse(source, catalog, { file: path.basename(targetFile) });
     if (!reuseCheck.ok) {
-      staticErrors.push(reuseCheck.diagnostic);
+      localFail(reuseCheck.diagnostic);
       stages.push('subflow_reuse');
       emit({ type: 'subflow_reuse_rejected', attempt, errors: reuseCheck.errors });
+    }
+
+    /*
+     * Step 4 — THE DESIGN ITSELF.
+     *
+     * Everything above this line checks the artifact's identity, its type and
+     * whether it duplicates one we already have. None of it reads what the flow
+     * actually DOES. A trigger on a field that does not exist, a condition
+     * comparing a choice LABEL where the instance stores a number, `table:`
+     * where the action wants `table_name`, `.record` where it outputs `Record`,
+     * a subflow called with an input it does not declare — every one of those
+     * compiles, installs, activates, and does nothing or the wrong thing.
+     *
+     * The schemas are fetched for exactly the tables the source names, so a
+     * condition is checked against the instance's real dictionary and real
+     * choice VALUES rather than against a convention. A table that cannot be
+     * read leaves its checks unmade and reported, never counted as passed.
+     */
+    const designSchemas = {};
+    for (const t of tablesReferenced(source)) {
+      try { designSchemas[t] = await getSchema(t); } catch { /* unreadable — not checked, and not a pass */ }
+    }
+    const designContracts = Object.fromEntries(catalog.filter((c) => c.exportName).map((c) => [c.exportName, c]));
+    const designCheck = lintFlowDesign(source, { kind, schemas: designSchemas, contracts: designContracts });
+    if (!designCheck.ok) {
+      /*
+       * A COMPILER-CERTAIN FINDING BLOCKS IN EVERY MODE.
+       *
+       * `designCheck.certain` holds the ones TypeScript will reject outright -
+       * a body that reads `params` with a `() =>` callback (TS2304), or one
+       * that declares `params` and never reads it (TS6133). Advisory mode
+       * exists so that OUR judgements do not stop work; it was never meant to
+       * wave through source that cannot build. Measured 18 Sep 2026: exactly
+       * that TS2304 cost a full generation attempt, discovered 20 seconds into
+       * a build instead of instantly here.
+       */
+      if (designCheck.certain?.length) {
+        platformErrors.push(`ERROR: the generated source cannot compile.\n${designCheck.certain.map((e) => `ERROR: ${e}`).join('\n')}`);
+        emit({ type: 'flow_design_uncompilable', attempt, errors: designCheck.certain });
+      }
+      const ours = designCheck.errors.filter((e) => !(designCheck.certain ?? []).includes(e));
+      if (ours.length) {
+        localFail(`ERROR: flow design lint failed before build.\n${ours.map((e) => `ERROR: ${e}`).join('\n')}`);
+      }
+      stages.push('flow_design');
+      emit({ type: 'flow_design_rejected', attempt, errors: designCheck.errors, skipped: designCheck.skipped });
+    } else if (designCheck.skipped.length) {
+      emit({ type: 'flow_design_partial', attempt, skipped: designCheck.skipped });
     }
 
     // A4 — an updated trigger without an explicit strategy inherits `once`,
     // which fires once EVER per record. Nothing downstream can observe it.
     const trigCheck = lintTriggerStrategy(source, spec);
     if (!trigCheck.ok) {
-      staticErrors.push(trigCheck.diagnostic);
+      localFail(trigCheck.diagnostic);
       stages.push('trigger_strategy');
       emit({ type: 'trigger_strategy_rejected', attempt, errors: trigCheck.errors, strategy: trigCheck.strategy });
     }
@@ -1952,13 +2107,32 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
     }
     const idCheck = validateCandidateIds(source, others, { file: path.basename(targetFile) });
     if (!idCheck.ok) {
-      staticErrors.push(idCheck.diagnostic);
+      /*
+       * IDENTITY IS NOT ONE OF OUR GUARDRAILS - it is the SDK's own rule.
+       *
+       * `keys.ts` is a flat map for the whole application: one key is one live
+       * record. A duplicate key does not produce a worse flow, it produces
+       * `Record sys_hub_action_instance_v2.<id> is defined 2 times in the
+       * project` and the build ABORTS. Relaxing it would not unblock authoring;
+       * it would move the same failure to the far side of a multi-minute build,
+       * with a message naming a sys_id nobody wrote. So it blocks in every
+       * mode, and it is reported apart from our own checks.
+       */
+      platformErrors.push(idCheck.diagnostic);
       stages.push('identity');
       emit({ type: 'identity_rejected', attempt, errors: idCheck.errors });
     }
 
-    if (staticErrors.length) {
-      lastDiagnostics = staticErrors.join('\n');
+    if (advisories.length) {
+      /* Advisory mode: the candidate proceeds, and everything that would have
+       * stopped it is recorded against the run so nothing is lost. */
+      gateAdvisories.push({ attempt, stages: [...stages], diagnostics: advisories.join('\n') });
+      emit({ type: 'gates_advisory', attempt, mode: gateMode, stages: [...stages], errors: advisories });
+      log.warn('fluent', `flow gates are advisory (${gateMode}): ${stages.join('+')} would have rejected attempt ${attempt}`);
+    }
+    const blocking = [...staticErrors, ...platformErrors];
+    if (blocking.length) {
+      lastDiagnostics = blocking.join('\n');
       attempts.push({ attempt, stage: stages.join('+'), diagnostics: lastDiagnostics });
       continue; // never written to src/, never built
     }
@@ -1987,10 +2161,15 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
               attempts: attempt,
               diagnostics: `A different source already occupies ${path.basename(finalPath)}.`,
               hygiene: { restored: drift.length === 0, drift },
+              /* Name the EXACT value to pass. The old wording said "re-run naming
+               * this artifact as the one to update" without saying what to
+               * name, which leaves a caller with a refusal it cannot act on. */
+              updates: name,
               message:
                 `"${name}" collides with the existing source ${path.basename(finalPath)}, which belongs to a ` +
-                `different request. Nothing was deployed. Re-run naming this artifact as the one to update, ` +
-                `so it is superseded in place instead of duplicated.`,
+                `different request. Nothing was deployed. To CHANGE that flow, re-run this request with ` +
+                `updates: "${name}" — it is then superseded in place, keeping its sys_id and element keys. ` +
+                `To create a SEPARATE flow, give this one a different name in the request.`,
             };
           }
           await fsp.rename(targetFile, finalPath);
@@ -2003,6 +2182,10 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
         // The contract is parsed from the source that just compiled, so it is
         // what the install is about to deploy — not a summary of it.
         contract: kind === 'subflow' ? parseSubflowContract(source) : null,
+        /* An advisory run SUCCEEDS with findings. Returning them is what keeps
+         * "it deployed" from being mistaken for "it was clean". */
+        gateMode,
+        gateAdvisories,
       };
     }
 
@@ -2031,6 +2214,8 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
     attempts: MAX_ATTEMPTS,
     diagnostics: lastDiagnostics,
     history: attempts,
+    gateMode,
+    gateAdvisories,
     lastSource: source,
     cleanedUp: cleanup.ok,
     cleanupError: cleanup.ok ? null : extractDiagnostics(cleanup),
@@ -2127,6 +2312,116 @@ function sdkOutputOf(res) {
  * `now-sdk install` ships the WHOLE application, so the returned `shipped` list
  * names every artifact the deploy touched — not just the requested one.
  */
+/**
+ * A fingerprint of one artifact as the instance currently holds it.
+ *
+ * `null` means "no artifact of that name here". The `sys_updated_on` stamp is
+ * what makes a LATER comparison meaningful: it needs no clock arithmetic and no
+ * assumption about whether the instance and this machine agree on the time.
+ */
+async function artifactStamp(name) {
+  try {
+    const found = await resolveManagedArtifact(name);
+    if (!found.ok) return null;
+    const row = await table.get('sys_hub_flow', found.sysId, 'false');
+    return row ? { sysId: found.sysId, updatedOn: String(row.sys_updated_on ?? ''), scope: found.scope } : null;
+  } catch {
+    /* Unreadable is not "absent": returning null here would let a transient
+     * read failure be mistaken for a missing artifact. The caller is told. */
+    return undefined;
+  }
+}
+
+/**
+ * A TIMED-OUT INSTALL IS NOT A FAILED INSTALL. ASK THE INSTANCE.
+ *
+ * ── THE MEASUREMENT ──────────────────────────────────────────────────────────
+ *
+ * The SDK waits for the deployment with `AbortSignal.timeout(options.timeoutMs
+ * ?? 300000)` (sdk-api/dist/connector.js:31 and :156). There is **no flag, no
+ * environment variable and no config key** that changes it — `now-sdk install
+ * --help` lists none, and nothing in sdk-api reads one. When 300 seconds pass
+ * the CLI aborts and exits non-zero while the SERVER carries on and finishes.
+ *
+ * Measured on dev424910, 17 Sep 2026, three installs in a row: every one
+ * reported `The deployment request timed out waiting for a response` and every
+ * one had completed. Eleven artifacts, all correct, all verified by read-back.
+ * Treating that exit code as a verdict is how a successful deploy gets reported
+ * to a user as a failure — which is exactly what happened.
+ *
+ * ── WHAT THIS DOES ───────────────────────────────────────────────────────────
+ *
+ * Compares the artifact against the fingerprint taken BEFORE the install:
+ *   absent before, present now      -> it landed
+ *   present before, stamp moved     -> it was updated
+ *   present before, stamp unchanged -> nothing landed yet; keep waiting
+ *
+ * Records land progressively while the install runs, and the last one has been
+ * seen arriving minutes after the client gave up, so this polls rather than
+ * looking once. It never writes, and it never claims success it did not read.
+ */
+export async function settleTimedOutInstall({ name, before, emit = () => {}, waitMs = SETTLE_WAIT_MS, pollMs = SETTLE_POLL_MS, stamp = artifactStamp }) {
+  if (!name) return { checked: false, reason: 'the install was not for one named artifact, so there is nothing to resolve it against' };
+  const started = Date.now();
+  let last = null;
+  while (Date.now() - started < waitMs) {
+    // eslint-disable-next-line no-await-in-loop
+    const now = await stamp(name);
+    last = now;
+    if (now === undefined) {
+      /* Instance unreadable this pass — that is a different problem from the
+       * artifact being absent, and it must not be reported as one. */
+      emit({ type: 'settle_unreadable', name });
+    } else if (now && (!before || before === undefined || now.updatedOn !== before.updatedOn || now.sysId !== before.sysId)) {
+      return {
+        checked: true,
+        landed: true,
+        sysId: now.sysId,
+        waitedMs: Date.now() - started,
+        was: before ? { sysId: before.sysId, updatedOn: before.updatedOn } : null,
+        now: { sysId: now.sysId, updatedOn: now.updatedOn },
+        note: before
+          ? `the install reported failure, but "${name}" was updated on the instance (${before.updatedOn} -> ${now.updatedOn}), so it landed`
+          : `the install reported failure, but "${name}" now exists on the instance, so it landed`,
+      };
+    }
+    emit({ type: 'settling', name, waitedMs: Date.now() - started });
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => { setTimeout(r, pollMs); });
+  }
+  /*
+   * THREE DIFFERENT NEGATIVES, AND THEY ARE NOT INTERCHANGEABLE.
+   *
+   * unreadable    we could not look. Says nothing about the artifact.
+   * absent        it was not there before and is not there now. For a new
+   *               artifact that is a real "nothing landed".
+   * unchanged     it WAS there and its stamp did not move. An install that
+   *               had nothing to change looks exactly like one that never
+   *               ran, and the stamp cannot tell them apart. Reporting this
+   *               as "did not land" would tell someone their flow is missing
+   *               while it sits on the instance in front of them.
+   */
+  const secs = Math.round(waitMs / 1000);
+  if (last === undefined) {
+    return { checked: true, landed: false, unknown: true, waitedMs: Date.now() - started,
+      note: `"${name}" could not be read back from the instance within ${secs}s, so whether it landed is UNKNOWN` };
+  }
+  if (!last) {
+    return { checked: true, landed: false, absent: true, waitedMs: Date.now() - started,
+      note: `"${name}" is not on the instance ${secs}s after the install reported failure, so nothing landed` };
+  }
+  return {
+    checked: true,
+    landed: false,
+    indeterminate: true,
+    sysId: last.sysId,
+    waitedMs: Date.now() - started,
+    note: `"${name}" IS on the instance (${last.sysId}) but its stamp did not move in ${secs}s. `
+      + 'An install with nothing to change is indistinguishable from one that did not run, so whether this '
+      + 'install applied anything is undetermined — the artifact itself is present.',
+  };
+}
+
 export async function deploy(name, emit = () => {}, { skipFlowActivation = false } = {}) {
   // `install` ships whatever is in dist/, which is only as fresh as the last
   // build. Deploying without building silently installs a stale package — a
@@ -2156,6 +2451,11 @@ export async function deploy(name, emit = () => {}, { skipFlowActivation = false
   }
   emit({ type: 'binding_ok', host: binding.host });
 
+  /* The fingerprint the timeout resolver will compare against. Taken AFTER the
+   * binding check (so it reads the instance we are about to install into) and
+   * BEFORE the install, which is the only moment it is meaningful. */
+  const beforeStamp = name ? await artifactStamp(name) : null;
+
   emit({ type: 'deploying' });
   /*
    * SESSION 2 — `-d`, because the four ways activation can silently not happen
@@ -2181,7 +2481,41 @@ export async function deploy(name, emit = () => {}, { skipFlowActivation = false
    */
   const installArgs = skipFlowActivation ? ['install', '-d', '--skip-flow-activation'] : ['install', '-d'];
   const res = await serialize(() => withMaterializedConfig(() => runSdk(installArgs, INSTALL_TIMEOUT_MS)));
+  /*
+   * The reconciler runs HERE too, on the same terms as installWorkspace: after
+   * the install whether it reported success or failure, because a red install
+   * is only a claim and the server may have re-applied the app anyway. An
+   * install reverts every published flow to draft, so this is the path that
+   * needed it most and was the only one not running it.
+   */
+  const reconciliation = await runPostInstallHooks(emit);
   const parsed = parseInstall(res);
+  if (reconciliation.length) parsed.reconciliation = reconciliation;
+
+  /*
+   * THE EXIT CODE IS A CLAIM; THE INSTANCE IS THE VERDICT.
+   *
+   * A red install is resolved by reading the artifact back rather than being
+   * reported as a failure. When it did land, the result becomes ok with the
+   * SDK's own report kept beside it, so nothing is hidden: `installReported`
+   * says what the CLI said and `settled` says what the instance said.
+   */
+  if (!parsed.ok && name) {
+    emit({ type: 'install_unresolved', name, reported: parsed.message ?? 'install reported failure' });
+    const settled = await settleTimedOutInstall({ name, before: beforeStamp, emit });
+    parsed.settled = settled;
+    if (settled.landed) {
+      parsed.ok = true;
+      parsed.installReported = 'failed';
+      parsed.landedAnyway = true;
+      parsed.message = `${parsed.message ?? 'The install reported failure.'} ${settled.note}. `
+        + 'The SDK aborts the deployment wait at a fixed 300s that no flag or environment variable changes, '
+        + 'so a timed-out install routinely completes server-side; this was resolved by reading the instance.';
+      emit({ type: 'install_landed_anyway', name, sys_id: settled.sysId, waitedMs: settled.waitedMs });
+    } else {
+      emit({ type: 'install_not_landed', name, note: settled.note });
+    }
+  }
   const sdkOutput = sdkOutputOf(res);
   if (skipFlowActivation) {
     parsed.activationOutcome = ACTIVATION.ABSENT.value;
@@ -2446,7 +2780,19 @@ export async function createLiveFlow(spec, emit = () => {}, { updates = null, ar
  * One attempt. No retry, no second install, no fallback to a header write. A
  * failure returns the mismatch by name so a person can act on it.
  */
-export async function activateManagedFlow(name, emit = () => {}) {
+/**
+ * Resolve ONE managed artifact by name, inside the bound scope only.
+ *
+ * Split out of `activateManagedFlow` because the post-install reconciler has to
+ * answer the same question — "which record is this name, here?" — before it can
+ * say whether that artifact is still published. Two copies of a resolution that
+ * refuses ambiguity is how the copies drift apart, and the one that drifts is
+ * the one that publishes the wrong record.
+ *
+ * Returns `{ ok: true, ... }` or the same `stage: 'resolve'` refusal the
+ * activation path has always returned, unchanged.
+ */
+export async function resolveManagedArtifact(name, emit = () => {}) {
   const wanted = String(name ?? '').trim();
   if (!wanted) throw new SnowError('Name the flow or subflow to publish.', 400);
 
@@ -2458,7 +2804,6 @@ export async function activateManagedFlow(name, emit = () => {}) {
     throw new SnowError(`The scope "${scope}" could not be resolved on the bound instance, so activation has no transaction scope.`, 409);
   }
 
-  /* ---- 1. resolve, inside the bound scope only ---- */
   emit({ type: 'activation_resolving', name: wanted });
   const rows = await table.query('sys_hub_flow', {
     query: `name=${wanted}^sys_scope=${scopeId}`,
@@ -2471,6 +2816,8 @@ export async function activateManagedFlow(name, emit = () => {}) {
       ok: false,
       stage: 'resolve',
       name: wanted,
+      scope,
+      scopeId,
       message: `No flow or subflow named "${wanted}" exists in ${scope} on this instance. Nothing was activated. `
         + 'Install it first — publishing cannot create an artifact.',
     };
@@ -2480,13 +2827,21 @@ export async function activateManagedFlow(name, emit = () => {}) {
       ok: false,
       stage: 'resolve',
       name: wanted,
+      scope,
+      scopeId,
       candidates: rows.map((r) => ({ sys_id: r.sys_id, type: r.type })),
       message: `${rows.length} artifacts in ${scope} are named "${wanted}". Publishing the wrong one is not recoverable by `
         + 'reading it back, so this refuses rather than choosing.',
     };
   }
-  const row = rows[0];
-  const sysId = row.sys_id;
+  return { ok: true, name: wanted, scope, scopeId, row: rows[0], sysId: rows[0].sys_id };
+}
+
+export async function activateManagedFlow(name, emit = () => {}) {
+  /* ---- 1. resolve, inside the bound scope only ---- */
+  const found = await resolveManagedArtifact(name, emit);
+  if (!found.ok) return found;
+  const { name: wanted, scope, scopeId, row, sysId } = found;
 
   /* ---- 2. did an install put it there? Reported, never required. ---- */
   let shipped = { confirmed: false, note: null, rows: 0 };

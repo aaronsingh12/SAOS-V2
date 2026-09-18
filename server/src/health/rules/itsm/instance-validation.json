@@ -1,0 +1,5309 @@
+{
+  "instance": "dev442675.service-now.com",
+  "generated": "2026-09-17T06:24:07.913Z",
+  "read_only": true,
+  "objects": {
+    "change_request": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "change_request is readable by this account"
+    },
+    "change_task": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "change_task is readable by this account"
+    },
+    "chg_model": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "chg_model is readable by this account"
+    },
+    "cmdb_ci": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "cmdb_ci is readable by this account"
+    },
+    "cmdb_ci_service": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "cmdb_ci_service is readable by this account"
+    },
+    "cmdb_rel_ci": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "cmdb_rel_ci is readable by this account"
+    },
+    "cmn_schedule": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "cmn_schedule is readable by this account"
+    },
+    "cmn_schedule_span": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "cmn_schedule_span is readable by this account"
+    },
+    "conflict": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "conflict is readable by this account"
+    },
+    "contract_sla": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "contract_sla is readable by this account"
+    },
+    "cxs_table_config": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "cxs_table_config is readable by this account"
+    },
+    "em_alert": {
+      "exists": "UNAVAILABLE",
+      "readable": null,
+      "reason": "em_alert is not on this instance (no sys_db_object row)"
+    },
+    "incident": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "incident is readable by this account"
+    },
+    "kb_knowledge": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "kb_knowledge is readable by this account"
+    },
+    "m2m_kb_task": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "m2m_kb_task is readable by this account"
+    },
+    "problem": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "problem is readable by this account"
+    },
+    "problem_task": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "problem_task is readable by this account"
+    },
+    "service_offering": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "service_offering is readable by this account"
+    },
+    "std_change_producer_version": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "std_change_producer_version is readable by this account"
+    },
+    "std_change_proposal": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "std_change_proposal is readable by this account"
+    },
+    "sys_attachment": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_attachment is readable by this account"
+    },
+    "sys_audit": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_audit is readable by this account"
+    },
+    "sys_choice": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_choice is readable by this account"
+    },
+    "sys_data_policy2": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_data_policy2 is readable by this account"
+    },
+    "sys_dictionary": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_dictionary is readable by this account"
+    },
+    "sys_journal_field": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_journal_field is readable by this account"
+    },
+    "sys_properties": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_properties is readable by this account"
+    },
+    "sys_ui_policy": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_ui_policy is readable by this account"
+    },
+    "sys_user": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_user is readable by this account"
+    },
+    "sys_user_delegate": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_user_delegate is readable by this account"
+    },
+    "sys_user_grmember": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_user_grmember is readable by this account"
+    },
+    "sys_user_group": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sys_user_group is readable by this account"
+    },
+    "sysapproval_approver": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "sysapproval_approver is readable by this account"
+    },
+    "task_ci": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "task_ci is readable by this account"
+    },
+    "task_sla": {
+      "exists": "AVAILABLE",
+      "readable": "AVAILABLE",
+      "reason": "task_sla is readable by this account"
+    }
+  },
+  "placeholders": {
+    "ui_policy": {
+      "candidate": "sys_ui_policy",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-010",
+        "ITSM-087",
+        "ITSM-090"
+      ]
+    },
+    "data_policy": {
+      "candidate": "sys_data_policy2",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-010",
+        "ITSM-087",
+        "ITSM-090"
+      ]
+    },
+    "change_model": {
+      "candidate": "chg_model",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-087",
+        "ITSM-092",
+        "ITSM-122"
+      ]
+    },
+    "standard_change_template": {
+      "candidate": "std_change_producer_version",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-080",
+        "ITSM-089",
+        "ITSM-117"
+      ]
+    },
+    "conflict_detection": {
+      "candidate": "conflict",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-084",
+        "ITSM-118",
+        "ITSM-138"
+      ]
+    },
+    "major_incident": {
+      "candidate": null,
+      "exists": "NO_CANDIDATE",
+      "rules": [
+        "ITSM-045",
+        "ITSM-046",
+        "ITSM-047",
+        "ITSM-051",
+        "ITSM-052"
+      ]
+    },
+    "knowledge_suggestion": {
+      "candidate": "cxs_table_config",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-015"
+      ]
+    },
+    "approval_routing": {
+      "candidate": null,
+      "exists": "NO_CANDIDATE",
+      "rules": [
+        "ITSM-081",
+        "ITSM-086",
+        "ITSM-091"
+      ]
+    },
+    "change_calendar": {
+      "candidate": null,
+      "exists": "NO_CANDIDATE",
+      "rules": [
+        "ITSM-093"
+      ]
+    },
+    "approval_delegation": {
+      "candidate": "sys_user_delegate",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-088"
+      ]
+    },
+    "post_incident_review": {
+      "candidate": null,
+      "exists": "NO_CANDIDATE",
+      "rules": [
+        "ITSM-047",
+        "ITSM-052",
+        "ITSM-078",
+        "ITSM-092",
+        "ITSM-122"
+      ]
+    },
+    "knowledge_link": {
+      "candidate": "m2m_kb_task",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-066",
+        "ITSM-076",
+        "ITSM-139"
+      ]
+    },
+    "autoclose_configuration": {
+      "candidate": "sys_properties",
+      "exists": "AVAILABLE",
+      "rules": [
+        "ITSM-007",
+        "ITSM-031"
+      ]
+    },
+    "communication_plan": {
+      "candidate": null,
+      "exists": "NO_CANDIDATE",
+      "rules": [
+        "ITSM-046"
+      ]
+    },
+    "risk_assessment": {
+      "candidate": null,
+      "exists": "NO_CANDIDATE",
+      "rules": [
+        "ITSM-083",
+        "ITSM-131"
+      ]
+    }
+  },
+  "fields": {
+    "incident": {
+      "state": "PARTIAL",
+      "checked": [
+        "assigned_to",
+        "assignment_group",
+        "business_service",
+        "caller_id",
+        "category",
+        "close_code",
+        "close_notes",
+        "closed_at",
+        "closed_by",
+        "cmdb_ci",
+        "contact_type",
+        "description",
+        "hold_reason",
+        "install_status",
+        "number",
+        "priority",
+        "problem_id",
+        "reassignment_count",
+        "resolved_at",
+        "resolved_by",
+        "rfc",
+        "short_description",
+        "state",
+        "sys_created_on",
+        "sys_id",
+        "sys_updated_on",
+        "work_notes"
+      ],
+      "missing": [
+        "install_status",
+        "problem_id",
+        "rfc"
+      ],
+      "reason": "3 of 27 field(s) missing on incident: install_status, problem_id, rfc"
+    },
+    "problem": {
+      "state": "PARTIAL",
+      "checked": [
+        "assigned_to",
+        "assignment_group",
+        "business_service",
+        "cause_notes",
+        "close_code",
+        "closed_at",
+        "cmdb_ci",
+        "description",
+        "fix_notes",
+        "known_error",
+        "number",
+        "priority",
+        "rfc",
+        "short_description",
+        "state",
+        "sys_created_on",
+        "workaround"
+      ],
+      "missing": [
+        "close_code"
+      ],
+      "reason": "1 of 17 field(s) missing on problem: close_code"
+    },
+    "problem_task": {
+      "state": "AVAILABLE",
+      "checked": [
+        "active",
+        "assigned_to",
+        "number",
+        "problem",
+        "state",
+        "sys_created_on"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "change_request": {
+      "state": "PARTIAL",
+      "checked": [
+        "approval",
+        "assignment_group",
+        "backout_plan",
+        "business_service",
+        "close_code",
+        "close_notes",
+        "cmdb_ci",
+        "end_date",
+        "impact",
+        "implementation_plan",
+        "install_status",
+        "justification",
+        "number",
+        "parent",
+        "reason",
+        "requested_by",
+        "risk",
+        "start_date",
+        "state",
+        "sys_created_on",
+        "test_plan",
+        "type",
+        "work_end",
+        "work_start"
+      ],
+      "missing": [
+        "install_status"
+      ],
+      "reason": "1 of 24 field(s) missing on change_request: install_status"
+    },
+    "sysapproval_approver": {
+      "state": "AVAILABLE",
+      "checked": [
+        "approver",
+        "state",
+        "sys_created_on",
+        "sys_updated_on",
+        "sysapproval"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "sys_user_delegate": {
+      "state": "AVAILABLE",
+      "checked": [
+        "delegate",
+        "ends",
+        "starts",
+        "user"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "m2m_kb_task": {
+      "state": "PARTIAL",
+      "checked": [
+        "kb_knowledge",
+        "task",
+        "workflow_state"
+      ],
+      "missing": [
+        "workflow_state"
+      ],
+      "reason": "1 of 3 field(s) missing on m2m_kb_task: workflow_state"
+    },
+    "kb_knowledge": {
+      "state": "AVAILABLE",
+      "checked": [
+        "number",
+        "workflow_state"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "change_task": {
+      "state": "AVAILABLE",
+      "checked": [
+        "change_request",
+        "change_task_type",
+        "state"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "cmdb_ci_service": {
+      "state": "AVAILABLE",
+      "checked": [
+        "busines_criticality",
+        "name"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "cmn_schedule_blackout": {
+      "state": "TABLE_UNPROBED"
+    },
+    "cmn_schedule_maintenance": {
+      "state": "TABLE_UNPROBED"
+    },
+    "sys_attachment": {
+      "state": "AVAILABLE",
+      "checked": [
+        "content_type",
+        "sys_created_on",
+        "table_name",
+        "table_sys_id"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "em_alert": {
+      "state": "TABLE_UNAVAILABLE"
+    },
+    "sys_audit": {
+      "state": "AVAILABLE",
+      "checked": [
+        "documentkey",
+        "fieldname",
+        "sys_created_on",
+        "user"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "cmn_schedule_span": {
+      "state": "AVAILABLE",
+      "checked": [
+        "all_day",
+        "days_of_week",
+        "end_date_time",
+        "repeat_count",
+        "repeat_type",
+        "repeat_until",
+        "schedule",
+        "start_date_time"
+      ],
+      "missing": [],
+      "reason": null
+    },
+    "sys_user_group": {
+      "state": "UNAVAILABLE",
+      "checked": [
+        "assignment_group"
+      ],
+      "missing": [
+        "assignment_group"
+      ],
+      "reason": "none of assignment_group exist on sys_user_group"
+    }
+  },
+  "choices": {
+    "incident.state": [
+      {
+        "label": "New",
+        "value": "1",
+        "sequence": "1"
+      },
+      {
+        "label": "In Progress",
+        "value": "2",
+        "sequence": "2"
+      },
+      {
+        "label": "On Hold",
+        "value": "3",
+        "sequence": "3"
+      },
+      {
+        "label": "Resolved",
+        "value": "6",
+        "sequence": "6"
+      },
+      {
+        "label": "Closed",
+        "value": "7",
+        "sequence": "7"
+      },
+      {
+        "label": "Canceled",
+        "value": "8",
+        "sequence": "8"
+      }
+    ],
+    "task.state": [
+      {
+        "label": "Pending",
+        "value": "-5",
+        "sequence": "-5"
+      },
+      {
+        "label": "Open",
+        "value": "1",
+        "sequence": "1"
+      },
+      {
+        "label": "Work in Progress",
+        "value": "2",
+        "sequence": "2"
+      },
+      {
+        "label": "Closed Complete",
+        "value": "3",
+        "sequence": "3"
+      },
+      {
+        "label": "Closed Incomplete",
+        "value": "4",
+        "sequence": "4"
+      },
+      {
+        "label": "Closed Skipped",
+        "value": "7",
+        "sequence": "5"
+      }
+    ],
+    "cmdb_ci.install_status": [
+      {
+        "label": "Installed",
+        "value": "1",
+        "sequence": ""
+      },
+      {
+        "label": "Pending Repair",
+        "value": "5",
+        "sequence": ""
+      },
+      {
+        "label": "Pending Install",
+        "value": "4",
+        "sequence": ""
+      },
+      {
+        "label": "On Order",
+        "value": "2",
+        "sequence": ""
+      },
+      {
+        "label": "In Maintenance",
+        "value": "3",
+        "sequence": ""
+      },
+      {
+        "label": "Retired",
+        "value": "7",
+        "sequence": ""
+      },
+      {
+        "label": "Stolen",
+        "value": "8",
+        "sequence": ""
+      },
+      {
+        "label": "In Stock",
+        "value": "6",
+        "sequence": ""
+      },
+      {
+        "label": "Absent",
+        "value": "100",
+        "sequence": ""
+      }
+    ],
+    "problem.state": [
+      {
+        "label": "New",
+        "value": "101",
+        "sequence": "1"
+      },
+      {
+        "label": "Assess",
+        "value": "102",
+        "sequence": "2"
+      },
+      {
+        "label": "Root Cause Analysis",
+        "value": "103",
+        "sequence": "3"
+      },
+      {
+        "label": "Fix in Progress",
+        "value": "104",
+        "sequence": "4"
+      },
+      {
+        "label": "Resolved",
+        "value": "106",
+        "sequence": "6"
+      },
+      {
+        "label": "Closed",
+        "value": "107",
+        "sequence": "7"
+      }
+    ],
+    "problem.close_code": [],
+    "problem.resolution_code": [
+      {
+        "label": "Fix Applied",
+        "value": "fix_applied",
+        "sequence": "1"
+      },
+      {
+        "label": "Risk Accepted",
+        "value": "risk_accepted",
+        "sequence": "2"
+      },
+      {
+        "label": "Canceled",
+        "value": "canceled",
+        "sequence": "3"
+      },
+      {
+        "label": "Duplicate",
+        "value": "duplicate",
+        "sequence": "4"
+      }
+    ],
+    "task.approval": [
+      {
+        "label": "Not Yet Requested",
+        "value": "not requested",
+        "sequence": "0"
+      },
+      {
+        "label": "Requested",
+        "value": "requested",
+        "sequence": "1"
+      },
+      {
+        "label": "Approved",
+        "value": "approved",
+        "sequence": "2"
+      },
+      {
+        "label": "Rejected",
+        "value": "rejected",
+        "sequence": "3"
+      }
+    ],
+    "change_request.approval": [],
+    "change_request.type": [
+      {
+        "label": "Standard",
+        "value": "standard",
+        "sequence": "1"
+      },
+      {
+        "label": "Normal",
+        "value": "normal",
+        "sequence": "2"
+      },
+      {
+        "label": "Emergency",
+        "value": "emergency",
+        "sequence": "3"
+      },
+      {
+        "label": "Model",
+        "value": "model",
+        "sequence": "4"
+      }
+    ],
+    "change_request.close_code": [
+      {
+        "label": "Successful",
+        "value": "successful",
+        "sequence": "0"
+      },
+      {
+        "label": "Successful with issues",
+        "value": "successful_issues",
+        "sequence": "1"
+      },
+      {
+        "label": "Unsuccessful",
+        "value": "unsuccessful",
+        "sequence": "2"
+      }
+    ],
+    "change_request.state": [
+      {
+        "label": "New",
+        "value": "-5",
+        "sequence": "1"
+      },
+      {
+        "label": "Assess",
+        "value": "-4",
+        "sequence": "2"
+      },
+      {
+        "label": "Authorize",
+        "value": "-3",
+        "sequence": "3"
+      },
+      {
+        "label": "Scheduled",
+        "value": "-2",
+        "sequence": "4"
+      },
+      {
+        "label": "Implement",
+        "value": "-1",
+        "sequence": "5"
+      },
+      {
+        "label": "Review",
+        "value": "0",
+        "sequence": "6"
+      },
+      {
+        "label": "Closed",
+        "value": "3",
+        "sequence": "7"
+      },
+      {
+        "label": "Canceled",
+        "value": "4",
+        "sequence": "8"
+      }
+    ],
+    "cmn_schedule.type": [],
+    "cmn_schedule_span.repeat_type": [
+      {
+        "label": "Does not repeat",
+        "value": "NULL_OVERRIDE",
+        "sequence": ""
+      },
+      {
+        "label": "Daily",
+        "value": "daily",
+        "sequence": "0"
+      },
+      {
+        "label": "Every Weekday (Mon-Fri)",
+        "value": "weekdays",
+        "sequence": "1"
+      },
+      {
+        "label": "Every Weekend (Sat, Sun)",
+        "value": "weekends",
+        "sequence": "2"
+      },
+      {
+        "label": "Every Mon, Wed, Fri",
+        "value": "weekMWF",
+        "sequence": "3"
+      },
+      {
+        "label": "Every Tue, Thu",
+        "value": "weekTT",
+        "sequence": "4"
+      },
+      {
+        "label": "Weekly",
+        "value": "weekly",
+        "sequence": "5"
+      },
+      {
+        "label": "Monthly",
+        "value": "monthly",
+        "sequence": "6"
+      },
+      {
+        "label": "Yearly",
+        "value": "yearly",
+        "sequence": "7"
+      },
+      {
+        "label": "Specific",
+        "value": "specific",
+        "sequence": "8"
+      }
+    ],
+    "incident.contact_type": [
+      {
+        "label": "Chat",
+        "value": "chat",
+        "sequence": "0"
+      },
+      {
+        "label": "Email",
+        "value": "email",
+        "sequence": "1"
+      },
+      {
+        "label": "Phone",
+        "value": "phone",
+        "sequence": "2"
+      },
+      {
+        "label": "Self-service",
+        "value": "self-service",
+        "sequence": "4"
+      },
+      {
+        "label": "Virtual Agent",
+        "value": "virtual_agent",
+        "sequence": "5"
+      },
+      {
+        "label": "Walk-in",
+        "value": "walk-in",
+        "sequence": "6"
+      }
+    ],
+    "incident.close_code": [
+      {
+        "label": "Duplicate",
+        "value": "Duplicate",
+        "sequence": "0"
+      },
+      {
+        "label": "Known error",
+        "value": "Known error",
+        "sequence": "1"
+      },
+      {
+        "label": "No resolution provided",
+        "value": "No resolution provided",
+        "sequence": "2"
+      },
+      {
+        "label": "Resolved by caller",
+        "value": "Resolved by caller",
+        "sequence": "3"
+      },
+      {
+        "label": "Resolved by change",
+        "value": "Resolved by change",
+        "sequence": "4"
+      },
+      {
+        "label": "Resolved by problem",
+        "value": "Resolved by problem",
+        "sequence": "5"
+      },
+      {
+        "label": "Resolved by request",
+        "value": "Resolved by request",
+        "sequence": "6"
+      },
+      {
+        "label": "Solution provided",
+        "value": "Solution provided",
+        "sequence": "7"
+      },
+      {
+        "label": "Workaround provided",
+        "value": "Workaround provided",
+        "sequence": "8"
+      },
+      {
+        "label": "User error",
+        "value": "User error",
+        "sequence": "9"
+      }
+    ],
+    "task_sla.stage": [
+      {
+        "label": "In progress",
+        "value": "in_progress",
+        "sequence": "1"
+      },
+      {
+        "label": "Achieved",
+        "value": "achieved",
+        "sequence": "2"
+      },
+      {
+        "label": "Breached",
+        "value": "breached",
+        "sequence": "3"
+      },
+      {
+        "label": "Cancelled",
+        "value": "cancelled",
+        "sequence": "4"
+      },
+      {
+        "label": "Paused",
+        "value": "paused",
+        "sequence": "5"
+      },
+      {
+        "label": "Completed",
+        "value": "completed",
+        "sequence": "6"
+      }
+    ]
+  },
+  "labels": {
+    "incident.state": {
+      "On Hold": [
+        "3"
+      ]
+    },
+    "cmdb_ci.install_status": {
+      "Retired": [
+        "7"
+      ]
+    },
+    "problem.close_code": {
+      "Cannot Reproduce": []
+    },
+    "task.approval": {
+      "Approved": [
+        "approved"
+      ]
+    },
+    "change_request.approval": {
+      "Approved": []
+    },
+    "change_request.type": {
+      "Emergency": [
+        "emergency"
+      ]
+    },
+    "change_request.close_code": {
+      "Successful": [
+        "successful"
+      ],
+      "Unsuccessful": [
+        "unsuccessful"
+      ]
+    },
+    "cmn_schedule.type": {
+      "Blackout": [],
+      "Maintenance": []
+    }
+  },
+  "audit": {
+    "incident": "AVAILABLE",
+    "problem": "AVAILABLE",
+    "change_request": "AVAILABLE",
+    "cmdb_ci": "UNAVAILABLE",
+    "task": "UNAVAILABLE"
+  },
+  "schedules": {
+    "count": 18,
+    "types": [
+      "",
+      "application",
+      "blackout",
+      "maintenance",
+      "network",
+      "server",
+      "sprint"
+    ],
+    "with_time_zone": 7,
+    "without_time_zone": 11
+  },
+  "schedule_span_fields": [
+    "all_day",
+    "days_of_week",
+    "end_date_time",
+    "float_day",
+    "float_week",
+    "month",
+    "monthly_type",
+    "name",
+    "notes",
+    "override_start_date",
+    "parent",
+    "repeat_count",
+    "repeat_type",
+    "repeat_until",
+    "schedule",
+    "show_as",
+    "start_date_time",
+    "sys_id",
+    "type",
+    "yearly_type"
+  ],
+  "weekly_spans_sample": [
+    {
+      "schedule": "8-5 weekdays",
+      "name": "Monday-Friday 8-5",
+      "repeat_type": "weekdays",
+      "days_of_week": "1",
+      "all_day": "false"
+    },
+    {
+      "schedule": "8-5 weekdays excluding holidays",
+      "name": "Monday-Friday 8-5",
+      "repeat_type": "weekdays",
+      "days_of_week": "1",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Weekends",
+      "name": "Saturday & Sunday",
+      "repeat_type": "weekly",
+      "days_of_week": "6",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Two week Sprint starting on Wednesday",
+      "name": "Biweekly starting on Wednesday ",
+      "repeat_type": "weekly",
+      "days_of_week": "3",
+      "all_day": "true"
+    },
+    {
+      "schedule": "Application",
+      "name": "Applications",
+      "repeat_type": "weekly",
+      "days_of_week": "7",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Server",
+      "name": "Server Schedule",
+      "repeat_type": "weekly",
+      "days_of_week": "6",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Network",
+      "name": "Network",
+      "repeat_type": "weekly",
+      "days_of_week": "6",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Blackout Wednesdays (GMT)",
+      "name": "Blackout Wednesdays (GMT)",
+      "repeat_type": "weekly",
+      "days_of_week": "3",
+      "all_day": "true"
+    },
+    {
+      "schedule": "Database Server FLX",
+      "name": "DB Maintenance FLX",
+      "repeat_type": "weekly",
+      "days_of_week": "6",
+      "all_day": "false"
+    },
+    {
+      "schedule": "WebServer FLX",
+      "name": "WebServer FLX Maintenance",
+      "repeat_type": "weekly",
+      "days_of_week": "7",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Application FLX",
+      "name": "App FLX Entry",
+      "repeat_type": "weekly",
+      "days_of_week": "7",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Network CAB",
+      "name": "Network CAB",
+      "repeat_type": "weekly",
+      "days_of_week": "2",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Servers San Diego",
+      "name": "Wednesdays",
+      "repeat_type": "weekly",
+      "days_of_week": "3",
+      "all_day": "false"
+    },
+    {
+      "schedule": "MySQL Database Service",
+      "name": "Weekends",
+      "repeat_type": "weekly",
+      "days_of_week": "6",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Global Infrastructure",
+      "name": "Weekends",
+      "repeat_type": "weekly",
+      "days_of_week": "6",
+      "all_day": "false"
+    },
+    {
+      "schedule": "Software Blackout ",
+      "name": "Weekends",
+      "repeat_type": "weekly",
+      "days_of_week": "3",
+      "all_day": "false"
+    }
+  ],
+  "span_repeat_types": {
+    "weekdays": 2,
+    "weekly": 14,
+    "yearly": 20
+  },
+  "days_of_week_evidence": {
+    "weekday_spans": [
+      {
+        "name": "Monday-Friday 8-5",
+        "schedule": "8-5 weekdays",
+        "days_of_week": "1"
+      },
+      {
+        "name": "Monday-Friday 8-5",
+        "schedule": "8-5 weekdays excluding holidays",
+        "days_of_week": "1"
+      }
+    ],
+    "weekend_spans": [
+      {
+        "name": "Saturday & Sunday",
+        "schedule": "Weekends",
+        "days_of_week": "6"
+      },
+      {
+        "name": "Weekends",
+        "schedule": "MySQL Database Service",
+        "days_of_week": "6"
+      },
+      {
+        "name": "Weekends",
+        "schedule": "Global Infrastructure",
+        "days_of_week": "6"
+      },
+      {
+        "name": "Weekends",
+        "schedule": "Software Blackout ",
+        "days_of_week": "3"
+      }
+    ]
+  },
+  "days_of_week_choices": [],
+  "custom_fields": {
+    "incident_own_columns": 22,
+    "u_prefixed": [],
+    "non_u_customer_updated": []
+  },
+  "sizes": {
+    "incident": 82,
+    "problem": 25,
+    "change_request": 105,
+    "task_sla": 61,
+    "contract_sla": 45,
+    "cmdb_ci": 2785,
+    "cmdb_rel_ci": 220,
+    "cmdb_ci_service": 42,
+    "sys_user": 639,
+    "sys_user_group": 54,
+    "sys_user_grmember": 197,
+    "cmn_schedule": 18,
+    "cmn_schedule_span": 36,
+    "sys_journal_field": 1379,
+    "sys_audit": 78735
+  },
+  "metadata_requests": {
+    "query": 132,
+    "count": 15,
+    "aggregate": 1,
+    "byTable": {
+      "sys_db_object": 58,
+      "change_request": 2,
+      "change_task": 1,
+      "chg_model": 1,
+      "cmdb_ci": 2,
+      "cmdb_ci_service": 2,
+      "cmdb_rel_ci": 2,
+      "cmn_schedule": 3,
+      "cmn_schedule_span": 4,
+      "conflict": 1,
+      "contract_sla": 2,
+      "cxs_table_config": 1,
+      "incident": 2,
+      "kb_knowledge": 1,
+      "m2m_kb_task": 1,
+      "problem": 2,
+      "problem_task": 1,
+      "service_offering": 1,
+      "std_change_producer_version": 1,
+      "std_change_proposal": 1,
+      "sys_attachment": 1,
+      "sys_audit": 2,
+      "sys_choice": 18,
+      "sys_data_policy2": 1,
+      "sys_dictionary": 22,
+      "sys_journal_field": 2,
+      "sys_properties": 1,
+      "sys_ui_policy": 1,
+      "sys_user": 2,
+      "sys_user_delegate": 1,
+      "sys_user_grmember": 2,
+      "sys_user_group": 2,
+      "sysapproval_approver": 1,
+      "task_ci": 1,
+      "task_sla": 2
+    }
+  },
+  "run": {
+    "elapsed_ms": 158454,
+    "summary": {
+      "evaluated": 69,
+      "unavailable": 41,
+      "unconfigured": 28,
+      "skipped": 1
+    },
+    "verdicts": {
+      "fail": 41,
+      "none": 70,
+      "pass": 21,
+      "inconclusive": 7
+    },
+    "requests": {
+      "query": 246,
+      "count": 139,
+      "aggregate": 41,
+      "byTable": {
+        "sys_db_object": 94,
+        "incident": 59,
+        "sys_choice": 26,
+        "contract_sla": 4,
+        "sys_dictionary": 28,
+        "dl_u_priority": 3,
+        "sysevent_email_action": 3,
+        "sys_user": 13,
+        "sys_user_grmember": 9,
+        "cxs_table_config": 1,
+        "cmdb_ci": 5,
+        "sys_journal_field": 1,
+        "sys_attachment": 1,
+        "sysrule_assignment": 5,
+        "task_sla": 5,
+        "problem": 24,
+        "sys_audit": 18,
+        "change_request": 73,
+        "m2m_kb_task": 3,
+        "problem_task": 4,
+        "cab_meeting": 5,
+        "cmn_schedule_blackout": 3,
+        "cmn_schedule_maintenance": 3,
+        "sys_user_delegate": 5,
+        "sysapproval_approver": 6,
+        "cmn_schedule_span": 3,
+        "change_task": 1,
+        "cmdb_rel_ci": 13,
+        "cmdb_ci_service": 7,
+        "kb_knowledge": 1
+      }
+    },
+    "cached_reads": 180,
+    "probe_cache": 271,
+    "by_engine": {
+      "aggregate": {
+        "rules": 20,
+        "ms": 21273,
+        "evaluated": 14,
+        "findings": 25
+      },
+      "configuration": {
+        "rules": 24,
+        "ms": 36577,
+        "evaluated": 12,
+        "findings": 6
+      },
+      "composite": {
+        "rules": 10,
+        "ms": 1432,
+        "evaluated": 3,
+        "findings": 0
+      },
+      "reference_integrity": {
+        "rules": 9,
+        "ms": 26108,
+        "evaluated": 8,
+        "findings": 2
+      },
+      "record_predicate": {
+        "rules": 23,
+        "ms": 30472,
+        "evaluated": 18,
+        "findings": 24
+      },
+      "text_analysis": {
+        "rules": 11,
+        "ms": 2953,
+        "evaluated": 4,
+        "findings": 2
+      },
+      "audit_history": {
+        "rules": 7,
+        "ms": 14210,
+        "evaluated": 5,
+        "findings": 3
+      },
+      "temporal_correlation": {
+        "rules": 9,
+        "ms": 10445,
+        "evaluated": 1,
+        "findings": 0
+      },
+      "linkage": {
+        "rules": 22,
+        "ms": 11312,
+        "evaluated": 3,
+        "findings": 3
+      },
+      "relationship_graph": {
+        "rules": 4,
+        "ms": 3664,
+        "evaluated": 1,
+        "findings": 16
+      }
+    },
+    "rules": {
+      "ITSM-001": {
+        "slot": 1,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 11,
+            "denominator": 15,
+            "pass_pct": 26.7,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          }
+        ],
+        "ms": 1124
+      },
+      "ITSM-002": {
+        "slot": 2,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 6,
+            "complete": true
+          }
+        ],
+        "ms": 1237
+      },
+      "ITSM-003": {
+        "slot": 3,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "contract_sla",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          }
+        ],
+        "ms": 1134
+      },
+      "ITSM-004": {
+        "slot": 4,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_dependency",
+          "step": null,
+          "object": null,
+          "parameters": null
+        },
+        "reason": "UNDEFINED: \"incident volume with no matching assignment rule at creation\" needs each active assignment rule's condition evaluated against each incident (a platform-side condition evaluator); no engine provides one and the workbook defines no substitute — not in the workbook and not in DECISIONS.md; reported for explicit resolution",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-005": {
+        "slot": 5,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "dl_u_priority",
+            "status": "complete",
+            "rows": 9,
+            "complete": true
+          }
+        ],
+        "ms": 3520
+      },
+      "ITSM-006": {
+        "slot": 6,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 19,
+            "complete": true
+          }
+        ],
+        "ms": 1127
+      },
+      "ITSM-007": {
+        "slot": 7,
+        "engine": "composite",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "autoclose_configuration",
+          "parameters": null
+        },
+        "reason": "object \"autoclose_configuration\" is not usable on this instance [stopped at: schema_verification]: \"autoclose_configuration\": autoclose_configuration: candidate sys_properties exists but no expected fields are defined to verify it against (UNDEFINED) — not confidently identified",
+        "coverage": [],
+        "ms": 360
+      },
+      "ITSM-008": {
+        "slot": 8,
+        "engine": "aggregate",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "generic_values"
+          ]
+        },
+        "reason": "parameter generic_values is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Default 30% in one generic value\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-009": {
+        "slot": 9,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 6,
+            "complete": true
+          }
+        ],
+        "ms": 1161
+      },
+      "ITSM-010": {
+        "slot": 10,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "ui_policy",
+          "parameters": null
+        },
+        "reason": "object \"ui_policy\" is not usable on this instance [stopped at: schema_verification]: \"ui_policy\": ui_policy: candidate sys_ui_policy exists but no expected fields are defined to verify it against (UNDEFINED) — not confidently identified",
+        "coverage": [],
+        "ms": 366
+      },
+      "ITSM-011": {
+        "slot": 11,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sysevent_email_action",
+            "status": "complete",
+            "rows": 421,
+            "complete": true
+          }
+        ],
+        "ms": 5972
+      },
+      "ITSM-012": {
+        "slot": 12,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "contract_sla",
+            "status": "complete",
+            "rows": 44,
+            "complete": true
+          }
+        ],
+        "ms": 835
+      },
+      "ITSM-013": {
+        "slot": 13,
+        "engine": "configuration",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "custom_state_values"
+          ]
+        },
+        "reason": "parameter custom_state_values is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Any custom state absent from SLA conditions\")",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-014": {
+        "slot": 14,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sys_dictionary",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          }
+        ],
+        "ms": 1102
+      },
+      "ITSM-015": {
+        "slot": 15,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "reader",
+          "object": "knowledge_suggestion",
+          "parameters": null
+        },
+        "reason": "object \"knowledge_suggestion\" is not usable on this instance [stopped at: usable]: candidate cxs_table_config verified as usable, but no established reader exists for \"knowledge_suggestion\" yet — a reader must be written against the verified schema",
+        "coverage": [],
+        "ms": 2353
+      },
+      "ITSM-016": {
+        "slot": 16,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 0,
+            "denominator": 15,
+            "pass_pct": 0,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          }
+        ],
+        "ms": 2768
+      },
+      "ITSM-017": {
+        "slot": 17,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 1,
+            "denominator": 26,
+            "pass_pct": 3.8,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 25,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 26,
+            "complete": true
+          }
+        ],
+        "ms": 373
+      },
+      "ITSM-018": {
+        "slot": 18,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 22,
+            "denominator": 22,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 50,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          }
+        ],
+        "ms": 3032
+      },
+      "ITSM-019": {
+        "slot": 19,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 26,
+            "denominator": 26,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 26,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "cmdb_ci",
+            "status": "limited",
+            "rows": 24,
+            "complete": true
+          }
+        ],
+        "ms": 5570
+      },
+      "ITSM-020": {
+        "slot": 20,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 22,
+            "denominator": 32,
+            "pass_pct": 68.8,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1061
+      },
+      "ITSM-021": {
+        "slot": 21,
+        "engine": "text_analysis",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 32,
+            "denominator": 32,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          }
+        ],
+        "ms": 708
+      },
+      "ITSM-022": {
+        "slot": 22,
+        "engine": "reference_integrity",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "service_account_pattern",
+            "volume_threshold"
+          ]
+        },
+        "reason": "parameter service_account_pattern, volume_threshold is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Volume threshold configurable; service account detection from naming and role pattern\")",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-023": {
+        "slot": 23,
+        "engine": "text_analysis",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "volume_share"
+          ]
+        },
+        "reason": "parameter volume_share is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Volume threshold configurable relative to total volume\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-024": {
+        "slot": 24,
+        "engine": "aggregate",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "specification_gap",
+          "step": null,
+          "object": null,
+          "parameters": null
+        },
+        "reason": "SPECIFICATION GAP: the workbook does not define the statistic behind \"pairs occurring far outside the expected joint distribution\" (within-category share vs expected-under-independence vs another), nor the anomaly threshold, nor the minimum volume per category — reported for explicit resolution; nothing is assumed in its place",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-025": {
+        "slot": 25,
+        "engine": "text_analysis",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "consistency_rules"
+          ]
+        },
+        "reason": "parameter consistency_rules is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Consistency rules per close code, derived from the estate's own dominant patterns\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-026": {
+        "slot": 26,
+        "engine": "audit_history",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          },
+          {
+            "table": "sys_journal_field",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 1113
+      },
+      "ITSM-027": {
+        "slot": 27,
+        "engine": "temporal_correlation",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "timing_window"
+          ]
+        },
+        "reason": "parameter timing_window is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Timing window configurable\")",
+        "coverage": [],
+        "ms": 1392
+      },
+      "ITSM-028": {
+        "slot": 28,
+        "engine": "text_analysis",
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 82,
+            "denominator": 82,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 82,
+            "complete": true
+          }
+        ],
+        "ms": 736
+      },
+      "ITSM-029": {
+        "slot": 29,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sysrule_assignment",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 3557
+      },
+      "ITSM-030": {
+        "slot": 30,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 32,
+            "denominator": 32,
+            "pass_pct": 100,
+            "complete": null,
+            "variant": "estate"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          }
+        ],
+        "ms": 2295
+      },
+      "ITSM-031": {
+        "slot": 31,
+        "engine": "aggregate",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "autoclose_closed_by"
+          ]
+        },
+        "reason": "parameter autoclose_closed_by is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Default threshold 70%\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-032": {
+        "slot": 32,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          }
+        ],
+        "ms": 343
+      },
+      "ITSM-033": {
+        "slot": 33,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 11,
+        "kpis": [
+          {
+            "numerator": 18,
+            "denominator": 61,
+            "pass_pct": 29.5,
+            "complete": null,
+            "variant": "estate"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "task_sla",
+            "status": "complete",
+            "rows": 43,
+            "complete": true
+          },
+          {
+            "table": "task_sla",
+            "status": "complete",
+            "rows": 61,
+            "complete": true
+          },
+          {
+            "table": "task_sla",
+            "status": "complete",
+            "rows": 43,
+            "complete": true
+          },
+          {
+            "table": "task_sla",
+            "status": "complete",
+            "rows": 61,
+            "complete": true
+          }
+        ],
+        "ms": 2119
+      },
+      "ITSM-034": {
+        "slot": 34,
+        "engine": "audit_history",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_dependency",
+          "step": null,
+          "object": null,
+          "parameters": null
+        },
+        "reason": "UNDEFINED: the estate-mean pause / cancel rate per group and the \"paused longer than active\" comparison need an aggregate over task_sla joined to the task's group; no engine mode computes a per-group rate against the estate mean — not in the workbook and not in DECISIONS.md; reported for explicit resolution",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-035": {
+        "slot": 35,
+        "engine": "temporal_correlation",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_dependency",
+          "step": null,
+          "object": null,
+          "parameters": null
+        },
+        "reason": "UNDEFINED: the interval before SLA expiry to examine, and the expected density it is compared against, are not defined — no engine mode exists for a resolution-time density spike — not in the workbook and not in DECISIONS.md; reported for explicit resolution",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-036": {
+        "slot": 36,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 17,
+            "denominator": 40,
+            "pass_pct": 42.5,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 40,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1048
+      },
+      "ITSM-037": {
+        "slot": 37,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 3,
+        "kpis": [
+          {
+            "numerator": 0,
+            "denominator": 19,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": "P1"
+          },
+          {
+            "numerator": 0,
+            "denominator": 4,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": "P2"
+          },
+          {
+            "numerator": 0,
+            "denominator": 8,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": "P3"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 19,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 4,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 3319
+      },
+      "ITSM-038": {
+        "slot": 38,
+        "engine": "temporal_correlation",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_table",
+          "step": "table_discovery",
+          "object": "em_alert",
+          "parameters": null
+        },
+        "reason": "table \"em_alert\" is not usable on this instance [stopped at: table_discovery]: em_alert: table discovery — em_alert is not on this instance (no sys_db_object row)",
+        "coverage": [],
+        "ms": 339
+      },
+      "ITSM-039": {
+        "slot": 39,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "capability",
+          "step": null,
+          "object": "incident",
+          "parameters": null
+        },
+        "reason": "capability PARTIAL: 1 of 2 field(s) missing on incident: problem_id",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-040": {
+        "slot": 40,
+        "engine": "text_analysis",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "similarity",
+            "repeat_count"
+          ]
+        },
+        "reason": "parameter similarity, repeat_count is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Similarity threshold and repeat count configurable\")",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-041": {
+        "slot": 41,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          }
+        ],
+        "ms": 360
+      },
+      "ITSM-042": {
+        "slot": 42,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 38,
+            "denominator": 50,
+            "pass_pct": 76,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 12,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1082
+      },
+      "ITSM-043": {
+        "slot": 43,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 50,
+            "denominator": 50,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 2260
+      },
+      "ITSM-044": {
+        "slot": 44,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 30,
+            "denominator": 32,
+            "pass_pct": 93.8,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 32,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 717
+      },
+      "ITSM-045": {
+        "slot": 45,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-046": {
+        "slot": 46,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-047": {
+        "slot": 47,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-048": {
+        "slot": 48,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-049": {
+        "slot": 49,
+        "engine": "record_predicate",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-050": {
+        "slot": 50,
+        "engine": "audit_history",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-051": {
+        "slot": 51,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-052": {
+        "slot": 52,
+        "engine": "record_predicate",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "post_incident_review",
+          "parameters": null
+        },
+        "reason": "object \"post_incident_review\" is not usable on this instance [stopped at: candidate]: \"post_incident_review\": post_incident_review: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-053": {
+        "slot": 53,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 57,
+            "denominator": 82,
+            "pass_pct": 69.5,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 25,
+            "complete": true
+          },
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 82,
+            "complete": true
+          }
+        ],
+        "ms": 926
+      },
+      "ITSM-054": {
+        "slot": 54,
+        "engine": "text_analysis",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "similarity",
+            "cluster_volume"
+          ]
+        },
+        "reason": "parameter similarity, cluster_volume is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Cluster volume threshold and similarity threshold configurable\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-055": {
+        "slot": 55,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "major_incident",
+          "parameters": null
+        },
+        "reason": "object \"major_incident\" is not usable on this instance [stopped at: candidate]: \"major_incident\": major_incident: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-056": {
+        "slot": 56,
+        "engine": "audit_history",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 16,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 3693
+      },
+      "ITSM-057": {
+        "slot": 57,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "capability",
+          "step": null,
+          "object": "incident",
+          "parameters": null
+        },
+        "reason": "capability UNAVAILABLE: none of problem_id exist on incident",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-058": {
+        "slot": 58,
+        "engine": "text_analysis",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "similarity"
+          ]
+        },
+        "reason": "parameter similarity is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"N default 10; effort derived from resolution time\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-059": {
+        "slot": 59,
+        "engine": "aggregate",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "concentration_ratio"
+          ]
+        },
+        "reason": "parameter concentration_ratio is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Flag where Problem creation concentration far exceeds incident concentration\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-060": {
+        "slot": 60,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "capability",
+          "step": null,
+          "object": "incident",
+          "parameters": null
+        },
+        "reason": "capability UNAVAILABLE: none of problem_id exist on incident",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-061": {
+        "slot": 61,
+        "engine": "audit_history",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1558
+      },
+      "ITSM-062": {
+        "slot": 62,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 6,
+            "denominator": 9,
+            "pass_pct": 66.7,
+            "complete": false,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "limited",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1232
+      },
+      "ITSM-063": {
+        "slot": 63,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "capability",
+          "step": null,
+          "object": "incident",
+          "parameters": null
+        },
+        "reason": "capability PARTIAL: 1 of 2 field(s) missing on incident: problem_id",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-064": {
+        "slot": 64,
+        "engine": "linkage",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 0,
+            "denominator": 9,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 9,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          }
+        ],
+        "ms": 2151
+      },
+      "ITSM-065": {
+        "slot": 65,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 15,
+            "denominator": 16,
+            "pass_pct": 93.8,
+            "complete": true,
+            "variant": "owner"
+          },
+          {
+            "numerator": 4,
+            "denominator": 4,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": "group"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 16,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "cmdb_ci",
+            "status": "limited",
+            "rows": 24,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 4240
+      },
+      "ITSM-066": {
+        "slot": 66,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "reader",
+          "object": "knowledge_link",
+          "parameters": null
+        },
+        "reason": "object \"knowledge_link\" is not usable on this instance [stopped at: usable]: candidate m2m_kb_task verified as usable, but no established reader exists for \"knowledge_link\" yet — a reader must be written against the verified schema",
+        "coverage": [],
+        "ms": 1396
+      },
+      "ITSM-067": {
+        "slot": 67,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 18,
+            "denominator": 25,
+            "pass_pct": 72,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 7,
+            "complete": true
+          },
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1048
+      },
+      "ITSM-068": {
+        "slot": 68,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 0,
+            "denominator": 1,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem_task",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "problem_task",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 2831
+      },
+      "ITSM-069": {
+        "slot": 69,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "capability",
+          "step": null,
+          "object": "incident",
+          "parameters": null
+        },
+        "reason": "capability PARTIAL: 1 of 2 field(s) missing on incident: problem_id",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-070": {
+        "slot": 70,
+        "engine": "text_analysis",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 2,
+            "denominator": 9,
+            "pass_pct": 22.2,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 9,
+            "complete": true
+          }
+        ],
+        "ms": 763
+      },
+      "ITSM-071": {
+        "slot": 71,
+        "engine": "text_analysis",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "root_cause_classification"
+          ]
+        },
+        "reason": "parameter root_cause_classification is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Root cause classification from close code and text pattern\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-072": {
+        "slot": 72,
+        "engine": "audit_history",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 25,
+            "complete": true
+          },
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 6,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 2136
+      },
+      "ITSM-073": {
+        "slot": 73,
+        "engine": "linkage",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "alignment_matrix"
+          ]
+        },
+        "reason": "parameter alignment_matrix is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Alignment matrix configurable\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-074": {
+        "slot": 74,
+        "engine": "temporal_correlation",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "decline_threshold"
+          ]
+        },
+        "reason": "parameter decline_threshold is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Window default 90 days either side. Flag where the decline is below threshold.\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-075": {
+        "slot": 75,
+        "engine": "text_analysis",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 3,
+            "denominator": 25,
+            "pass_pct": null,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 25,
+            "complete": true
+          }
+        ],
+        "ms": 745
+      },
+      "ITSM-076": {
+        "slot": 76,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "reader",
+          "object": "knowledge_link",
+          "parameters": null
+        },
+        "reason": "object \"knowledge_link\" is not usable on this instance [stopped at: usable]: candidate m2m_kb_task verified as usable, but no established reader exists for \"knowledge_link\" yet — a reader must be written against the verified schema",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-077": {
+        "slot": 77,
+        "engine": "composite",
+        "status": "skipped",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "input",
+          "step": null,
+          "object": null,
+          "parameters": null
+        },
+        "reason": "input ITSM-054 was unconfigured",
+        "coverage": [],
+        "ms": null
+      },
+      "ITSM-078": {
+        "slot": 78,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "post_incident_review",
+          "parameters": null
+        },
+        "reason": "object \"post_incident_review\" is not usable on this instance [stopped at: candidate]: \"post_incident_review\": post_incident_review: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-079": {
+        "slot": 79,
+        "engine": "aggregate",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "capability",
+          "step": null,
+          "object": "sys_choice",
+          "parameters": null
+        },
+        "reason": "problem.close_code: no choice list on this instance (looked at problem → task)",
+        "coverage": [
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_choice",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 2118
+      },
+      "ITSM-080": {
+        "slot": 80,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 92,
+            "denominator": 105,
+            "pass_pct": 87.6,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 13,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          }
+        ],
+        "ms": 3639
+      },
+      "ITSM-081": {
+        "slot": 81,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "approval_routing",
+          "parameters": null
+        },
+        "reason": "object \"approval_routing\" is not usable on this instance [stopped at: candidate]: \"approval_routing\": approval_routing: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-082": {
+        "slot": 82,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "cab_meeting",
+            "status": "complete",
+            "rows": 5,
+            "complete": true
+          }
+        ],
+        "ms": 3708
+      },
+      "ITSM-083": {
+        "slot": 83,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 59,
+            "denominator": 100,
+            "pass_pct": 41,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 100,
+            "complete": true
+          }
+        ],
+        "ms": 355
+      },
+      "ITSM-084": {
+        "slot": 84,
+        "engine": "composite",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "conflict_detection",
+          "parameters": null
+        },
+        "reason": "object \"conflict_detection\" is not usable on this instance [stopped at: schema_verification]: \"conflict_detection\": conflict_detection: candidate conflict exists but no expected fields are defined to verify it against (UNDEFINED) — not confidently identified",
+        "coverage": [],
+        "ms": 354
+      },
+      "ITSM-085": {
+        "slot": 85,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "cmn_schedule_blackout",
+            "status": "complete",
+            "rows": 2,
+            "complete": true
+          },
+          {
+            "table": "cmn_schedule_maintenance",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 7275
+      },
+      "ITSM-086": {
+        "slot": 86,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "approval_routing",
+          "parameters": null
+        },
+        "reason": "object \"approval_routing\" is not usable on this instance [stopped at: candidate]: \"approval_routing\": approval_routing: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-087": {
+        "slot": 87,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "change_model",
+          "parameters": null
+        },
+        "reason": "object \"change_model\" is not usable on this instance [stopped at: schema_verification]: \"change_model\": change_model: schema verification — 1 of 3 field(s) missing on chg_model: type",
+        "coverage": [],
+        "ms": 1727
+      },
+      "ITSM-088": {
+        "slot": 88,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 0,
+            "denominator": 0,
+            "pass_pct": null,
+            "complete": true,
+            "variant": "open-ended"
+          },
+          {
+            "numerator": 0,
+            "denominator": 0,
+            "pass_pct": null,
+            "complete": true,
+            "variant": "bounded"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sys_user_delegate",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "cmdb_ci",
+            "status": "limited",
+            "rows": 24,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 3574
+      },
+      "ITSM-089": {
+        "slot": 89,
+        "engine": "record_predicate",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "standard_change_template",
+          "parameters": null
+        },
+        "reason": "object \"standard_change_template\" is not usable on this instance [stopped at: schema_verification]: \"standard_change_template\": standard_change_template: candidate std_change_producer_version exists but no expected fields are defined to verify it against (UNDEFINED) — not confidently identified",
+        "coverage": [],
+        "ms": 361
+      },
+      "ITSM-090": {
+        "slot": 90,
+        "engine": "configuration",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sys_dictionary",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          }
+        ],
+        "ms": 1501
+      },
+      "ITSM-091": {
+        "slot": 91,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "approval_routing",
+          "parameters": null
+        },
+        "reason": "object \"approval_routing\" is not usable on this instance [stopped at: candidate]: \"approval_routing\": approval_routing: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-092": {
+        "slot": 92,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "post_incident_review",
+          "parameters": null
+        },
+        "reason": "object \"post_incident_review\" is not usable on this instance [stopped at: candidate]: \"post_incident_review\": post_incident_review: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-093": {
+        "slot": 93,
+        "engine": "configuration",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "change_calendar",
+          "parameters": null
+        },
+        "reason": "object \"change_calendar\" is not usable on this instance [stopped at: candidate]: \"change_calendar\": change_calendar: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-094": {
+        "slot": 94,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 77,
+            "denominator": 105,
+            "pass_pct": 73.3,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 28,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          }
+        ],
+        "ms": 367
+      },
+      "ITSM-095": {
+        "slot": 95,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 77,
+            "denominator": 77,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 77,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "cmdb_ci",
+            "status": "limited",
+            "rows": 24,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 1500
+      },
+      "ITSM-096": {
+        "slot": 96,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "kpis": [
+          {
+            "numerator": 18,
+            "denominator": 32,
+            "pass_pct": 56.3,
+            "complete": true,
+            "variant": "approved"
+          },
+          {
+            "numerator": 0,
+            "denominator": 1,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": "closed"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 14,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 3650
+      },
+      "ITSM-097": {
+        "slot": 97,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "kpis": [
+          {
+            "numerator": 19,
+            "denominator": 32,
+            "pass_pct": 59.4,
+            "complete": true,
+            "variant": "approved"
+          },
+          {
+            "numerator": 0,
+            "denominator": 1,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": "closed"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 13,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1477
+      },
+      "ITSM-098": {
+        "slot": 98,
+        "engine": "record_predicate",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "risk_bands"
+          ]
+        },
+        "reason": "parameter risk_bands is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Risk bands configurable\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-099": {
+        "slot": 99,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 27,
+            "denominator": 32,
+            "pass_pct": 84.4,
+            "complete": true,
+            "variant": "risk"
+          },
+          {
+            "numerator": 32,
+            "denominator": 32,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": "impact"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 5,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1457
+      },
+      "ITSM-100": {
+        "slot": 100,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "kpis": [
+          {
+            "numerator": 11,
+            "denominator": 32,
+            "pass_pct": 34.4,
+            "complete": true,
+            "variant": "start_date empty"
+          },
+          {
+            "numerator": 11,
+            "denominator": 32,
+            "pass_pct": 34.4,
+            "complete": true,
+            "variant": "end_date empty"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 21,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 21,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1433
+      },
+      "ITSM-101": {
+        "slot": 101,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 67,
+            "denominator": 70,
+            "pass_pct": 95.7,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 89,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "cmdb_ci",
+            "status": "limited",
+            "rows": 24,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 2310
+      },
+      "ITSM-102": {
+        "slot": 102,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "kpis": [
+          {
+            "numerator": 8,
+            "denominator": 32,
+            "pass_pct": 25,
+            "complete": true,
+            "variant": "approved"
+          },
+          {
+            "numerator": 0,
+            "denominator": 1,
+            "pass_pct": 0,
+            "complete": true,
+            "variant": "closed"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 24,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1420
+      },
+      "ITSM-103": {
+        "slot": 103,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 2,
+        "kpis": [
+          {
+            "numerator": 15,
+            "denominator": 16,
+            "pass_pct": 93.8,
+            "complete": true,
+            "variant": "close_code empty"
+          },
+          {
+            "numerator": 15,
+            "denominator": 16,
+            "pass_pct": 93.8,
+            "complete": true,
+            "variant": "close_notes empty"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1828
+      },
+      "ITSM-104": {
+        "slot": 104,
+        "engine": "text_analysis",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "volume_share"
+          ]
+        },
+        "reason": "parameter volume_share is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Volume threshold configurable relative to change volume\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-105": {
+        "slot": 105,
+        "engine": "relationship_graph",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "scope_depth"
+          ]
+        },
+        "reason": "parameter scope_depth is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Scope inference from change type and CI relationship depth\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-106": {
+        "slot": 106,
+        "engine": "temporal_correlation",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "object_classes",
+            "correlation_window"
+          ]
+        },
+        "reason": "parameter object_classes, correlation_window is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Scope to change-controlled object classes; correlation window configurable\")",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-107": {
+        "slot": 107,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 3,
+        "kpis": [
+          {
+            "numerator": 95,
+            "denominator": 105,
+            "pass_pct": 90.5,
+            "complete": null,
+            "variant": "estate"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 10,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 10,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          }
+        ],
+        "ms": 1291
+      },
+      "ITSM-108": {
+        "slot": 108,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 75,
+            "denominator": 77,
+            "pass_pct": 97.4,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 77,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 1195
+      },
+      "ITSM-109": {
+        "slot": 109,
+        "engine": "linkage",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 99,
+            "complete": true
+          },
+          {
+            "table": "sysapproval_approver",
+            "status": "complete",
+            "rows": 73,
+            "complete": true
+          }
+        ],
+        "ms": 4335
+      },
+      "ITSM-110": {
+        "slot": 110,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "approval_routing",
+          "parameters": null
+        },
+        "reason": "object \"approval_routing\" is not usable on this instance [stopped at: candidate]: \"approval_routing\": approval_routing: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-111": {
+        "slot": 111,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 2,
+            "denominator": 2,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": "started early"
+          },
+          {
+            "numerator": 1,
+            "denominator": 2,
+            "pass_pct": 50,
+            "complete": true,
+            "variant": "ended late"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 2,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 2,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 2325
+      },
+      "ITSM-112": {
+        "slot": 112,
+        "engine": "temporal_correlation",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "capability",
+          "step": null,
+          "object": "cmn_schedule",
+          "parameters": null
+        },
+        "reason": "1 schedule(s) could not be expanded: Software Blackout : schedule has no time_zone (floating) — cannot place its spans on the UTC timeline",
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 17,
+            "complete": true
+          },
+          {
+            "table": "cmn_schedule_blackout",
+            "status": "complete",
+            "rows": 2,
+            "complete": true
+          }
+        ],
+        "ms": 3343
+      },
+      "ITSM-113": {
+        "slot": 113,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 7,
+        "kpis": [
+          {
+            "numerator": 2,
+            "denominator": 15,
+            "pass_pct": 13.3,
+            "complete": null,
+            "variant": "estate"
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 13,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 13,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 13,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 13,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 15,
+            "complete": true
+          }
+        ],
+        "ms": 2844
+      },
+      "ITSM-114": {
+        "slot": 114,
+        "engine": "linkage",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "backout_task_type"
+          ]
+        },
+        "reason": "parameter backout_task_type is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Any occurrence\")",
+        "coverage": [],
+        "ms": 1821
+      },
+      "ITSM-115": {
+        "slot": 115,
+        "engine": "temporal_correlation",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "dependency_depth"
+          ]
+        },
+        "reason": "parameter dependency_depth is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Window default 72 hours. CI correlation includes dependent CIs where relationships exist.\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-116": {
+        "slot": 116,
+        "engine": "linkage",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          },
+          {
+            "table": "sysapproval_approver",
+            "status": "complete",
+            "rows": 73,
+            "complete": true
+          }
+        ],
+        "ms": 1604
+      },
+      "ITSM-117": {
+        "slot": 117,
+        "engine": "composite",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "standard_change_template",
+          "parameters": null
+        },
+        "reason": "object \"standard_change_template\" is not usable on this instance [stopped at: schema_verification]: \"standard_change_template\": standard_change_template: schema verification — 1 of 2 field(s) missing on std_change_producer_version: state",
+        "coverage": [],
+        "ms": 713
+      },
+      "ITSM-118": {
+        "slot": 118,
+        "engine": "record_predicate",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "conflict_detection",
+          "parameters": null
+        },
+        "reason": "object \"conflict_detection\" is not usable on this instance [stopped at: schema_verification]: \"conflict_detection\": conflict_detection: candidate conflict exists but no expected fields are defined to verify it against (UNDEFINED) — not confidently identified",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-119": {
+        "slot": 119,
+        "engine": "record_predicate",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 1,
+        "kpis": [
+          {
+            "numerator": 16,
+            "denominator": 105,
+            "pass_pct": 15.2,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 89,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 728
+      },
+      "ITSM-120": {
+        "slot": 120,
+        "engine": "audit_history",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 105,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_audit",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          }
+        ],
+        "ms": 5709
+      },
+      "ITSM-121": {
+        "slot": 121,
+        "engine": "aggregate",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 12,
+            "denominator": 66,
+            "pass_pct": 81.8,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "sysapproval_approver",
+            "status": "complete",
+            "rows": 66,
+            "complete": true
+          }
+        ],
+        "ms": 351
+      },
+      "ITSM-122": {
+        "slot": 122,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "candidate",
+          "object": "post_incident_review",
+          "parameters": null
+        },
+        "reason": "object \"post_incident_review\" is not usable on this instance [stopped at: candidate]: \"post_incident_review\": post_incident_review: no platform table is defined for this object (UNDEFINED) — cannot probe",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-123": {
+        "slot": 123,
+        "engine": "temporal_correlation",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 11,
+            "denominator": 11,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 11,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "cmdb_rel_ci",
+            "status": "complete",
+            "rows": null,
+            "complete": true
+          }
+        ],
+        "ms": 5370
+      },
+      "ITSM-124": {
+        "slot": 124,
+        "engine": "composite",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 0,
+            "denominator": null,
+            "pass_pct": null,
+            "complete": null,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 11,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "cmdb_rel_ci",
+            "status": "complete",
+            "rows": null,
+            "complete": true
+          }
+        ],
+        "ms": 2
+      },
+      "ITSM-125": {
+        "slot": 125,
+        "engine": "composite",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 11,
+            "complete": true
+          },
+          {
+            "table": "change_request",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "cmdb_rel_ci",
+            "status": "complete",
+            "rows": null,
+            "complete": true
+          }
+        ],
+        "ms": 1
+      },
+      "ITSM-126": {
+        "slot": 126,
+        "engine": "relationship_graph",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "depth",
+            "critical_values"
+          ]
+        },
+        "reason": "parameter depth, critical_values is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Traversal depth configurable\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-127": {
+        "slot": 127,
+        "engine": "temporal_correlation",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "freeze_schedule_type"
+          ]
+        },
+        "reason": "parameter freeze_schedule_type is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Requires freeze periods to be defined\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-128": {
+        "slot": 128,
+        "engine": "linkage",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "close_codes"
+          ]
+        },
+        "reason": "parameter close_codes is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Close code set configurable\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-129": {
+        "slot": 129,
+        "engine": "composite",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "problem_reference_threshold"
+          ]
+        },
+        "reason": "parameter problem_reference_threshold is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Per-process thresholds; fires only when all three breach\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-130": {
+        "slot": 130,
+        "engine": "relationship_graph",
+        "status": "evaluated",
+        "verdict": "fail",
+        "findings": 16,
+        "kpis": [
+          {
+            "numerator": 10,
+            "denominator": 26,
+            "pass_pct": 38.5,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 26,
+            "complete": true
+          },
+          {
+            "table": "cmdb_rel_ci",
+            "status": "complete",
+            "rows": null,
+            "complete": true
+          }
+        ],
+        "ms": 3664
+      },
+      "ITSM-131": {
+        "slot": 131,
+        "engine": "relationship_graph",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "depth_threshold"
+          ]
+        },
+        "reason": "parameter depth_threshold is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Depth threshold configurable\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-132": {
+        "slot": 132,
+        "engine": "composite",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_dependency",
+          "step": null,
+          "object": null,
+          "parameters": null
+        },
+        "reason": "UNDEFINED: the ITOM cause (ITOM-147) that a CI's staleness must trace to — the ITOM catalogue is not in scope — not in the workbook and not in DECISIONS.md; reported for explicit resolution",
+        "coverage": [],
+        "ms": 1
+      },
+      "ITSM-133": {
+        "slot": 133,
+        "engine": "linkage",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "volume_threshold"
+          ]
+        },
+        "reason": "parameter volume_threshold is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Volume threshold relative to the service population\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-134": {
+        "slot": 134,
+        "engine": "composite",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 50,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "problem",
+            "status": "complete",
+            "rows": 16,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          }
+        ],
+        "ms": 1
+      },
+      "ITSM-135": {
+        "slot": 135,
+        "engine": "aggregate",
+        "status": "unconfigured",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "unconfigured_parameter",
+          "step": null,
+          "object": null,
+          "parameters": [
+            "minimum_volume_per_ci",
+            "dominance_share"
+          ]
+        },
+        "reason": "parameter minimum_volume_per_ci, dominance_share is UNCONFIGURED — the workbook gives no default and no instance override is set (workbook: \"Dominance threshold configurable; requires minimum incident volume per CI\")",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-136": {
+        "slot": 136,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "inconclusive",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 1,
+            "denominator": 1,
+            "pass_pct": 100,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "incident",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "cmdb_ci",
+            "status": "limited",
+            "rows": 24,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 2141
+      },
+      "ITSM-137": {
+        "slot": 137,
+        "engine": "linkage",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_dependency",
+          "step": null,
+          "object": null,
+          "parameters": null
+        },
+        "reason": "UNDEFINED: how an SLA definition is scoped to a service (parsing contract_sla.start_condition for a service reference) is not defined — not in the workbook and not in DECISIONS.md; reported for explicit resolution",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-138": {
+        "slot": 138,
+        "engine": "composite",
+        "status": "unavailable",
+        "verdict": null,
+        "findings": 0,
+        "kpis": [],
+        "blocker": {
+          "kind": "undefined_object",
+          "step": "schema_verification",
+          "object": "conflict_detection",
+          "parameters": null
+        },
+        "reason": "object \"conflict_detection\" is not usable on this instance [stopped at: schema_verification]: \"conflict_detection\": conflict_detection: candidate conflict exists but no expected fields are defined to verify it against (UNDEFINED) — not confidently identified",
+        "coverage": [],
+        "ms": 0
+      },
+      "ITSM-139": {
+        "slot": 139,
+        "engine": "reference_integrity",
+        "status": "evaluated",
+        "verdict": "pass",
+        "findings": 0,
+        "kpis": [
+          {
+            "numerator": 0,
+            "denominator": 0,
+            "pass_pct": null,
+            "complete": true,
+            "variant": null
+          }
+        ],
+        "blocker": null,
+        "reason": null,
+        "coverage": [
+          {
+            "table": "m2m_kb_task",
+            "status": "complete",
+            "rows": 0,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 1,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          },
+          {
+            "table": "sys_user_grmember",
+            "status": "complete",
+            "rows": 22,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 8,
+            "complete": true
+          },
+          {
+            "table": "cmdb_ci",
+            "status": "limited",
+            "rows": 24,
+            "complete": true
+          },
+          {
+            "table": "sys_user",
+            "status": "complete",
+            "rows": 3,
+            "complete": true
+          }
+        ],
+        "ms": 3740
+      }
+    }
+  },
+  "total_ms": 216083
+}

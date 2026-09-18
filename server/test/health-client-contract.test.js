@@ -124,6 +124,30 @@ test('every domain the rules can emit is nameable by the page', () => {
 
 /* ── It cannot write ───────────────────────────────────────────────────── */
 
+test('the ITSM section (components/HealthItsm.jsx) reaches only Health Assist endpoints, and reads the manifest by the names the server writes', () => {
+  const ITSM = read('components/HealthItsm.jsx');
+  const calls = [...ITSM.matchAll(/api\.(?:get|post|patch|put|del)\(\s*[`']([^`'$]*)/g)].map((m) => m[1]).filter(Boolean);
+  assert.ok(calls.length >= 3, 'the scan found too few calls — the pattern is wrong, not the component');
+  assert.deepEqual(calls.filter((c) => !c.startsWith('/health/itsm/parameters')), [], 'the ITSM section calls something other than its parameter endpoints');
+  assert.match(PAGE, /from '..\/components\/HealthItsm\.jsx'/, 'the page no longer renders the ITSM section');
+  /* the names it reads are the names the server writes */
+  const INDEX = fs.readFileSync(path.resolve(__dirname, '../src/health/index.js'), 'utf8');
+  const INTEGRATION = fs.readFileSync(path.resolve(__dirname, '../src/health/itsm/integration.js'), 'utf8');
+  const LINKS = fs.readFileSync(path.resolve(__dirname, '../src/health/cross-domain/links.js'), 'utf8');
+  for (const name of ['measure_history', 'rules: itsm.normalized.rules', 'aggregation: itsm.normalized.aggregation']) assert.ok(INDEX.includes(name), `index.js no longer writes ${name}`);
+  assert.match(INDEX, /^\s+links,$/m, 'the manifest no longer carries links');
+  for (const name of ['population_empty', 'undetermined', 'unresolved_parameters', 'dependencies', 'passes_determinate_when_empty', 'occurrences']) {
+    assert.ok(INTEGRATION.includes(name), `integration.js no longer writes ${name}`);
+    assert.ok(ITSM.includes(name.replace('population_empty', 'undetermined')), `HealthItsm.jsx does not read ${name}`);
+  }
+  for (const name of ['records_on_joined', 'source_only', 'target_only', 'rows_truncated', 'target_finding']) {
+    assert.ok(LINKS.includes(name), `links.js no longer writes ${name}`);
+    assert.ok(ITSM.includes(name), `HealthItsm.jsx does not read ${name}`);
+  }
+  /* no verdict for a report link, and nothing in the browser turns a non-evaluated rule into a pass */
+  assert.match(ITSM, /if \(r\.status === 'evaluated'\) return OUTCOME\[r\.verdict\]/);
+});
+
 test('the page can only reach Health Assist endpoints — never the instance', () => {
   /*
    * THE PROPERTY THIS MODULE IS SOLD ON, restated against what it is really
@@ -358,6 +382,18 @@ test('the All view shows each scope on its own and never averages them', () => {
   assert.match(PAGE, /function ScopeTiles/);
   assert.equal(/reduce\([^)]*score[^)]*\)\s*\/\s*/.test(PAGE), false, 'something averages the scope scores');
   assert.match(PAGE, /rather than averaged/);
+});
+
+test('the All view shows whether to believe the CMDB score, not only the number', () => {
+  /*
+   * REGRESSION, dev424910 Sep 2026. The All view showed "77% Mostly healthy" for
+   * CMDB with the trust gate open on seven blockers: the tile took its word from
+   * the number alone, and the trust variants were wired to the CMDB tab only.
+   */
+  assert.match(PAGE, /const untrusted = Boolean\(sum\?\.gate && !sum\.gate\.trustworthy/, 'a scope tile words its score without the gate');
+  assert.match(PAGE, /untrusted \? sum\.gate\.label/, 'an untrusted tile does not say why');
+  const allBranch = PAGE.slice(PAGE.indexOf("{scope === 'all' ? ("), PAGE.indexOf('<div className="card hs-scorecard">'));
+  assert.match(allBranch, /<TrustVariants composite=\{cmdbQ\.composite\} \/>/, 'the All view does not show the trust variants');
 });
 
 test('switching scope clears the area AND rule filters so a scope is never filtered to another scope’s', () => {

@@ -1,0 +1,39 @@
+{
+  "version": "1.0.0",
+  "note": "Cross-domain links — Phase 6. Each entry is a link the rule catalogues already state; nothing here is inferred. A link evaluates over the results of ONE scan, never changes either rule's verdict, severity, priority or any score, and reports only what both rules judged. See rules/cross-domain/PHASE6-DISCOVERY.md.",
+  "links": [
+    {
+      "id": "LINK-ITSM-130-CMDB-058",
+      "title": "Relationship-less CIs that incidents reference, ranked by incident volume",
+      "relationship": "joins",
+      "effect": "report",
+      "source": {
+        "domain": "ITSM",
+        "module": "itsm",
+        "rule": "ITSM-130",
+        "answers": "graph_answers_by_ci",
+        "unit": "relationship-less CIs referenced by incidents"
+      },
+      "target": {
+        "domain": "CMDB",
+        "module": "cmdb",
+        "rule": "CMDB-058",
+        "answers": "findings_by_target",
+        "unit": "CMDB-058 findings"
+      },
+      "join": {
+        "entity": "cmdb_ci",
+        "source_field": "incident.cmdb_ci",
+        "target_field": "cmdb_ci.sys_id"
+      },
+      "rank_by": "records_desc",
+      "max_rows": 200,
+      "specification": [
+        { "source": "rules/itsm/catalogue.json ITSM-130 cross_domain_link", "text": "Joins CMDB-058; prioritises relationship remediation by incident volume" },
+        { "source": "rules/itsm/catalogue.json ITSM-130 evidence_to_show", "text": "The ratio, the CIs involved ranked by incident volume, their edge counts, and the services they should connect to." },
+        { "source": "rules/itsm/dependency-map.md §4", "text": "ITSM-130, ITSM-131, ITSM-138 | CMDB-058 (CIs with no relationships) | the existing CMDB-UNRELATED / relationship rules" },
+        { "source": "catalogue/cmdb.json CMDB-058", "text": "Principal class CI with no upstream and no downstream edge — Direct cause of impact analysis returning empty" }
+      ]
+    }
+  ]
+}

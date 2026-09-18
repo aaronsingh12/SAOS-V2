@@ -1,4 +1,4 @@
-import { parseDate } from './rules.js';
+import { parseDate } from './time.js';
 
 /**
  * GROUP 1 — HEALTH CONFIGURATION META. The trust gate.
