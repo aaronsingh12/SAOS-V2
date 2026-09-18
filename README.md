@@ -138,11 +138,10 @@ plain-language spec
         ├─► STATIC GATES          every check runs together and every diagnostic comes
         │                          back as one message, BEFORE anything is written to
         │                          src/ and before the SDK is spawned.
-        │                          MODE: `NOWFORGE_FLOW_GATES=advisory` (the default while
-        │                          the authoring path is being proven end to end) runs every
-        │                          check and blocks on none of OURS — findings come back on
-        │                          `gateAdvisories`. `=enforce` makes a finding reject the
-        │                          candidate. `$id` identity blocks in BOTH modes: it is the
+        │                          MODE: default is enforced: a finding rejects the candidate.
+        │                          `NOWFORGE_FLOW_GATES=advisory` is only for local diagnostics;
+        │                          it runs every check and blocks on none of OURS, returning
+        │                          findings on `gateAdvisories`. `$id` identity blocks in BOTH modes: it is the
         │                          SDK's rule, not ours, and a duplicate key aborts the build.
         │     promised literals · blueprint fidelity · artifact type + subflow contract ·
         │     subflow reuse · trigger strategy · $id identity · and the FLOW DESIGN read —

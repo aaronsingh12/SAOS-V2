@@ -90,6 +90,12 @@ const REGISTRY = {
     evidence: ['classifyExecution', 'sentinel'],
     dispatcherOnly: true,
   },
+  'servicenow/sdk-setup.js': {
+    writes: 'sys_properties sn_appauthor.all_company_keys through the one-shot setup script',
+    readBack: 'in-script and cross-transport: the script re-reads sys_properties by sys_id and confirms the required '
+      + 'company key is present, then Node calls companyKeyStatus() over REST before treating trust as ready.',
+    evidence: ['report.trusted', 'companyKeyStatus(companyKey)', 'ensureCompanyKeyWithServerScript'],
+  },
 };
 
 /** Reads only — no write, so nothing to read back. Listed so the sweep is complete. */

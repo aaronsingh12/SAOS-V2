@@ -287,8 +287,9 @@ export function stepsForTask(taskId) {
 
 export function tasksForSession(sessionId, { limit = 100 } = {}) {
   try {
-    return getDb().prepare('SELECT * FROM agent_tasks WHERE session_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(sessionId, limit).map(shapeTask);
+    const { instance } = currentActor();
+    return getDb().prepare('SELECT * FROM agent_tasks WHERE session_id = ? AND instance = ? ORDER BY created_at DESC LIMIT ?')
+      .all(sessionId, instance, limit).map(shapeTask);
   } catch (err) {
     log.error('tasks', `could not read the tasks of session ${sessionId}: ${err.message}`);
     return [];
@@ -305,10 +306,11 @@ export function tasksForSession(sessionId, { limit = 100 } = {}) {
  */
 export function unfinishedTasks({ limit = 100 } = {}) {
   try {
+    const { instance } = currentActor();
     return getDb().prepare(
-      `SELECT * FROM agent_tasks WHERE state IN ('planned', 'running', 'awaiting_approval', 'blocked')
+      `SELECT * FROM agent_tasks WHERE instance = ? AND state IN ('planned', 'running', 'awaiting_approval', 'blocked')
        ORDER BY created_at DESC LIMIT ?`
-    ).all(limit).map(shapeTask);
+    ).all(instance, limit).map(shapeTask);
   } catch (err) {
     log.error('tasks', `could not read unfinished tasks: ${err.message}`);
     return [];

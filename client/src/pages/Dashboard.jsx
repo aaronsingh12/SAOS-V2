@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, sse } from '../api.js';
 import { confirmDestructive, CONSEQUENCE } from '../components/confirm.js';
 import { toast } from '../components/toast.js';
 import { EmptyState } from '../components/states.jsx';
@@ -15,6 +15,9 @@ export default function Dashboard() {
   const [test, setTest] = useState(null);
   const [error, setError] = useState('');
   const [stats, setStats] = useState(null);
+  const [sdk, setSdk] = useState(null);
+  const [sdkBusy, setSdkBusy] = useState(false);
+  const [sdkEvents, setSdkEvents] = useState([]);
 
   const loadStats = () => api.get('/incidents/stats').then(setStats).catch(() => setStats(null));
 
@@ -22,7 +25,10 @@ export default function Dashboard() {
     api.get('/system/settings').then((s) => {
       setSaved(s);
       setConn((c) => ({ ...c, instanceUrl: s.connection.instanceUrl, authType: s.connection.authType, username: s.connection.username, clientId: s.connection.clientId }));
-      if (s.connection.instanceUrl) loadStats();
+      if (s.connection.instanceUrl) {
+        loadStats();
+        loadSdkStatus();
+      }
     }).catch(() => {});
   }, []);
 
@@ -33,11 +39,23 @@ export default function Dashboard() {
       setSaved(s);
       setConn((c) => ({ ...c, password: '', clientSecret: '' })); // stored; stop holding it in the form
       setTest(null);
+      setSdk(null);
+      setSdkEvents([]);
       toast.success('Connection saved. Test it to confirm the credentials work.');
       refreshHealth();   // the topbar pill and every RequiresInstance gate read this
       refreshBinding();  // scope + sync are per-binding; a new instance must not wear the old verdict
+      loadSdkStatus(true);
     } catch (e) { setError(e.message); toast.error(e.message); }
     finally { setSaving(false); }
+  };
+
+  const loadSdkStatus = async (deep = false) => {
+    try {
+      const q = deep ? '?deep=true&force=true' : '';
+      setSdk(await api.get(`/system/sdk/setup${q}`));
+    } catch {
+      setSdk(null);
+    }
   };
 
   const runTest = async () => {
@@ -46,8 +64,43 @@ export default function Dashboard() {
       const r = await api.post('/system/connection/test');
       setTest(r);
       loadStats();
+      loadSdkStatus(true);
     } catch (e) { setError(e.message); }
     finally { setTesting(false); }
+  };
+
+  const runSdkSetup = async () => {
+    setSdkBusy(true); setError(''); setSdkEvents([]);
+    let setupError = null;
+    try {
+      await sse('/system/sdk/setup', {}, (evt) => {
+        if (evt.type === 'done') {
+          setSdk(evt.result?.status || null);
+          toast.success('SDK setup is ready.');
+        } else if (evt.type === 'error') {
+          setSdk((prev) => ({
+            ...(prev || {}),
+            ...(evt.status || {}),
+            trust: evt.trust || evt.status?.trust || prev?.trust,
+            manualAction: evt.manualAction || evt.status?.manualAction || prev?.manualAction,
+          }));
+          setupError = new Error(evt.message || 'SDK setup failed.');
+          setError(setupError.message);
+          toast.error(setupError.message);
+        } else {
+          setSdkEvents((items) => [...items.slice(-5), evt]);
+        }
+      });
+      if (setupError) return;
+      loadSdkStatus(true);
+      refreshHealth();
+      refreshBinding();
+    } catch (e) {
+      setError(e.message);
+      toast.error(e.message);
+    } finally {
+      setSdkBusy(false);
+    }
   };
 
   const disconnect = async () => {
@@ -64,6 +117,8 @@ export default function Dashboard() {
       setSaved(s);
       setConn({ instanceUrl: '', authType: 'basic', username: '', password: '', clientId: '', clientSecret: '' });
       setStats(null);
+      setSdk(null);
+      setSdkEvents([]);
       toast.info('Disconnected. The stored credentials are cleared.');
       refreshHealth();
       refreshBinding();
@@ -171,6 +226,16 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {saved?.connection?.instanceUrl && (
+        <SdkSetupCard
+          sdk={sdk}
+          busy={sdkBusy}
+          events={sdkEvents}
+          onRefresh={() => loadSdkStatus(true)}
+          onSetup={runSdkSetup}
+        />
+      )}
+
       <div className="card">
         <div className="card-title">What this platform does</div>
         <div className="grid3">
@@ -188,6 +253,100 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function SdkSetupCard({ sdk, busy, events, onRefresh, onSetup }) {
+  const cap = sdk?.capability;
+  const ready = Boolean(sdk?.ok);
+  const auth = cap?.auth?.verified || 'unknown';
+  const cli = cap?.cli?.version || (cap?.cli?.present ? 'installed' : 'missing');
+  const trust = sdk?.trust;
+  const manualAction = sdk?.manualAction || trust?.manualAction;
+  const app = sdk?.app;
+  const last = events[events.length - 1];
+
+  return (
+    <div className="card">
+      <div className="spread" style={{ gap: 12, alignItems: 'flex-start' }}>
+        <div>
+          <div className="card-title" style={{ marginBottom: 6 }}>SDK auto setup</div>
+          <div className="row" style={{ gap: 8 }}>
+            <span className={`badge ${ready ? 'green' : 'amber'}`}>{ready ? 'ready' : 'needs setup'}</span>
+            {sdk?.bound?.host && <span className="badge blue mono">{sdk.bound.host}</span>}
+          </div>
+        </div>
+        <div className="row" style={{ marginLeft: 'auto' }}>
+          <button className="btn" onClick={onRefresh} disabled={busy}>{busy ? 'Working...' : 'Recheck'}</button>
+          <button className="btn primary" onClick={onSetup} aria-busy={busy} disabled={busy}>
+            {busy ? 'Setting up...' : ready ? 'Run setup again' : 'Auto setup'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid3" style={{ marginTop: 14 }}>
+        <div className="stat"><b>{cli}</b><span>SDK CLI</span></div>
+        <div className="stat"><b>{auth}</b><span>credentials</span></div>
+        <div className="stat"><b>{trust?.trusted ? 'trusted' : 'not ready'}</b><span>company key {sdk?.companyKey || ''}</span></div>
+        <div className="stat"><b>{app?.installed ? 'installed' : 'missing'}</b><span>{sdk?.identity?.name || 'application'}</span></div>
+        <div className="stat"><b>{cap?.workspace?.sources?.length ?? '-'}</b><span>managed sources</span></div>
+        <div className="stat"><b>{cap?.lastInstall?.ok ? 'ok' : cap?.lastInstall ? 'check' : '-'}</b><span>last install</span></div>
+      </div>
+
+      {last && (
+        <div className="note" style={{ marginTop: 12 }}>
+          <b>{last.type.replaceAll('_', ' ')}</b>
+          {last.message ? <span> - {last.message}</span> : null}
+          {last.diagnostics ? (
+            <pre style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+              {last.diagnostics}
+            </pre>
+          ) : null}
+        </div>
+      )}
+
+      {!ready && manualAction && (
+        <div className="note warn" style={{ marginTop: 12 }}>
+          <b>ServiceNow admin action required.</b>
+          {manualAction.action && <div style={{ marginTop: 6 }}>{manualAction.action}</div>}
+          {manualAction.addValue && manualAction.property && (
+            <div style={{ marginTop: 6 }}>
+              Add <span className="mono">{manualAction.addValue}</span> to{' '}
+              <span className="mono">{manualAction.property}</span>.
+            </div>
+          )}
+          {manualAction.scope && (
+            <div style={{ marginTop: 6 }}>
+              Scope: <span className="mono">{manualAction.scope}</span>
+            </div>
+          )}
+          {manualAction.targetValue && (
+            <div style={{ marginTop: 6 }}>
+              Target value: <span className="mono">{manualAction.targetValue}</span>
+            </div>
+          )}
+          {manualAction.steps?.length > 0 && (
+            <ol style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 12.5 }}>
+              {manualAction.steps.map((step, i) => <li key={i}>{step}</li>)}
+            </ol>
+          )}
+          {manualAction.url && (
+            <a className="btn" style={{ marginTop: 10 }} href={manualAction.url} target="_blank" rel="noreferrer">
+              Open property
+            </a>
+          )}
+        </div>
+      )}
+
+      {!ready && cap?.fixes?.length > 0 && (
+        <div className="note warn" style={{ marginTop: 12 }}>
+          <b>Setup checks found something to fix.</b>
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12.5 }}>
+            {cap.fixes.slice(0, 3).map((f, i) => <li key={i}>{f.problem}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

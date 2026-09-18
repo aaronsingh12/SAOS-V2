@@ -1,0 +1,68 @@
+{
+  "setup": {
+    "table": "incident",
+    "payload": {
+      "short_description": "Verification incident",
+      "impact": "1",
+      "urgency": "1"
+    }
+  },
+  "wait": {
+    "flowName": "Incident Priority Test Flow",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "state",
+      "expect": {
+        "value": "2"
+      },
+      "note": "sets state to In Progress (state=2) on the incident when priority is 1"
+    },
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "assignment_group",
+      "expect": {
+        "value": "5f721d93c0a8010e015533746de18bf9"
+      },
+      "note": "sets assignment_group to 5f721d93c0a8010e015533746de18bf9 on the incident when priority is 1"
+    },
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "value": "Critical incident automatically routed by Flow Designer."
+      },
+      "note": "adds work note \"Critical incident automatically routed by Flow Designer.\" when priority is 1"
+    },
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "value": "High impact and urgency detected."
+      },
+      "note": "adds work note \"High impact and urgency detected.\" when impact and urgency are both 1"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      }
+    }
+  ]
+}

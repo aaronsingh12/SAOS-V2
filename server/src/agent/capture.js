@@ -154,7 +154,7 @@ export async function captureAfterTool({
  * builder produced, or a change made by an SDK install that reports its own
  * artifacts and not the twelve cross-scope privileges beside them.
  */
-export async function reconcileTurn({ sessionId, sessionTitle, since }) {
+export async function reconcileTurn({ sessionId, sessionTitle, since, taskId = null }) {
   if (!isCaptureOn(sessionId) || !since) return null;
   try {
     const swept = await sweep({ sessionId, sessionTitle, since, label: 'turn-reconcile' });

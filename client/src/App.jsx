@@ -139,6 +139,7 @@ function Shell() {
                 banner instead. */}
             <Routes>
               <Route path="/" element={<Dashboard />} />
+              <Route path="/agent" element={null} />
               <Route path="/incidents" element={<RequiresInstance what="Incident Management"><Incidents /></RequiresInstance>} />
               <Route path="/catalog" element={<RequiresInstance what="Catalog Management"><Catalog /></RequiresInstance>} />
               <Route path="/flows" element={<RequiresInstance what="Flow Designer"><Flows /></RequiresInstance>} />

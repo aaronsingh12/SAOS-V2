@@ -16,6 +16,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { _setDbForTests, migrate, getDb } from '../src/memory/db.js';
+import { _setSettingsForTests, getSettings } from '../src/config/store.js';
 
 /* ------------------------------------------------------------------ *
  * A scratch database, built through the REAL migrations.
@@ -26,13 +27,14 @@ import { _setDbForTests, migrate, getDb } from '../src/memory/db.js';
 
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nowhelpassist-mem-'));
 const scratchFile = path.join(scratchDir, 'test.db');
+const BASE_CONNECTION = { ...getSettings().connection };
 
 _setDbForTests(migrate(new DatabaseSync(scratchFile)));
 
 const {
   createSession, getSession, listSessions, renameSession, deleteSession,
   appendMessage, loadHistory, loadMessages, recordToolEvent, loadToolEvents,
-  deriveTitle, replaceSpanWithDigest, loadDigests,
+  deriveTitle, replaceSpanWithDigest, loadDigests, sessionBelongsToCurrentInstance,
 } = await import('../src/memory/sessions.js');
 
 const { estimateTokens, compactIfNeeded, buildDigestNote, DEFAULT_HISTORY_BUDGET } =
@@ -41,7 +43,7 @@ const { estimateTokens, compactIfNeeded, buildDigestNote, DEFAULT_HISTORY_BUDGET
 const { recordFact, listFacts, factBlock, seedLedger, rememberFromChat, recordVerificationFailure, recordCalculatedFields, FACT_BLOCK_LIMIT } =
   await import('../src/memory/facts.js');
 
-const { chunkText, indexMessage, cosine } = await import('../src/memory/recall.js');
+const { chunkText, indexMessage, cosine, searchSessions } = await import('../src/memory/recall.js');
 
 test.after(() => {
   try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -510,6 +512,31 @@ test('A-5: a question made only of stopwords still produces a query rather than 
   const { toFtsQuery } = await import('../src/memory/recall.js');
   const q = toFtsQuery('what did we do');
   assert.ok(q && q.includes('"what"'), 'falls back to the raw terms rather than returning null');
+});
+
+test('instance switch: chat rail and session search hide the previous instance', async () => {
+  try {
+    _setSettingsForTests({ connection: { instanceUrl: 'https://alpha.service-now.com', username: 'admin' } });
+    createSession({ id: 'inst-alpha', title: 'Alpha only' });
+    const alphaSeq = appendMessage('inst-alpha', { role: 'user', text: 'alpha-only deployment notes' });
+    indexMessage('inst-alpha', alphaSeq, 'user', 'alpha-only deployment notes');
+
+    _setSettingsForTests({ connection: { instanceUrl: 'https://beta.service-now.com', username: 'admin' } });
+    createSession({ id: 'inst-beta', title: 'Beta only' });
+    const betaSeq = appendMessage('inst-beta', { role: 'user', text: 'beta-only deployment notes' });
+    indexMessage('inst-beta', betaSeq, 'user', 'beta-only deployment notes');
+
+    const visible = listSessions({ limit: 20 }).map((s) => s.id);
+    assert.ok(visible.includes('inst-beta'), 'current instance chat is visible');
+    assert.ok(!visible.includes('inst-alpha'), 'previous instance chat leaked into the rail');
+    assert.equal(sessionBelongsToCurrentInstance('inst-alpha'), false);
+
+    const hits = await searchSessions('deployment notes');
+    assert.ok(hits.sessions.some((s) => s.id === 'inst-beta'), 'current instance search hit is visible');
+    assert.ok(!hits.sessions.some((s) => s.id === 'inst-alpha'), 'previous instance search hit leaked');
+  } finally {
+    _setSettingsForTests({ connection: BASE_CONNECTION });
+  }
 });
 
 test('A-3: a digest cut off mid-generation is refused, not silently accepted', async () => {

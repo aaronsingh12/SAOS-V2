@@ -75,19 +75,20 @@ const CHEATSHEET = path.join(REPO_ROOT, 'docs/fluent-flow-cheatsheet.md');
  *   trades a one-second diagnostic for a multi-minute build failure naming a
  *   sys_id nobody wrote. It blocks in every mode.
  *
- * 'advisory' (default while the SDK authoring path is being proven end to end)
- *   every check still RUNS, every diagnostic is still emitted and returned on
- *   `gateAdvisories`, and none of ours stops the candidate.
- * 'enforce'  a local finding rejects the candidate and spends an attempt.
+ * 'advisory' every check still RUNS, every diagnostic is still emitted and
+ *   returned on `gateAdvisories`, and none of ours stops the candidate.
+ * 'enforce' (default) a local finding rejects the candidate and spends an
+ *   attempt. This is the production mode: source with literal/design findings
+ *   must not reach an instance.
  *
- * Set `NOWFORGE_FLOW_GATES=enforce` to restore enforcement without touching a
- * line of the checks - nothing here deletes or weakens a rule, and every test
- * that pins gate behaviour calls the linters directly, so they stay pinned.
+ * Set `NOWFORGE_FLOW_GATES=advisory` only for local diagnostics. Nothing here
+ * deletes or weakens a rule, and every test that pins gate behaviour calls the
+ * linters directly, so they stay pinned.
  */
 export const FLOW_GATE_MODES = Object.freeze(['advisory', 'enforce']);
 export function flowGateMode() {
   const raw = String(process.env.NOWFORGE_FLOW_GATES ?? '').trim().toLowerCase();
-  return FLOW_GATE_MODES.includes(raw) ? raw : 'advisory';
+  return FLOW_GATE_MODES.includes(raw) ? raw : 'enforce';
 }
 
 const MAX_ATTEMPTS = 3;
@@ -143,6 +144,10 @@ const PROBE_TIMEOUT_MS = 120_000;
  * ------------------------------------------------------------------ */
 
 let sdkEntryCache;
+
+export function resetSdkEntryCache() {
+  sdkEntryCache = undefined;
+}
 
 /**
  * Resolve the SDK's JS entry point. On Windows the `now-sdk` binary is a .cmd
@@ -2128,7 +2133,7 @@ export async function generateAndValidate(spec, emit = () => {}, { updates = nul
        * stopped it is recorded against the run so nothing is lost. */
       gateAdvisories.push({ attempt, stages: [...stages], diagnostics: advisories.join('\n') });
       emit({ type: 'gates_advisory', attempt, mode: gateMode, stages: [...stages], errors: advisories });
-      log.warn('fluent', `flow gates are advisory (${gateMode}): ${stages.join('+')} would have rejected attempt ${attempt}`);
+      log.info('fluent', `flow gates are advisory (${gateMode}): ${stages.join('+')} would have rejected attempt ${attempt}`);
     }
     const blocking = [...staticErrors, ...platformErrors];
     if (blocking.length) {
@@ -2530,10 +2535,11 @@ export async function deploy(name, emit = () => {}, { skipFlowActivation = false
    * had been rebound to dev428633, so the one piece of state whose whole
    * purpose is to point at a real thing pointed at the wrong system.
    */
+  const installOk = res.ok || parsed.ok === true;
   writeInstanceState(binding.host, {
     lastInstall: {
       at: new Date().toISOString(),
-      ok: res.ok,
+      ok: installOk,
       activation: parsed.activation,
       activationOutcome: parsed.activationOutcome,
       activationReason: parsed.activationReason,
@@ -2543,7 +2549,7 @@ export async function deploy(name, emit = () => {}, { skipFlowActivation = false
     },
   });
 
-  if (!res.ok) {
+  if (!installOk) {
     return { ok: false, message: 'now-sdk install failed.', diagnostics: extractDiagnostics(res), sdkOutput, ...parsed };
   }
 

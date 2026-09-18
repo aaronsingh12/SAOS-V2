@@ -129,9 +129,12 @@ export function loadBuildEvents(runId) {
 export function auditRows({ session = null, mutatingOnly = false, limit = 500 } = {}) {
   const db = getDb();
   const rows = [];
+  const { instance } = currentActor();
 
   const toolWhere = [];
   const toolArgs = [];
+  if (instance) { toolWhere.push('t.instance = ?'); toolArgs.push(instance); }
+  else toolWhere.push('t.instance IS NULL');
   if (session && session !== 'ui') { toolWhere.push('t.session = ?'); toolArgs.push(session); }
   if (session === 'ui') toolWhere.push('1 = 0');   // UI builds only: no agent rows at all
   // A capture row is not itself a mutation, but it is the record of what
@@ -165,8 +168,13 @@ export function auditRows({ session = null, mutatingOnly = false, limit = 500 } 
   }
 
   if (!session || session === 'ui') {
-    const buildWhere = session === 'ui' ? 'WHERE session IS NULL' : '';
-    for (const r of db.prepare(`SELECT * FROM build_runs ${buildWhere} ORDER BY started DESC LIMIT ?`).all(limit)) {
+    const buildWhere = [];
+    const buildArgs = [];
+    if (instance) { buildWhere.push('instance = ?'); buildArgs.push(instance); }
+    else buildWhere.push('instance IS NULL');
+    if (session === 'ui') buildWhere.push('session IS NULL');
+    const whereSql = buildWhere.length ? `WHERE ${buildWhere.join(' AND ')}` : '';
+    for (const r of db.prepare(`SELECT * FROM build_runs ${whereSql} ORDER BY started DESC LIMIT ?`).all(...buildArgs, limit)) {
       rows.push({
         source: 'build',
         id: r.id,
@@ -197,17 +205,24 @@ export function auditRows({ session = null, mutatingOnly = false, limit = 500 } 
 /** The session filter's options, plus the synthetic "UI, no session" bucket. */
 export function auditSessions() {
   const db = getDb();
+  const { instance } = currentActor();
+  const where = instance ? 'WHERE s.instance = ?' : 'WHERE s.instance IS NULL';
+  const eventInstance = instance ? 'AND t.instance = ?' : 'AND t.instance IS NULL';
+  const args = instance ? [instance, instance, instance] : [];
   const sessions = db
     .prepare(
       `SELECT s.id, s.title, s.updated,
-              (SELECT COUNT(*) FROM tool_events t WHERE t.session = s.id) AS events,
-              (SELECT COUNT(*) FROM tool_events t WHERE t.session = s.id AND t.mutating = 1) AS mutations
+              (SELECT COUNT(*) FROM tool_events t WHERE t.session = s.id ${eventInstance}) AS events,
+              (SELECT COUNT(*) FROM tool_events t WHERE t.session = s.id AND t.mutating = 1 ${eventInstance}) AS mutations
          FROM sessions s
+        ${where}
         ORDER BY s.updated DESC`
     )
-    .all()
+    .all(...args)
     .filter((s) => s.events > 0);
-  const ui = db.prepare('SELECT COUNT(*) AS n FROM build_runs WHERE session IS NULL').get();
+  const ui = instance
+    ? db.prepare('SELECT COUNT(*) AS n FROM build_runs WHERE session IS NULL AND instance = ?').get(instance)
+    : db.prepare('SELECT COUNT(*) AS n FROM build_runs WHERE session IS NULL AND instance IS NULL').get();
   return { sessions, uiBuilds: ui?.n ?? 0 };
 }
 

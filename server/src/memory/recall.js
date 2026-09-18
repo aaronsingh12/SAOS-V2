@@ -273,15 +273,17 @@ export function keywordSearch(query, { limit = 8, sessionId = null } = {}) {
   const fts = toFtsQuery(query);
   if (!fts) return [];
   const db = getDb();
+  const instance = currentInstance();
   const sql = `
     SELECT c.id, c.kind, c.session, c.ref, c.text, c.ts, bm25(chunks_fts) AS score
       FROM chunks_fts
       JOIN chunks c ON c.id = chunks_fts.rowid
      WHERE chunks_fts MATCH ?
+       AND c.instance = ?
        ${sessionId ? 'AND c.session = ?' : ''}
      ORDER BY score
      LIMIT ?`;
-  const args = sessionId ? [fts, sessionId, limit] : [fts, limit];
+  const args = sessionId ? [fts, instance, sessionId, limit] : [fts, instance, limit];
   try {
     // SQLite's bm25() returns a NEGATIVE number, and a better match is MORE
     // negative. Negating it is the whole conversion to higher-is-better.
@@ -300,14 +302,15 @@ export function keywordSearch(query, { limit = 8, sessionId = null } = {}) {
 async function semanticSearch(query, { limit, sessionId }) {
   const db = getDb();
   const model = embedModelName();
+  const instance = currentInstance();
   const [qvec] = await embed([query]);
   const rows = db
     .prepare(
       `SELECT c.id, c.kind, c.session, c.ref, c.text, c.ts, e.vec, e.dim
          FROM embeddings e JOIN chunks c ON c.id = e.chunk
-        WHERE e.model = ? ${sessionId ? 'AND c.session = ?' : ''}`
+        WHERE e.model = ? AND c.instance = ? ${sessionId ? 'AND c.session = ?' : ''}`
     )
-    .all(...(sessionId ? [model, sessionId] : [model]));
+    .all(...(sessionId ? [model, instance, sessionId] : [model, instance]));
 
   const scored = [];
   for (const r of rows) {
@@ -369,7 +372,7 @@ export async function searchSessions(query, { limit = 20 } = {}) {
   }
   const out = [];
   for (const [id, { score, snippet }] of bySession) {
-    const row = db.prepare('SELECT id, title, created, updated FROM sessions WHERE id = ?').get(id);
+    const row = db.prepare('SELECT id, title, created, updated FROM sessions WHERE id = ? AND instance = ?').get(id, currentInstance());
     if (row) out.push({ ...row, score, snippet });
   }
   out.sort((a, b) => b.score - a.score);

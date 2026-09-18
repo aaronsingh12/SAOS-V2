@@ -234,10 +234,9 @@ relax.
 
 **Ours (local judgements about generated source):** promised literals, blueprint fidelity,
 artifact type + subflow contract, subflow reuse, trigger strategy, flow design. These are
-now **advisory by default** (`NOWFORGE_FLOW_GATES=advisory`). Every check still runs, every
-diagnostic is still emitted and returned on `gateAdvisories`, and none of them stops a
-candidate reaching the instance. `NOWFORGE_FLOW_GATES=enforce` restores rejection without
-editing a single check — nothing was deleted or weakened.
+now **enforced by default**. Every check still runs, every diagnostic is still emitted,
+and bad source is rejected before it reaches the instance. `NOWFORGE_FLOW_GATES=advisory`
+is only for local diagnostics.
 
 **The platform's (`$id` identity):** stays blocking in both modes, and this is not
 timidity. `keys.ts` is a flat, project-wide map; a duplicate key makes `now-sdk build`
@@ -311,7 +310,7 @@ recorded, and nothing ever replayed it on a flow deploy. Fixed: both paths now c
 |---|---|
 | `src/servicenow/sdk-catalogue.js` | **new.** Parses the installed SDK's generated built-ins into the authoritative trigger/action catalogue: `$id`, name, inputs with `mandatory`, outputs with exact casing. Returns `{available:false, reason}` rather than a guess when the SDK is absent |
 | `src/servicenow/flow-design.js` | now asks the SDK catalogue first and falls back to the documented table, saying which it used. Fixes two false "required" rules that would have rejected correct source |
-| `src/servicenow/fluent.js` | gate mode (`flowGateMode()`, advisory by default, `gateAdvisories` on the result); local vs platform gate separation; `resolveManagedArtifact()` extracted; `runPostInstallHooks()` extracted and **called from `deploy()`**; the SDK inventory added to the codegen prompt |
+| `src/servicenow/fluent.js` | gate mode (`flowGateMode()`, enforced by default, optional `gateAdvisories` in advisory mode); local vs platform gate separation; `resolveManagedArtifact()` extracted; `runPostInstallHooks()` extracted and **called from `deploy()`**; the SDK inventory added to the codegen prompt |
 | `scripts/flow-readback.mjs` | **new.** Reads a flow/subflow back from the platform's own tables — triggers, actions, logic, subflow calls, declared inputs/outputs, published proof — decoding all three blob encodings and the composite parallel-branch order |
 | `scripts/flow-e2e-matrix.mjs` | **new.** The 70-check matrix comparing requested design against live records |
 | `fluent-workspace/src/fluent/flows/e2e-0*.now.ts` | **new.** Seven hand-authored matrix artifacts, all deployed |

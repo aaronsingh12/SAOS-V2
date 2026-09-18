@@ -34,6 +34,7 @@ const SESSION_KEY = 'nowhelpassist.sessionId';
 // Read once, for anyone who had a chat open across the rename. Cleared on the
 // first write, so this is not a key the app keeps two of.
 const LEGACY_SESSION_KEY = 'nowforge.sessionId';
+const scopedSessionKey = (instanceUrl) => `${SESSION_KEY}:${instanceUrl || 'unbound'}`;
 
 let nextId = 1;
 const uid = () => `m${nextId++}`;
@@ -120,7 +121,7 @@ export default function AgentChat() {
   const [searchHits, setSearchHits] = useState(null);
   const [memory, setMemory] = useState(null);
 
-  const { connected } = useHealth();
+  const { connected, instanceUrl } = useHealth();
   const msgsRef = useRef(null);
   /*
    * Phase 0 — the running turn's controller, and nothing else.
@@ -190,6 +191,7 @@ export default function AgentChat() {
    * report whatever it held when the turn STARTED, which is always zero.
    */
   const activityRef = useRef([]);
+  const storedInstanceRef = useRef(instanceUrl);
 
   /**
    * One frame -> at most one timeline row (§7, §8).
@@ -296,9 +298,35 @@ export default function AgentChat() {
   }, []);
 
   useEffect(() => {
+    if (storedInstanceRef.current !== instanceUrl) {
+      storedInstanceRef.current = instanceUrl;
+      return;
+    }
     localStorage.setItem(SESSION_KEY, sessionId);
+    localStorage.setItem(scopedSessionKey(instanceUrl), sessionId);
     localStorage.removeItem(LEGACY_SESSION_KEY);
-  }, [sessionId]);
+  }, [sessionId, instanceUrl]);
+
+  useEffect(() => {
+    if (running) return;
+    const key = scopedSessionKey(instanceUrl);
+    const next = params.get('session') || localStorage.getItem(key) || crypto.randomUUID();
+    if (next === sessionId) return;
+    setSessionId(next);
+    setMessages([]);
+    setSearchHits(null);
+    setQuery('');
+    setOrigin(null);
+    setActivity([]);
+    activityRef.current = [];
+    setProgress(null);
+    setServerStatus(null);
+    setActiveSkills([]);
+    setTaskId(null);
+    liveTask.current = null;
+    seqRef.current = 0;
+    refreshSessions();
+  }, [instanceUrl]);
 
   /*
    * `?session=` is a ONE-SHOT instruction from the Meetings page, and it is

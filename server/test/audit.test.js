@@ -25,6 +25,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { _setDbForTests, migrate, getDb } from '../src/memory/db.js';
+import { _setSettingsForTests, getSettings } from '../src/config/store.js';
 
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nowhelpassist-audit-'));
 _setDbForTests(migrate(new DatabaseSync(path.join(scratchDir, 'test.db'))));
@@ -39,6 +40,7 @@ const SESSION = 'audit-test-session';
 const OTHER = 'audit-other-session';
 const ITEM_SYS_ID = '8b3ae7fedc1be1004ece5c08239e522b';
 const POLICY_SYS_ID = '196e6cb274ef42b4bcbd3827a0d241cc';
+const BASE_CONNECTION = { ...getSettings().connection };
 
 createSession({ id: SESSION, title: 'Make justification mandatory' });
 createSession({ id: OTHER, title: 'Unrelated chat' });
@@ -215,6 +217,35 @@ test('the session picker offers only sessions that actually did something', () =
   assert.ok(!sessions.some((s) => s.id === 'never-used'), 'a session with no events is noise in the picker');
   assert.ok(sessions.some((s) => s.id === SESSION));
   assert.ok(uiBuilds > 0);
+});
+
+test('instance switch: audit rows and picker stay on the current instance', () => {
+  try {
+    _setSettingsForTests({ connection: { instanceUrl: 'https://audit-alpha.service-now.com', username: 'admin' } });
+    createSession({ id: 'audit-alpha-chat', title: 'Alpha audit' });
+    recordToolEvent('audit-alpha-chat', {
+      kind: 'tool_call', name: 'alpha_write', resultStatus: 'ok', mutating: true, approval: 'approved',
+    });
+    const alphaRun = startBuildRun({ kind: 'flow_build', label: 'Alpha build' });
+    finishBuildRun(alphaRun, { status: 'ok', summary: { ok: true } });
+
+    _setSettingsForTests({ connection: { instanceUrl: 'https://audit-beta.service-now.com', username: 'admin' } });
+    createSession({ id: 'audit-beta-chat', title: 'Beta audit' });
+    recordToolEvent('audit-beta-chat', {
+      kind: 'tool_call', name: 'beta_write', resultStatus: 'ok', mutating: true, approval: 'approved',
+    });
+
+    const rows = auditRows({});
+    assert.ok(rows.some((r) => r.name === 'beta_write'), 'current instance audit row is visible');
+    assert.ok(!rows.some((r) => r.name === 'alpha_write'), 'previous instance audit row leaked');
+    assert.ok(!rows.some((r) => r.id === alphaRun), 'previous instance build run leaked');
+
+    const { sessions } = auditSessions();
+    assert.ok(sessions.some((s) => s.id === 'audit-beta-chat'), 'current instance audit session is visible');
+    assert.ok(!sessions.some((s) => s.id === 'audit-alpha-chat'), 'previous instance audit session leaked');
+  } finally {
+    _setSettingsForTests({ connection: BASE_CONNECTION });
+  }
 });
 
 test('sys_id harvesting finds identifiers wherever they sit', () => {

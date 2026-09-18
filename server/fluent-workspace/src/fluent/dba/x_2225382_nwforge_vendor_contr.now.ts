@@ -1,11 +1,11 @@
-// nowhelpassist-dba: x_2002152_nwforge_vendor_contr
+// nowhelpassist-dba: x_2225382_nwforge_vendor_contr
 // Generated from a validated table spec by dba-authoring.js. Deterministic —
 // no model output reaches this file. Edit the spec, not this source.
 import { Table, DateColumn, DecimalColumn, ReferenceColumn, StringColumn } from '@servicenow/sdk/core'
 
-export const x_2002152_nwforge_vendor_contr = Table({
-    $id: Now.ID["x_2002152_nwforge_vendor_contr_table"],
-    name: "x_2002152_nwforge_vendor_contr",
+export const x_2225382_nwforge_vendor_contr = Table({
+    $id: Now.ID["x_2225382_nwforge_vendor_contr_table"],
+    name: "x_2225382_nwforge_vendor_contr",
     label: "Vendor Contract",
     display: "vendor_name",
     extensible: false,

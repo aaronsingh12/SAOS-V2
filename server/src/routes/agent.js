@@ -8,6 +8,7 @@ import {
   listSessions,
   createSession,
   getSession,
+  sessionBelongsToCurrentInstance,
   renameSession,
   deleteSession,
   deleteAllSessions,
@@ -40,7 +41,9 @@ agentRouter.post('/sessions', (req, res) => {
 
 agentRouter.get('/sessions/:id', async (req, res, next) => {
   const s = getSession(req.params.id);
-  if (!s) return next(Object.assign(new Error('No such session.'), { status: 404 }));
+  if (!s || !sessionBelongsToCurrentInstance(req.params.id)) {
+    return next(Object.assign(new Error('No such session on this instance.'), { status: 404 }));
+  }
   const history = loadHistory(req.params.id);
   // The budget is measured, not constant: it depends on this session's digests,
   // which are part of the system prompt. Reporting a constant here is what let
@@ -69,6 +72,9 @@ agentRouter.get('/sessions/:id', async (req, res, next) => {
 });
 
 agentRouter.get('/sessions/:id/messages', (req, res) => {
+  if (!sessionBelongsToCurrentInstance(req.params.id)) {
+    return res.status(404).json({ message: 'No such session on this instance.' });
+  }
   res.json({
     messages: loadMessages(req.params.id),
     digests: loadDigests(req.params.id),
@@ -77,6 +83,9 @@ agentRouter.get('/sessions/:id/messages', (req, res) => {
 });
 
 agentRouter.patch('/sessions/:id', (req, res, next) => {
+  if (!sessionBelongsToCurrentInstance(req.params.id)) {
+    return next(Object.assign(new Error('No such session on this instance.'), { status: 404 }));
+  }
   try { res.json(renameSession(req.params.id, req.body?.title)); }
   catch (err) { next(Object.assign(err, { status: 400 })); }
 });
@@ -99,6 +108,9 @@ agentRouter.delete('/sessions', (_req, res) => {
 });
 
 agentRouter.delete('/sessions/:id', (req, res) => {
+  if (!sessionBelongsToCurrentInstance(req.params.id)) {
+    return res.status(404).json({ message: 'No such session on this instance.' });
+  }
   // The write guard's registries are in-memory and keyed on the session; a
   // deleted session must not leave its drop history behind for the id to be
   // reused against.
@@ -195,6 +207,9 @@ agentRouter.post('/chat', async (req, res) => {
   const { sessionId, message, retry } = req.body || {};
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
+  }
+  if (getSession(sessionId) && !sessionBelongsToCurrentInstance(sessionId)) {
+    return res.status(409).json({ message: 'This chat belongs to another instance. Start a new chat for the current instance.' });
   }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',

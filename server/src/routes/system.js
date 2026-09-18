@@ -4,6 +4,7 @@ import { testConnection, resetAuthCache } from '../servicenow/client.js';
 import { getSchema, referenceLookup, tableLookup, clearSchemaCaches, getTableHierarchy } from '../servicenow/schema.js';
 import { capability, cachedCapability } from '../servicenow/fluent.js';
 import { bindingStatus, invalidateBindingStatus } from '../servicenow/binding-status.js';
+import { autoSetupSdk, sdkSetupStatus } from '../servicenow/sdk-setup.js';
 
 export const systemRouter = Router();
 
@@ -97,6 +98,35 @@ systemRouter.post('/connection/disconnect', (_req, res) => {
 
 systemRouter.post('/connection/test', async (_req, res, next) => {
   try { res.json(await testConnection()); } catch (err) { next(err); }
+});
+
+systemRouter.get('/sdk/setup', async (req, res, next) => {
+  try { res.json(await sdkSetupStatus({ deep: req.query.deep === 'true', force: req.query.force === 'true' })); } catch (err) { next(err); }
+});
+
+systemRouter.post('/sdk/setup', async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  const emit = (event) => {
+    try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client gone */ }
+  };
+  const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* noop */ } }, 15000);
+  try {
+    const result = await autoSetupSdk({
+      emit,
+      ensureTrust: req.body?.ensureTrust !== false,
+    });
+    emit(result.ok ? { type: 'done', result } : { type: 'error', ...result });
+  } catch (err) {
+    emit({ type: 'error', message: err.message, detail: err.detail || null });
+  } finally {
+    clearInterval(keepAlive);
+    res.end();
+  }
 });
 
 systemRouter.get('/schema/:table', async (req, res, next) => {

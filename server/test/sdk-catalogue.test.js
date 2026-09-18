@@ -169,15 +169,15 @@ withSdk('every action carries the sys_id of its live action-type record', () => 
 });
 
 /* ------------------------------------------------------------------ *
- * Gate mode — local checks are advisory while the path is being proven
+ * Gate mode — local checks enforce by default
  * ------------------------------------------------------------------ */
 
-test('the gate mode is read from the environment, and anything unrecognised is advisory', async () => {
+test('the gate mode is read from the environment, and anything unrecognised enforces', async () => {
   const { flowGateMode, FLOW_GATE_MODES } = await import('../src/servicenow/fluent.js');
   const before = process.env.NOWFORGE_FLOW_GATES;
   try {
     delete process.env.NOWFORGE_FLOW_GATES;
-    assert.equal(flowGateMode(), 'advisory', 'the default during the implementation phase');
+    assert.equal(flowGateMode(), 'enforce', 'the default must stop bad generated source before install');
 
     process.env.NOWFORGE_FLOW_GATES = 'enforce';
     assert.equal(flowGateMode(), 'enforce');
@@ -186,7 +186,7 @@ test('the gate mode is read from the environment, and anything unrecognised is a
     assert.equal(flowGateMode(), 'enforce', 'case is not a reason to silently change mode');
 
     process.env.NOWFORGE_FLOW_GATES = 'off';
-    assert.equal(flowGateMode(), 'advisory', 'an unknown value must not disable reporting');
+    assert.equal(flowGateMode(), 'enforce', 'an unknown value must not weaken the gate');
 
     assert.deepEqual([...FLOW_GATE_MODES], ['advisory', 'enforce']);
   } finally {

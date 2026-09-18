@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { log } from '../logging.js';
-import { createSession, getSession } from '../memory/sessions.js';
+import { createSession, getSession, sessionBelongsToCurrentInstance } from '../memory/sessions.js';
 import { createTask, startTask, completeTask, failTask, cancelTask } from '../memory/tasks.js';
 import {
   generatePlan, validatePlan, savePlan, loadPlan, setPlanState,
@@ -344,6 +344,9 @@ planRouter.get('/:taskId/activity', (req, res, next) => {
  * not be, and that is the trap worth naming rather than discovering.
  */
 planRouter.get('/history/:sessionId', (req, res) => {
+  if (!sessionBelongsToCurrentInstance(req.params.sessionId)) {
+    return res.status(404).json({ message: 'No task history for this session on this instance.' });
+  }
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   return res.json({ tasks: taskHistory(req.params.sessionId, { limit }) });
 });

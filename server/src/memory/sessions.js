@@ -32,6 +32,15 @@ function currentInstance() {
   return (getSettings().connection.instanceUrl || '').replace(/\/+$/, '') || '(unbound)';
 }
 
+export function currentSessionInstance() {
+  return currentInstance();
+}
+
+export function sessionBelongsToCurrentInstance(id) {
+  const row = getSession(id);
+  return Boolean(row && row.instance === currentInstance());
+}
+
 export function createSession({ id, title, source = null, sourceRef = null, sourceLabel = null } = {}) {
   const db = getDb();
   const sid = id || crypto.randomUUID();
@@ -49,17 +58,20 @@ export function getSession(id) {
 }
 
 /** Newest first — the rail's order. */
-export function listSessions({ limit = 200 } = {}) {
+export function listSessions({ limit = 200, allInstances = false } = {}) {
+  const where = allInstances ? '' : 'WHERE s.instance = ?';
+  const args = allInstances ? [limit] : [currentInstance(), limit];
   return getDb()
     .prepare(
       `SELECT s.*,
               (SELECT COUNT(*) FROM messages m WHERE m.session = s.id) AS message_count,
               (SELECT COUNT(*) FROM tool_events t WHERE t.session = s.id AND t.mutating = 1) AS mutation_count
          FROM sessions s
+        ${where}
         ORDER BY s.updated DESC
         LIMIT ?`
     )
-    .all(limit);
+    .all(...args);
 }
 
 export function renameSession(id, title) {
@@ -106,9 +118,10 @@ export function deleteSession(id) {
  * happened rather than assume it — and so a regression that starts eating the
  * ledger shows up as a number instead of as silence.
  */
-export function deleteAllSessions() {
+export function deleteAllSessions({ allInstances = false } = {}) {
   const db = getDb();
   const count = (t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n;
+  const instance = currentInstance();
 
   const before = {
     sessions: count('sessions'),
@@ -119,8 +132,15 @@ export function deleteAllSessions() {
     facts: count('facts'),
   };
 
-  db.prepare("DELETE FROM chunks WHERE kind = 'message'").run();
-  const res = db.prepare('DELETE FROM sessions').run();
+  let res;
+  if (allInstances) {
+    db.prepare("DELETE FROM chunks WHERE kind = 'message'").run();
+    res = db.prepare('DELETE FROM sessions').run();
+  } else {
+    db.prepare("DELETE FROM chunks WHERE kind = 'message' AND session IN (SELECT id FROM sessions WHERE instance = ?)")
+      .run(instance);
+    res = db.prepare('DELETE FROM sessions WHERE instance = ?').run(instance);
+  }
 
   const after = {
     sessions: count('sessions'),

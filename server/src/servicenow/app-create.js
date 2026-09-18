@@ -116,6 +116,21 @@ export function validateScopeName(scopeName, prefix) {
   return { ok: errors.length === 0, errors, scopeName: name, prefix, budget };
 }
 
+function companyKeyFromScope(scopeName) {
+  return /^x_(\d+)_/.exec(String(scopeName || ''))?.[1] || null;
+}
+
+async function trustedCompanyKeys() {
+  const rows = await table.query('sys_properties', {
+    query: 'name=sn_appauthor.all_company_keys',
+    fields: 'value',
+    limit: 1,
+    display: 'false',
+  }).catch(() => []);
+  const value = rows[0]?.value;
+  return String(value || '').split(',').map((k) => k.trim()).filter(Boolean);
+}
+
 /** Where a new workspace would go, and whether that is free. */
 function workspacePathFor(scopeName) {
   const dir = path.join(SERVER_ROOT, `app-${scopeName}`);
@@ -242,11 +257,26 @@ export async function establishApplication({ emit = () => {} } = {}) {
    * slower and less clear than saying so now. */
   const prefix = await vendorPrefix();
   const check = validateScopeName(scope, prefix);
-  if (!check.ok) {
+  const scopeCompanyKey = companyKeyFromScope(scope);
+  const prefixErrors = check.errors.filter((e) => /must start with this instance's vendor prefix/i.test(e));
+  const hardErrors = check.errors.filter((e) => !prefixErrors.includes(e));
+  const trustedKeys = prefixErrors.length ? await trustedCompanyKeys() : [];
+  const trustedForeignScope = Boolean(prefixErrors.length && !hardErrors.length && scopeCompanyKey && trustedKeys.includes(scopeCompanyKey));
+  if (!check.ok && !trustedForeignScope) {
     throw new SnowError(
       `The workspace claims scope "${scope}", which cannot be created on ${bound.host}:\n- ${check.errors.join('\n- ')}`,
       422, { errors: check.errors, prefix, scope },
     );
+  }
+  if (trustedForeignScope) {
+    emit({
+      type: 'foreign_scope_trusted',
+      scope,
+      companyKey: scopeCompanyKey,
+      message:
+        `The workspace scope uses company key ${scopeCompanyKey}, not this instance's local prefix ${prefix}; `
+        + 'the key is trusted on this instance, so the SDK install may establish it.',
+    });
   }
 
   /* THE INVERSION. If it already exists there is nothing to establish, and the
