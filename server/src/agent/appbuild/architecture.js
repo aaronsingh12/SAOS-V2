@@ -219,6 +219,148 @@ export function normalizeComponents(raw) {
   return { components: out, dropped };
 }
 
+export function contractFromRequest(request) {
+  const textValue = String(request ?? '');
+  const lineValue = (label) => {
+    const re = new RegExp(`^\\s*${label}\\s*:\\s*(.+?)\\s*$`, 'im');
+    const m = re.exec(textValue);
+    return m ? m[1].trim() : null;
+  };
+  const blockValue = (label) => {
+    const re = new RegExp(`^\\s*${label}\\s*:\\s*(?:\\r?\\n\\s*)?(.+?)\\s*$`, 'im');
+    const m = re.exec(textValue);
+    return m ? m[1].trim() : null;
+  };
+  const tableName = lineValue('Table Name');
+  const tableLabel = lineValue('Table Label');
+  const extendsTable = lineValue('Extends');
+  const autoNumberPrefix = blockValue('(?:Configure\\s+)?auto[- ]number prefix');
+  const fieldLabels = [...textValue.matchAll(/^\s*\d+\.\s+(.+?)\s*$/gm)]
+    .map((m) => m[1].trim())
+    .filter(Boolean);
+  const flowRequested = /\bflow\s+designer\b|\bapproval\s+flow\b|\bcreate\s+(?:a\s+)?flow\b|\bflow\b/i.test(textValue);
+  const uiPolicyRequested = /\bui\s+policy\b/i.test(textValue);
+  const forbidHardcodedSysIds = /\bdo\s+not\s+hard[- ]?code\s+sys_?ids?\b|\bnever\s+hard[- ]?code\s+sys_?ids?\b/i.test(textValue);
+  return {
+    explicitTable: Boolean(tableName || tableLabel),
+    tableName,
+    tableLabel,
+    tableSlug: tableName ? slugOf(tableName) : (tableLabel ? slugOf(tableLabel) : null),
+    extendsTable,
+    autoNumberPrefix,
+    fieldLabels,
+    flowRequested,
+    uiPolicyRequested,
+    forbidHardcodedSysIds,
+  };
+}
+
+function slugOf(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_{2,}/g, '_') || null;
+}
+
+export function validateContract({ contract, components }) {
+  const problems = [];
+  const tables = components.filter((c) => c.type === COMPONENT.TABLE);
+  const fields = components.filter((c) => c.type === COMPONENT.FIELD);
+  const flows = components.filter((c) => c.type === COMPONENT.FLOW);
+  const fatal = (code, message, component = null) => problems.push({ code, message, component, fatal: true });
+
+  if (contract?.explicitTable) {
+    if (tables.length === 0) {
+      fatal('requested_table_missing',
+        `The request explicitly names a table${contract.tableLabel ? ` "${contract.tableLabel}"` : ''}, but the architecture contains no table component.`);
+    } else if (tables.length > 1) {
+      fatal('extra_table',
+        `The request explicitly names one table${contract.tableLabel ? `, "${contract.tableLabel}"` : ''}, but the architecture proposes ${tables.length}. `
+        + 'Creating extra tables from nearby wording or past context is refused.',
+        tables.map((t) => t.id).join(', '));
+    }
+
+    if (tables.length === 1 && contract.tableSlug) {
+      const table = tables[0];
+      const candidates = [table.name, table.spec?.name, table.spec?.label, table.purpose].map(slugOf).filter(Boolean);
+      const matches = candidates.some((v) => v === contract.tableSlug || v.endsWith(`_${contract.tableSlug}`));
+      if (!matches) {
+        fatal('requested_table_mismatch',
+          `The request names table "${contract.tableName ?? contract.tableLabel}", but the architecture proposes "${table.spec?.label ?? table.name}".`,
+          table.id);
+      }
+    }
+
+    if (tables.length === 1 && contract.extendsTable) {
+      const table = tables[0];
+      const actual = table.spec?.extends ?? table.spec?.extendsTable ?? table.spec?.super_class ?? null;
+      if (slugOf(actual) !== slugOf(contract.extendsTable)) {
+        fatal('requested_extends_missing',
+          `The request says the table extends "${contract.extendsTable}", but the architecture does not preserve that inheritance.`,
+          table.id);
+      }
+    }
+
+    if (tables.length === 1 && contract.autoNumberPrefix) {
+      const table = tables[0];
+      const actual = table.spec?.autoNumber?.prefix ?? table.spec?.auto_number?.prefix ?? table.spec?.autoNumberPrefix ?? null;
+      if (String(actual ?? '').toUpperCase() !== String(contract.autoNumberPrefix).toUpperCase()) {
+        fatal('requested_autonumber_missing',
+          `The request says to configure auto-number prefix "${contract.autoNumberPrefix}", but the architecture does not preserve it.`,
+          table.id);
+      }
+    }
+  }
+
+  for (const label of contract?.fieldLabels ?? []) {
+    const requested = slugOf(label);
+    const match = fields.find((f) => {
+      const candidates = [f.name, f.spec?.name, f.spec?.label].map(slugOf).filter(Boolean);
+      return candidates.some((v) => v === requested || v.endsWith(`_${requested}`));
+    });
+    if (!match) {
+      fatal('requested_field_missing',
+        `The request explicitly lists custom field "${label}", but the architecture contains no matching field component.`);
+    }
+  }
+
+  const inheritedTaskFields = new Set([
+    'number',
+    'state',
+    'priority',
+    'assigned_to',
+    'assignment_group',
+    'short_description',
+    'description',
+    'work_notes',
+    'comments',
+  ]);
+  for (const field of fields) {
+    const name = slugOf(field.spec?.name ?? field.name);
+    if (inheritedTaskFields.has(name)) {
+      fatal('inherited_task_field_recreated',
+        `Field "${field.spec?.label ?? field.name}" is inherited from Task and must not be recreated as a custom field.`,
+        field.id);
+    }
+  }
+
+  if (contract?.flowRequested && flows.length === 0) {
+    fatal('requested_flow_missing',
+      'The request explicitly asks for a Flow Designer flow, but the architecture contains no flow component. '
+      + 'The build must stop rather than silently create only the table.');
+  }
+
+  if (contract?.uiPolicyRequested) {
+    fatal('requested_ui_policy_unsupported',
+      'The request explicitly asks for a UI Policy, but this app build architecture has no UI Policy component yet. '
+      + 'The build must stop rather than silently skip that requirement.');
+  }
+
+  const fatalProblems = problems.filter((p) => p.fatal);
+  return { ok: fatalProblems.length === 0, problems, fatal: fatalProblems };
+}
+
 /* ------------------------------------------------------------------ *
  * §16–§25 — platform validation
  * ------------------------------------------------------------------ */

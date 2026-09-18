@@ -68,6 +68,16 @@ function streamOf(res) {
   };
 }
 
+function ensureCurrentInstanceSession(sessionId, res) {
+  const existing = getSession(sessionId);
+  if (existing && !sessionBelongsToCurrentInstance(sessionId)) {
+    res.status(409).json({ message: 'This chat belongs to another instance. Start a new chat for the current instance.' });
+    return false;
+  }
+  if (!existing) createSession({ id: sessionId });
+  return true;
+}
+
 /**
  * POST /api/agent/plan  { sessionId, message }
  *
@@ -78,7 +88,7 @@ planRouter.post('/', async (req, res) => {
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
   }
-  if (!getSession(sessionId)) createSession({ id: sessionId });
+  if (!ensureCurrentInstanceSession(sessionId, res)) return undefined;
 
   const emit = streamOf(res);
   const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* noop */ } }, 15000);
@@ -376,7 +386,7 @@ planRouter.post('/diagnose', async (req, res) => {
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
   }
-  if (!getSession(sessionId)) createSession({ id: sessionId });
+  if (!ensureCurrentInstanceSession(sessionId, res)) return undefined;
 
   const controller = new AbortController();
   req.on('close', () => controller.abort());
@@ -452,7 +462,7 @@ planRouter.post('/lint', async (req, res) => {
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
   }
-  if (!getSession(sessionId)) createSession({ id: sessionId });
+  if (!ensureCurrentInstanceSession(sessionId, res)) return undefined;
 
   const controller = new AbortController();
   req.on('close', () => controller.abort());
@@ -533,7 +543,7 @@ planRouter.post('/test', async (req, res) => {
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
   }
-  if (!getSession(sessionId)) createSession({ id: sessionId });
+  if (!ensureCurrentInstanceSession(sessionId, res)) return undefined;
 
   const emit = streamOf(res);
   const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* noop */ } }, 15000);
@@ -786,7 +796,7 @@ planRouter.post('/build', async (req, res) => {
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
   }
-  if (!getSession(sessionId)) createSession({ id: sessionId });
+  if (!ensureCurrentInstanceSession(sessionId, res)) return undefined;
 
   const controller = new AbortController();
   let settled = false;
@@ -924,7 +934,7 @@ planRouter.post('/knowledge', async (req, res) => {
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
   }
-  if (!getSession(sessionId)) createSession({ id: sessionId });
+  if (!ensureCurrentInstanceSession(sessionId, res)) return undefined;
 
   const controller = new AbortController();
   req.on('close', () => controller.abort());
@@ -990,7 +1000,7 @@ planRouter.post('/change', async (req, res) => {
   if (!sessionId || !message) {
     return res.status(400).json({ message: 'sessionId and message are required' });
   }
-  if (!getSession(sessionId)) createSession({ id: sessionId });
+  if (!ensureCurrentInstanceSession(sessionId, res)) return undefined;
 
   const controller = new AbortController();
   req.on('close', () => controller.abort());

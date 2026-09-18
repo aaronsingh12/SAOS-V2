@@ -34,7 +34,7 @@ import { readRequirements, validateRequirements, testableCriteria } from './requ
 import { discover, reconcile } from './discovery.js';
 import {
   architectSystem, normalizeComponents, validateArchitecture, securityModel, buildArchitecture,
-  countByType, applyNaming, technicalName,
+  countByType, applyNaming, technicalName, contractFromRequest, validateContract,
 } from './architecture.js';
 import { buildGraph, validateGraph, buildOrder, describeDependencies, identityOf } from './graph.js';
 import { gate, remediationFor } from './capability.js';
@@ -116,6 +116,23 @@ export async function buildApplication({
    * instance. See `applyNaming` for the measurement that put it here.
    */
   const named = applyNaming(normalized.components, { prefix: naming.prefix });
+  const contract = contractFromRequest(request);
+  const contractCheck = validateContract({ contract, components: named.components });
+  if (!contractCheck.ok) {
+    const withIdentity = named.components.map((c) => ({ ...c, identity: identityOf(c) }));
+    const arch = buildArchitecture({
+      requirements,
+      components: withIdentity,
+      graph: buildGraph(withIdentity),
+      problems: contractCheck.problems,
+      security: securityModel(withIdentity),
+    });
+    arch.renamed = named.renamed;
+    arch.request_contract = contract;
+    return stop({ ...base, architecture: arch }, FAILURE.ARCHITECTURE_INVALID,
+      `The architecture does not match the request: ${contractCheck.fatal[0]?.message}`,
+      { problems: contractCheck.problems }, timings, started);
+  }
 
   /*
    * §21 — resolve every table the architecture POINTS AT against the live
@@ -183,6 +200,7 @@ export async function buildApplication({
   /* §17/§41 — the names the platform chose, so a reviewer sees what their
    * application will actually be called. */
   architecture.renamed = named.renamed;
+  architecture.request_contract = contract;
   architecture.live_tables = [...liveTables];
   base.architecture = architecture;
 
@@ -586,7 +604,7 @@ export {
 export { discover, compare, reconcile } from './discovery.js';
 export {
   architectSystem, normalizeComponents, validateArchitecture, securityModel, buildArchitecture,
-  countByType, applyNaming, technicalName,
+  countByType, applyNaming, technicalName, contractFromRequest, validateContract,
 } from './architecture.js';
 export {
   buildGraph, validateGraph, buildOrder, describeDependencies, semanticEdges, identityOf,

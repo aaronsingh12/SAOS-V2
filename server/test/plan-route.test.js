@@ -42,14 +42,14 @@ seedLedger();
 const P = await import('../src/agent/plan/index.js');
 const { createTask, startTask } = await import('../src/memory/tasks.js');
 const { getDb } = await import('../src/memory/db.js');
+const { createSession } = await import('../src/memory/sessions.js');
 
 let n = 0;
 const newSession = () => `route-${++n}`;
 
 function newTask(goal) {
   const sid = newSession();
-  getDb().prepare('INSERT OR IGNORE INTO sessions (id, created, updated) VALUES (?, ?, ?)')
-    .run(sid, new Date().toISOString(), new Date().toISOString());
+  createSession({ id: sid });
   const t = createTask({ sessionId: sid, goal });
   startTask(t.id);
   return { taskId: t.id, sessionId: sid };
@@ -122,6 +122,36 @@ const TERMINAL = new Set(['plan_completed', 'plan_failed', 'plan_cancelled']);
 const terminalsOf = (frames) => frames.filter((f) => TERMINAL.has(f.type));
 
 /* ------------------------------------------------------------------ */
+
+test('ROUTE - a plan request cannot reuse a chat from another instance', async () => {
+  const sessionId = `route-cross-instance-${++n}`;
+  _setSettingsForTests({
+    connection: { instanceUrl: 'https://alpha.service-now.com', authType: 'basic', username: 'admin', password: 'x' },
+  });
+  createSession({ id: sessionId });
+
+  _setSettingsForTests({
+    connection: { instanceUrl: 'https://beta.service-now.com', authType: 'basic', username: 'admin', password: 'x' },
+  });
+  try {
+    const before = getDb().prepare('SELECT COUNT(*) AS n FROM agent_tasks WHERE session_id = ?').get(sessionId).n;
+    const res = await fetch(`${base}/plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, message: 'create a record from the old chat context' }),
+    });
+    assert.equal(res.status, 409);
+    assert.match((await res.json()).message, /another instance/i);
+    const after = getDb().prepare('SELECT COUNT(*) AS n FROM agent_tasks WHERE session_id = ?').get(sessionId).n;
+    assert.equal(after, before, 'a stale-instance request opened a task before refusing');
+  } finally {
+    _setSettingsForTests({
+      connection: { instanceUrl: 'https://offline.invalid', authType: 'basic', username: 'admin', password: 'x' },
+      llm: { provider: 'ollama', model: '', baseUrl: '' },
+      agent: { autoApprove: false, holdMutationsOnQuestion: true },
+    });
+  }
+});
 
 test('ROUTE — the stream terminates exactly once, and nothing executes without a plan', async () => {
   const frames = await planRequest(newSession(), 'create a flow that notifies the manager on a P1 incident');

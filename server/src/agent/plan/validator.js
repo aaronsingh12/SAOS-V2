@@ -7,6 +7,7 @@ import { ARTIFACTS, referenceFieldOf } from '../../servicenow/semantic/artifacts
 import { STATUS } from '../../servicenow/semantic/provenance.js';
 import { executionOrder } from './store.js';
 import { flowDesignerTablePolicy } from '../write-guard.js';
+import { contractFromRequest } from '../appbuild/architecture.js';
 
 /**
  * PHASE 4 — THE DETERMINISTIC PLAN VALIDATOR.
@@ -564,6 +565,124 @@ function validateSemantics(plan, { derivation = derivationOf } = {}) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Request contract
+ * ------------------------------------------------------------------ */
+
+const slugOf = (value) => String(value ?? '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '')
+  .replace(/_{2,}/g, '_') || null;
+
+function tableSpecOf(step) {
+  return canonicalExecutionArgs(step).args?.spec ?? step.inputs?.spec ?? null;
+}
+
+function stringValues(value, out = []) {
+  if (typeof value === 'string') {
+    out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) stringValues(item, out);
+  } else if (value && typeof value === 'object' && !('$ref' in value)) {
+    for (const item of Object.values(value)) stringValues(item, out);
+  }
+  return out;
+}
+
+function validateRequestContract(plan) {
+  const contract = contractFromRequest(plan?.goal ?? '');
+  const out = [];
+  const tableSteps = (plan?.steps ?? []).filter((s) => s?.tool === 'dba_create_table');
+  const flowBuildSteps = (plan?.steps ?? []).filter((s) => s?.tool === 'create_flow_live');
+  const flowDesignSteps = (plan?.steps ?? []).filter((s) => s?.tool === 'design_flow_blueprint');
+
+  if (contract.explicitTable) {
+    if (tableSteps.length === 0) {
+      out.push(problem('requested_table_missing',
+        `The request names one custom table${contract.tableLabel ? `, "${contract.tableLabel}"` : ''}, but the plan has no dba_create_table step.`));
+    } else if (tableSteps.length > 1) {
+      out.push(problem('extra_table_create_steps',
+        `The request names one custom table${contract.tableLabel ? `, "${contract.tableLabel}"` : ''}, but the plan would create ${tableSteps.length} tables. `
+        + 'Extra tables from conversation history or nearby examples are refused before approval.',
+        { detail: { steps: tableSteps.map((s) => s.id) } }));
+    }
+
+    if (tableSteps.length === 1 && contract.tableSlug) {
+      const spec = tableSpecOf(tableSteps[0]) ?? {};
+      const candidates = [spec.name, spec.label].map(slugOf).filter(Boolean);
+      const matches = candidates.some((v) => v === contract.tableSlug || v.endsWith(`_${contract.tableSlug}`));
+      if (!matches) {
+        out.push(problem('requested_table_mismatch',
+          `The request names table "${contract.tableName ?? contract.tableLabel}", but step ${tableSteps[0].id} would create "${spec.label ?? spec.name ?? '(unnamed)'}".`,
+          { step: tableSteps[0].id }));
+      }
+    }
+
+    if (tableSteps.length === 1 && contract.extendsTable) {
+      const spec = tableSpecOf(tableSteps[0]) ?? {};
+      if (slugOf(spec.extends) !== slugOf(contract.extendsTable)) {
+        out.push(problem('requested_extends_missing',
+          `The request says the table extends "${contract.extendsTable}", but step ${tableSteps[0].id} does not preserve that inheritance.`,
+          { step: tableSteps[0].id }));
+      }
+    }
+
+    if (tableSteps.length === 1 && contract.autoNumberPrefix) {
+      const spec = tableSpecOf(tableSteps[0]) ?? {};
+      const actual = spec.autoNumber?.prefix ?? spec.auto_number?.prefix ?? spec.autoNumberPrefix ?? null;
+      if (String(actual ?? '').toUpperCase() !== String(contract.autoNumberPrefix).toUpperCase()) {
+        out.push(problem('requested_autonumber_missing',
+          `The request says to configure auto-number prefix "${contract.autoNumberPrefix}", but step ${tableSteps[0].id} does not preserve it.`,
+          { step: tableSteps[0].id }));
+      }
+    }
+
+    if (tableSteps.length === 1 && contract.fieldLabels?.length) {
+      const spec = tableSpecOf(tableSteps[0]) ?? {};
+      const fields = Array.isArray(spec.fields) ? spec.fields : [];
+      for (const label of contract.fieldLabels) {
+        const requested = slugOf(label);
+        const found = fields.some((f) => [f?.name, f?.label].map(slugOf).some((v) => v === requested || v?.endsWith(`_${requested}`)));
+        if (!found) {
+          out.push(problem('requested_field_missing',
+            `The request explicitly lists custom field "${label}", but step ${tableSteps[0].id} does not include it in the table spec.`,
+            { step: tableSteps[0].id }));
+        }
+      }
+    }
+  }
+
+  if (contract.flowRequested && flowBuildSteps.length === 0) {
+    out.push(problem('requested_flow_missing',
+      flowDesignSteps.length
+        ? 'The request asks to create a Flow Designer flow, but the plan only designs a blueprint. A design step is not a created flow.'
+        : 'The request asks to create a Flow Designer flow, but the plan has no create_flow_live step.'));
+  }
+
+  if (contract.uiPolicyRequested) {
+    out.push(problem('requested_ui_policy_unsupported',
+      'The request asks to create a UI Policy, but this planner has no supported UI Policy authoring tool in the registry. '
+      + 'The plan is refused rather than silently skipping that requirement.'));
+  }
+
+  if (contract.forbidHardcodedSysIds) {
+    for (const s of plan?.steps ?? []) {
+      const entry = s?.tool ? toolMap.get(s.tool) : null;
+      if (!entry?.mutating && s?.tool !== 'design_flow_blueprint') continue;
+      const values = stringValues({ inputs: s.inputs, target: s.target });
+      const hit = values.find((v) => /\b[0-9a-f]{32}\b/i.test(v));
+      if (hit) {
+        out.push(problem('hardcoded_sys_id',
+          `Step ${s.id} contains a literal sys_id even though the request says not to hard-code sys_ids. Resolve records by lookup/name and reference the result instead.`,
+          { step: s.id, detail: { tool: s.tool, value: hit.match(/\b[0-9a-f]{32}\b/i)?.[0] ?? null } }));
+      }
+    }
+  }
+
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
  * The entry point
  * ------------------------------------------------------------------ */
 
@@ -694,6 +813,7 @@ export function validatePlan(plan, {
     ...validateCapabilities(plan, { discover, discoverOpts }),
     ...dataflow,
     ...readOnlyProblems,
+    ...validateRequestContract(plan),
     ...validateSafety(plan, { discover, discoverOpts, knownTables }),
     ...validateSemantics(plan, { derivation }),
   ];

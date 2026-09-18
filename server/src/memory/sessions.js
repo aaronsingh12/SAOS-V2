@@ -41,9 +41,22 @@ export function sessionBelongsToCurrentInstance(id) {
   return Boolean(row && row.instance === currentInstance());
 }
 
+export function assertSessionUsableOnCurrentInstance(id) {
+  const row = getSession(id);
+  if (row && row.instance !== currentInstance()) {
+    throw Object.assign(
+      new Error('This chat belongs to another instance. Start a new chat for the current instance.'),
+      { status: 409, code: 'session_instance_mismatch' }
+    );
+  }
+  return row;
+}
+
 export function createSession({ id, title, source = null, sourceRef = null, sourceLabel = null } = {}) {
   const db = getDb();
   const sid = id || crypto.randomUUID();
+  const existing = assertSessionUsableOnCurrentInstance(sid);
+  if (existing) return existing;
   const ts = now();
   db.prepare(
     `INSERT OR IGNORE INTO sessions (id, title, created, updated, instance, source, source_ref, source_label)
@@ -178,6 +191,7 @@ function nextSeq(sessionId) {
  */
 export function appendMessage(sessionId, entry) {
   const db = getDb();
+  assertSessionUsableOnCurrentInstance(sessionId);
   if (!getSession(sessionId)) createSession({ id: sessionId });
   const seq = nextSeq(sessionId);
   const ts = now();
@@ -274,6 +288,7 @@ export function loadMessages(sessionId) {
  */
 export function recordToolEvent(sessionId, event) {
   const db = getDb();
+  assertSessionUsableOnCurrentInstance(sessionId);
   if (!getSession(sessionId)) createSession({ id: sessionId });
   const row = db.prepare('SELECT COALESCE(MAX(seq), -1) AS m FROM tool_events WHERE session = ?').get(sessionId);
   const seq = (row?.m ?? -1) + 1;

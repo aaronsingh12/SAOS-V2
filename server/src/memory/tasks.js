@@ -136,6 +136,13 @@ export function createTask({ sessionId, goal = null, metadata = null } = {}) {
   try {
     if (!sessionId) throw new Error('a task needs a session');
     const { instance, actor } = currentActor();
+    const session = getDb().prepare('SELECT instance FROM sessions WHERE id = ?').get(sessionId);
+    if (session && session.instance !== instance) {
+      throw Object.assign(
+        new Error('This chat belongs to another instance. Start a new chat for the current instance.'),
+        { code: 'session_instance_mismatch' }
+      );
+    }
     const id = crypto.randomUUID();
     const ts = now();
     getDb().prepare(

@@ -48,6 +48,8 @@ export function buildPlan({ ordered, requirements, application = null }) {
   /* Variables are built by their item, so they are resolved first and skipped
    * when their turn comes. */
   const variablesByItem = new Map();
+  const tableIds = new Set(ordered.filter((c) => c.type === COMPONENT.TABLE).map((c) => c.name));
+  const fieldsByTable = new Map();
   for (const c of ordered) {
     if (c.type !== COMPONENT.CATALOG_VARIABLE) continue;
     const item = c.spec?.catalog_item;
@@ -55,14 +57,30 @@ export function buildPlan({ ordered, requirements, application = null }) {
     if (!variablesByItem.has(item)) variablesByItem.set(item, []);
     variablesByItem.get(item).push(c);
   }
+  for (const c of ordered) {
+    if (c.type !== COMPONENT.FIELD) continue;
+    const table = c.spec?.table;
+    if (!table || !tableIds.has(table)) continue;
+    if (!fieldsByTable.has(table)) fieldsByTable.set(table, []);
+    fieldsByTable.get(table).push(c);
+  }
 
   for (const component of ordered) {
     if (component.type === COMPONENT.CATALOG_VARIABLE && component.spec?.catalog_item) {
       folded.push({ component: component.id, built_by: component.spec.catalog_item, why: 'the catalog item is created with its variables in one call' });
       continue;
     }
+    if (component.type === COMPONENT.FIELD && tableIds.has(component.spec?.table)) {
+      folded.push({ component: component.id, built_by: component.spec.table, why: 'the table is created with its new fields in one call' });
+      continue;
+    }
 
-    const built = buildStep({ component, index: steps.length, variables: variablesByItem.get(component.name) ?? [] });
+    const built = buildStep({
+      component,
+      index: steps.length,
+      variables: variablesByItem.get(component.name) ?? [],
+      fields: fieldsByTable.get(component.name) ?? [],
+    });
     if (!built) {
       folded.push({ component: component.id, built_by: null, why: `this build has no step shape for a ${component.type}` });
       continue;
@@ -90,7 +108,7 @@ export function buildPlan({ ordered, requirements, application = null }) {
 }
 
 /** One component as one plan step, or null when it has no step shape. */
-function buildStep({ component, index, variables }) {
+function buildStep({ component, index, variables, fields }) {
   const id = stepId(component, index);
   const tool = COMPONENT_TOOL[component.type];
   const capability = COMPONENT_CAPABILITY[component.type];
@@ -222,9 +240,24 @@ function buildStep({ component, index, variables }) {
         operation: `create the table ${component.name}`,
         description: component.purpose ?? 'A table this application stores data in.',
         target: {},
-        inputs: { name: component.name, label: component.spec?.label ?? component.name },
+        inputs: {
+          spec: {
+            name: component.name,
+            label: component.spec?.label ?? component.name,
+            ...(component.spec?.extends ? { extends: component.spec.extends } : {}),
+            ...(component.spec?.display ? { display: component.spec.display } : {}),
+            ...(component.spec?.autoNumber ? { autoNumber: component.spec.autoNumber } : {}),
+            ...(fields.length ? { fields: fields.map(tableFieldPayload) } : {}),
+          },
+        },
         expected_effects: [`a table named ${component.name} exists`],
-        verification: { strategy: 'read_back', asserts: [`sys_db_object.name is ${component.name}`] },
+        verification: {
+          strategy: 'read_back',
+          asserts: [
+            `sys_db_object.name is ${component.name}`,
+            ...(fields.length ? [`${fields.length} field(s) exist on ${component.name}`] : []),
+          ],
+        },
       };
 
     case COMPONENT.FIELD:
@@ -258,6 +291,19 @@ function buildStep({ component, index, variables }) {
     default:
       return null;
   }
+}
+
+function tableFieldPayload(f) {
+  return {
+    name: f.spec?.name ?? f.name,
+    label: f.spec?.label ?? f.name,
+    type: f.spec?.type,
+    ...(f.spec?.mandatory !== undefined ? { mandatory: Boolean(f.spec.mandatory) } : {}),
+    ...(f.spec?.reference ? { reference: f.spec.reference } : {}),
+    ...(Array.isArray(f.spec?.choices) && f.spec.choices.length
+      ? { choices: f.spec.choices.map((c) => ({ value: c.value, label: c.label ?? c.text ?? c.value })) }
+      : {}),
+  };
 }
 
 /** A catalog variable in the shape `create_catalog_item` takes. */

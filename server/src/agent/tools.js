@@ -69,8 +69,64 @@ import {
   deleteRecoveryStatement as dbaRecoveryStatement,
   dropField as dbaDropField,
 } from '../servicenow/dba-data.js';
+import { contractFromRequest } from './appbuild/architecture.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
+
+const slugOf = (value) => String(value ?? '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '')
+  .replace(/_{2,}/g, '_') || null;
+
+function requestContractRefusal(toolName, input = {}, ctx = {}) {
+  const contract = contractFromRequest(ctx.userText || ctx.goal || '');
+  if (!contract.explicitTable && !contract.flowRequested && !contract.uiPolicyRequested && !contract.forbidHardcodedSysIds) return null;
+
+  if (toolName === 'dba_create_table' && contract.explicitTable) {
+    const spec = input.spec ?? input;
+    const candidates = [spec?.name, spec?.label].map(slugOf).filter(Boolean);
+    const wanted = contract.tableSlug;
+    const matches = wanted && candidates.some((v) => v === wanted || v.endsWith(`_${wanted}`));
+    if (!matches) {
+      return {
+        ok: false, refused: true, reason: 'request_contract_table_mismatch', tool: toolName,
+        message: `Refused before execution: the user asked for one table "${contract.tableName ?? contract.tableLabel}", `
+          + `but this tool call would create "${spec?.label ?? spec?.name ?? '(unnamed)'}". Nothing was written.`,
+      };
+    }
+  }
+
+  if (toolName === 'design_flow_blueprint' && contract.flowRequested) {
+    return {
+      ok: false, refused: true, reason: 'request_contract_blueprint_only', tool: toolName,
+      message: 'Refused before execution: the user asked to create a Flow Designer flow, but this call only designs a blueprint. '
+        + 'A blueprint is not a created flow, so nothing was written.',
+    };
+  }
+
+  if (contract.uiPolicyRequested && ['dba_create_table', 'create_flow_live', 'design_flow_blueprint'].includes(toolName)) {
+    return {
+      ok: false, refused: true, reason: 'request_contract_ui_policy_unsupported', tool: toolName,
+      message: 'Refused before execution: the user asked for a UI Policy, but this tool path cannot create UI Policies. '
+        + 'The build must not silently skip that requirement.',
+    };
+  }
+
+  if (contract.forbidHardcodedSysIds) {
+    const text = JSON.stringify(input ?? {});
+    const hit = /\b[0-9a-f]{32}\b/i.exec(text);
+    if (hit) {
+      return {
+        ok: false, refused: true, reason: 'hardcoded_sys_id', tool: toolName,
+        message: `Refused before execution: the user said not to hard-code sys_ids, but this ${toolName} call contains literal sys_id ${hit[0]}. `
+          + 'Resolve the record by name/lookup and carry it as a referenced result instead.',
+      };
+    }
+  }
+
+  return null;
+}
 
 /**
  * WI-5 — the application-creation capability boundary.
@@ -966,7 +1022,11 @@ export const TOOLS = [
       properties: { description: { type: 'string' } },
       required: ['description'],
     },
-    execute: ({ description }) => designFlowBlueprint(description),
+    execute: ({ description }, ctx = {}) => {
+      const refusal = requestContractRefusal('design_flow_blueprint', { description }, ctx);
+      if (refusal) return refusal;
+      return designFlowBlueprint(description);
+    },
   },
   {
     name: 'flow_authoring_capability',
@@ -1007,7 +1067,9 @@ export const TOOLS = [
       },
       required: [],
     },
-    execute: async ({ description, blueprint, updates, artifact_type: artifactType }) => {
+    execute: async ({ description, blueprint, updates, artifact_type: artifactType }, ctx = {}) => {
+      const refusal = requestContractRefusal('create_flow_live', { description, blueprint, updates, artifact_type: artifactType }, ctx);
+      if (refusal) return refusal;
       /*
        * WI-4 — AN APPROVED BLUEPRINT IS NOT AN ALTERNATIVE TO A DESCRIPTION.
        *
@@ -2453,7 +2515,11 @@ ${description}` : description);
       },
       required: ['spec'],
     },
-    execute: ({ spec }) => dbaCreateTable(spec || {}),
+    execute: ({ spec }, ctx = {}) => {
+      const refusal = requestContractRefusal('dba_create_table', { spec }, ctx);
+      if (refusal) return refusal;
+      return dbaCreateTable(spec || {});
+    },
   },
   {
     name: 'dba_table_constraints',

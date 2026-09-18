@@ -268,7 +268,7 @@ async function runStep({ plan, step, sessionId, turnSeq, emit, signal, autoAppro
      */
     const raw = await executeTool(tool, step.inputs || {}, approval,
       { source: approvedSource, autoApprove: Boolean(autoApprove) },
-      { sessionId, turnSeq });
+      { sessionId, turnSeq, userText: plan.goal ?? '', goal: plan.goal ?? '' });
 
     let verification = null;
     if (mutating) {

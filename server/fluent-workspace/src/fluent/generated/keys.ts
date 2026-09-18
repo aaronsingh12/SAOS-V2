@@ -25,6 +25,34 @@ declare global {
                         id: '9070d03ab59e4ca08da443963863ca38'
                         deleted: true
                     }
+                    abp_else: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: 'd1b72bf0565c403c92ed3b53970c4fea'
+                    }
+                    abp_end_else: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '40b80b4373df47e9a03bc7b366108fae'
+                    }
+                    abp_end_if: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '8fb4ea021a1246bdbd93deacc594d8da'
+                    }
+                    abp_flow: {
+                        table: 'sys_hub_flow'
+                        id: 'f16e068db8a047529a91b7a7c28ce1c7'
+                    }
+                    abp_if: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '3afabefc56114ae1a9baa7bc57419f4c'
+                    }
+                    abp_lookup: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '37375ef4a4ab4d9e8f8e6be3c24d96d2'
+                    }
+                    abp_trigger: {
+                        table: 'sys_hub_trigger_instance_v2'
+                        id: '3701188f82f648638efe5f05ca2fae9b'
+                    }
                     adc_flow: {
                         table: 'sys_hub_flow'
                         id: '23a885769f954eab968d49f58d00d3ca'
@@ -1115,6 +1143,26 @@ declare global {
                         table: 'sys_hub_action_instance_v2'
                         id: '8a12e793640f4896bf5c917ff0f00c2a'
                         deleted: true
+                    }
+                    hpia_call_process: {
+                        table: 'sys_hub_sub_flow_instance_v2'
+                        id: '4422de13425d44dc89b9fb0772b1118f'
+                    }
+                    hpia_flow: {
+                        table: 'sys_hub_flow'
+                        id: '53bc0d0ad55d4f3fb3564f992fffc0f7'
+                    }
+                    hpia_log: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'b7ce9300a58f4dc4b1948d22df0cd5aa'
+                    }
+                    hpia_lookup_group: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '802cfab800814e7089b2dac52ddc2f75'
+                    }
+                    hpia_trigger: {
+                        table: 'sys_hub_trigger_instance_v2'
+                        id: '1247eba6e9d44e0f9d1c5c49fd870b61'
                     }
                     hpie_create_problem: {
                         table: 'sys_hub_action_instance_v2'
@@ -2708,6 +2756,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: '004234e50ec04da8813f74b85e2c3f8c'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'needed_by'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_choice'
                         id: '0115c67d37994fc68cee9b9e1a5f0be7'
                         key: {
@@ -2756,12 +2813,27 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice_set'
+                        id: '027a6a66f5314c4eaa4ad71ec03c7cf9'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'request_type'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: '02991a51ac5447e2921b7243ce105962'
                         deleted: true
                         key: {
                             model: '20455bf77e754d48b4f9b057b831b534'
                             element: 'controlTag'
+                        }
+                    },
+                    {
+                        table: 'sys_db_object'
+                        id: '04b0750d80f548a582b37d43285e9eae'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
                         }
                     },
                     {
@@ -2793,6 +2865,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: '06a3e92f97c5461c9492ed90eda8b253'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'requested_for'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: '06cd81e4ac404dc38a7b272484a1462b'
                         key: {
@@ -2811,12 +2891,29 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: '07a62e1f65fa4ad09b7f971dcd7e1dbb'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'business_justification'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'catalog_ui_policy_action'
                         id: '07e6893ffd63417cbe4761b1106d9e1f'
                         deleted: true
                         key: {
                             ui_policy: '668aba2fbb5948d286aa6ee4ba2c69d2'
                             catalog_variable: 'IO:IO:3617b5d583bacf10b939cc65eeaad3f5'
+                        }
+                    },
+                    {
+                        table: 'sys_choice_set'
+                        id: '0805cacc8d2743e0bf716dce2aa91066'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'request_type'
                         }
                     },
                     {
@@ -2837,6 +2934,14 @@ declare global {
                             value: '2'
                             language: 'en'
                             dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '0a8880f8ed134c858544b7c74d255130'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'delivery_location'
                         }
                     },
                     {
@@ -2984,6 +3089,17 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: '0f969963409e4d7bb591465cc1b726a6'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'asset_type'
+                            value: '1'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: '0fdbcb22ec3c4054909d2429563fb05c'
                         deleted: true
@@ -3103,6 +3219,17 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: '14efe4cf74f74e2cadbbd49d2485d93a'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'asset_type'
+                            value: '3'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_output'
                         id: '151104a429524f0589602f214630f6e5'
                         key: {
@@ -3174,6 +3301,14 @@ declare global {
                         key: {
                             model: '6edc7084d1844f73a322641cef70925a'
                             element: 'requestItem'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '19fe0fa6cf9f4aceb7bc2130e9038c0f'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'request_type'
                         }
                     },
                     {
@@ -3341,6 +3476,22 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: '261ba3675f4c4273befb363d698618a5'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'request_type'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '26dbaa8c39704244baa147522d49e56c'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'existing_asset'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: '271bc614433c4defa8c6c987144f16ec'
                         key: {
                             name: 'x_2225382_nwforge_emp_assets'
@@ -3502,6 +3653,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: '36ae82a59e8f445bbdaac87e654c47ce'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'needed_by'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_dictionary'
                         id: '37f108f8f2484511867da744c6d637d2'
                         key: {
@@ -3609,6 +3769,17 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: '3e5b5022b97f4ceda736433d62e1c37a'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'request_type'
+                            value: '0'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: '3ecaa87d760e4652915fb4324f5707f7'
                         deleted: true
@@ -3672,6 +3843,14 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: '42550e053c174ded9a92c058d341cdce'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'asset_type'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: '429c004382854841a9efde0feea76135'
                         key: {
                             name: 'x_2225382_nwforge_employee_equ'
@@ -3704,6 +3883,13 @@ declare global {
                         key: {
                             name: 'x_2225382_nwforge_u_lap_req'
                             element: 'u_priority'
+                        }
+                    },
+                    {
+                        table: 'ua_table_licensing_config'
+                        id: '44151cc227394d95bddf3f6b1f045318'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
                         }
                     },
                     {
@@ -3771,6 +3957,14 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: '47aac7d175b44d47a00aa7603f1d9f60'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'delivery_location'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: '49575f8f8dda4e7cbb25f7acba94fe55'
                         key: {
                             name: 'x_2225382_nwforge_u_lap_req'
@@ -3805,10 +3999,46 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: '4b1733a5016d4e9282a086ccbdd270cc'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'existing_asset'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: '4b3242af7bf14f2fb4be3605a68bf86f'
                         key: {
                             name: 'x_2225382_nwforge_vendor_contr'
                             element: 'owner'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '4b68be707d15418d95f5db4ded79daac'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'business_justification'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '4b7ff0bd88654d5da258e77b6a270b04'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'business_justification'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '4b96feb9b9a54a6da473a1abe0747244'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'asset_type'
+                            value: '0'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -3859,6 +4089,23 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: '4f6dd66da110417a9eee8116c7eb6335'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '4f9533147cba4002857ff337c7fc70db'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'existing_asset'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_choice_set'
                         id: '501530d2c2c046df93ab540dd2f967d8'
                         key: {
@@ -3867,11 +4114,37 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: '50a10b6052184a088cf4950e887fcdae'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '50b5f1daa05e4b229ac75549ad72b639'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'request_type'
+                            value: '2'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: '50d04465da604685a40a7c393adf106a'
                         key: {
                             model: '0f96077cd09a4708bf386b2bfca0078d'
                             element: 'assignmentOverrideGroup'
+                        }
+                    },
+                    {
+                        table: 'sys_db_object'
+                        id: '50dd41bc6f934eeeb7988a0b0837c804'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
                         }
                     },
                     {
@@ -3899,6 +4172,17 @@ declare global {
                             name: 'x_2225382_nwforge_vendor_contr'
                             element: 'vendor_name'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '53caa5fb71e148a4a14025cd8e5e1be5'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'asset_type'
+                            value: '2'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -4045,6 +4329,36 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: '5c5bfb4b128143f5ace0560c6ab7c378'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'request_type'
+                            value: '2'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_choice_set'
+                        id: '5c6fd1bbc33543b7a8745089effb4149'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'request_type'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '5d49ee17e6a0481bac60be1a01b6537e'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'request_type'
+                            value: '1'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: '5de7e3d68ee84833889dca5c161e96d2'
                         key: {
@@ -4115,6 +4429,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_number'
+                        id: '63726a5ac05b4c7bad28f1c3e5364c16'
+                        key: {
+                            category: 'x_2225382_nwforge_emp_asset_re'
+                            prefix: 'EAR'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: '63f0b1bed2f643aaae243231c5cd099f'
                         key: {
@@ -4130,6 +4452,17 @@ declare global {
                             name: 'x_2225382_nwforge_emp_assets'
                             element: 'asset_type'
                             value: '1'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '65298975dffb4bf88cba4c9f98cffdbf'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'asset_type'
+                            value: '3'
                             language: 'en'
                             dependent_value: 'NULL'
                         }
@@ -4158,6 +4491,15 @@ declare global {
                         key: {
                             model: '0f96077cd09a4708bf386b2bfca0078d'
                             element: 'finalPriority'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '68f6b2d1b32645f7ada7d8c0d2d3c40b'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'request_type'
+                            language: 'en'
                         }
                     },
                     {
@@ -4220,6 +4562,17 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: '6c3258d8a19f46b283fd298b17606577'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'asset_type'
+                            value: '1'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_output'
                         id: '6c66d2fc0f3b48a7a348857177daa1e3'
                         deleted: true
@@ -4246,6 +4599,14 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: '6ff81b525af84c368de4baabc896d149'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'asset_type'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: '708e4e435a97452ba94170c603ff6bf9'
                         deleted: true
                         key: {
@@ -4260,6 +4621,17 @@ declare global {
                             name: 'x_2225382_nwforge_emp_assets'
                             element: 'assigned_date'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '715a517c864c44ce8a73e84765402f2a'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'asset_type'
+                            value: '2'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -4302,6 +4674,24 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: '74ef86a68fd743aa87e38c00b2852a52'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'asset_type'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '755e57d27bf8483c964c19d2df0fc8b9'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'needed_by'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_output'
                         id: '764d12738c7a4961a4a6595fc5a50976'
                         deleted: true
@@ -4316,6 +4706,14 @@ declare global {
                         key: {
                             name: 'x_2225382_nwforge_vendor_contr'
                             element: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '777540d51c5d4ba290d567b9f5a1e119'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'needed_by'
                         }
                     },
                     {
@@ -4383,6 +4781,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: '7e3751935bf54adcbc599ec813fd0af1'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'delivery_location'
+                        }
+                    },
+                    {
                         table: 'sys_choice'
                         id: '7e6ca101e0a44254887b12f23a38be64'
                         key: {
@@ -4435,6 +4841,17 @@ declare global {
                             name: 'var__m_sys_hub_flow_output_4a212a8086ae4819b2eaeacd4dbae17a'
                             element: 'status'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '819e2644024c4dbeb638f0658e909d53'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'asset_type'
+                            value: '0'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -4507,6 +4924,15 @@ declare global {
                     },
                     {
                         table: 'sys_documentation'
+                        id: '853d62a2a2074ec7921983cfb4857cd9'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'request_type'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
                         id: '859b2656789f40c4924c68aef750d2ad'
                         deleted: true
                         key: {
@@ -4522,6 +4948,29 @@ declare global {
                             name: 'var__m_sys_hub_flow_output_0f96077cd09a4708bf386b2bfca0078d'
                             element: 'assignmentGroup'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '862d265823684ab1bf1874bf6df1df67'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'asset_type'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'ua_table_licensing_config'
+                        id: '868c099d52fb43b0a42efb7746abb679'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                        }
+                    },
+                    {
+                        table: 'sys_db_object'
+                        id: '86f1544e45b0475dbce0de5158c22cf6'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
                         }
                     },
                     {
@@ -4642,6 +5091,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: '91b44f925fdf41c0b84b0f2e4d202264'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'request_type'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: '929075b754e1412c82388065485540ca'
                         deleted: true
@@ -4656,6 +5114,15 @@ declare global {
                         key: {
                             name: 'x_2225382_nwforge_x_2196302_sn'
                             element: 'assigned_to'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '936c50cf599e46758b36b77891b745a3'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'NULL'
+                            language: 'en'
                         }
                     },
                     {
@@ -4742,12 +5209,49 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: '9bfd8c7a3788419a86d26725f5b175a3'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'asset_type'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: '9ca77dc90e93483da38b2f0a1a82eb97'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'request_type'
+                            value: '2'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: '9cc1a293f3374e5f8ffd9a8ab77b23eb'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'existing_asset'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_output'
                         id: '9d55dacb4524408b8e10d177909044da'
                         deleted: true
                         key: {
                             model: 'af90366362d04879b7ab39f6dc66bcc1'
                             element: 'notified'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: '9daad6ffae424e35b574735df41b1e73'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'requested_for'
                         }
                     },
                     {
@@ -4797,6 +5301,15 @@ declare global {
                             value: '2'
                             language: 'en'
                             dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'a0c81f0cfeab4644aec2b46d293e0761'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'delivery_location'
+                            language: 'en'
                         }
                     },
                     {
@@ -4884,6 +5397,17 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: 'a6e5b5742e484dc7a2f2a14813a26311'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'asset_type'
+                            value: '3'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: 'a7cf6d9ce16649bdacb68f25615dfd9a'
                         deleted: true
@@ -4900,6 +5424,14 @@ declare global {
                         key: {
                             model: '52af92abe985449dab59f36f8561a8b5'
                             element: 'taskSysId'
+                        }
+                    },
+                    {
+                        table: 'sys_number'
+                        id: 'a84a791e0efd42329ee3d399fa0e83d9'
+                        key: {
+                            category: 'x_2225382_nwforge_aaron_test'
+                            prefix: 'EAR'
                         }
                     },
                     {
@@ -4929,6 +5461,23 @@ declare global {
                             value: 'lost'
                             language: 'en'
                             dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'a8d5f3875a7643ff80a5c6e4c6f345a8'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'requested_for'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_number'
+                        id: 'a8ddc3d1901842389c6eb2c9d829304a'
+                        key: {
+                            category: 'x_2225382_nwforge_emp_asset_rq'
+                            prefix: 'EAR'
                         }
                     },
                     {
@@ -5020,6 +5569,17 @@ declare global {
                         key: {
                             name: 'x_2225382_nwforge_vendor_contr'
                             element: 'status'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: 'ae2f39597dbd4e9288af4c80d4959385'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'asset_type'
+                            value: '0'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                     {
@@ -5121,11 +5681,39 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: 'b24754f435cf4c308174e9bba21b70c4'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'NULL'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: 'b35b3de968ef44a6a30fa98563750c06'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'asset_type'
+                        }
+                    },
+                    {
                         table: 'sys_choice'
                         id: 'b3804554ff694d36a1b5ed93116b2bb9'
                         key: {
                             name: 'x_2225382_nwforge_net_inc_demo'
                             element: 'priority'
+                            value: '2'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: 'b3861db4641f48559ae3093fc8054b6b'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'asset_type'
                             value: '2'
                             language: 'en'
                             dependent_value: 'NULL'
@@ -5169,6 +5757,17 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: 'b4d4754ce31740caa594c1a6f8508c9b'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'request_type'
+                            value: '0'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_choice_set'
                         id: 'b51a4b46e24049f39459d50b1b47931b'
                         key: {
@@ -5197,6 +5796,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: 'b7b5e034ce4447a49b99f85fe92ed4c0'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'business_justification'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: 'b8af1a646bff48eab4175e9a563558ae'
                         deleted: true
@@ -5217,6 +5824,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: 'b9ba43c3e3ac46769b28cb94b1891593'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'delivery_location'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_choice'
                         id: 'b9e66b4d2e4e4e6b99feb78894c478cf'
                         key: {
@@ -5233,6 +5849,24 @@ declare global {
                         key: {
                             name: 'x_2225382_nwforge_net_inc_demo'
                             element: 'category'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'ba793e43ca9840e1a38594b05514b53f'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'business_justification'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'bc0677c53e88487cb4f6567ac1add3c9'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'requested_for'
                             language: 'en'
                         }
                     },
@@ -5361,6 +5995,40 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: 'c6347532b32d4a2f9a01af4af515ac61'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'request_type'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: 'c650cc4f030447ffb1a672c3ba475b1b'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'existing_asset'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'c7a2b91025f84903a00a153cf6323d40'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'delivery_location'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'c7c11e1e576c412087b02bf28f07895d'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'requested_for'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: 'c86a2a638cff4c9eab5d2c3c7276dbe2'
                         deleted: true
@@ -5448,6 +6116,25 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: 'ce2721806e6640fdb0ff68b8086b162b'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'business_justification'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: 'ce2b21b0e93745c9820df6f1c06544dc'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'request_type'
+                            value: '0'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: 'ce637d14878841dd8a56f58c5a53c85d'
                         key: {
                             name: 'x_2225382_nwforge_u_lap_req'
@@ -5503,6 +6190,17 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: 'd14c047a27e541b689c93d91b6993e8c'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'asset_type'
+                            value: '1'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_input'
                         id: 'd23918f6cde645fea8e928abf04549fc'
                         deleted: true
@@ -5513,10 +6211,36 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: 'd262c824cf0b47ae889f12b6905a9a28'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'requested_for'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: 'd276eb1080ba43e09a9824fd3172445a'
                         key: {
                             name: 'x_2225382_nwforge_asset'
                             element: 'u_name'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'd28b05cbafd4446a8c82762b1b876a46'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'existing_asset'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'd2f5e237d68645a38cdfb8c2b5e2ec44'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'NULL'
+                            language: 'en'
                         }
                     },
                     {
@@ -5537,6 +6261,14 @@ declare global {
                         key: {
                             model: '20455bf77e754d48b4f9b057b831b534'
                             element: 'managerEmail'
+                        }
+                    },
+                    {
+                        table: 'sys_choice_set'
+                        id: 'd59e1a5e55c24fd58de1bc8ebb4017ea'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'asset_type'
                         }
                     },
                     {
@@ -5797,6 +6529,25 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice'
+                        id: 'ee6935dfc39049489d27b34c130dff27'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'request_type'
+                            value: '1'
+                            language: 'en'
+                            dependent_value: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_choice_set'
+                        id: 'eeb7373c01fc4af782286bf5e2f43643'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'asset_type'
+                        }
+                    },
+                    {
                         table: 'sys_dictionary'
                         id: 'eebc2023ee1249baba0568dff36f5095'
                         key: {
@@ -5820,6 +6571,13 @@ declare global {
                             name: 'x_2225382_nwforge_net_inc_demo'
                             element: 'incident_number'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'ua_table_licensing_config'
+                        id: 'f0016a77294f4f66bef7235f4c20a361'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
                         }
                     },
                     {
@@ -5857,6 +6615,14 @@ declare global {
                             name: 'x_2225382_nwforge_asset'
                             element: 'NULL'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: 'f0de5c5f7bea4c37b604a024d33e5f5f'
+                        key: {
+                            name: 'x_2225382_nwforge_aaron_test'
+                            element: 'NULL'
                         }
                     },
                     {
@@ -5933,6 +6699,22 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: 'f5223df6957848bcab01fb743dc8784f'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'needed_by'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
+                        id: 'f5af8d00abe04c9b9d3c3281d7317c76'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'needed_by'
+                        }
+                    },
+                    {
                         table: 'sys_documentation'
                         id: 'f9411407d6954b178eb5f0286c009792'
                         key: {
@@ -5969,12 +6751,31 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_choice_set'
+                        id: 'fc4539c6dde34243b9be78bc6a0c5092'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_rq'
+                            element: 'asset_type'
+                        }
+                    },
+                    {
                         table: 'sys_hub_flow_output'
                         id: 'fdd729e8579843fba46a198358e5a6e7'
                         deleted: true
                         key: {
                             model: '81909828f0db45c99ae91abae7fd380c'
                             element: 'problem_sys_id'
+                        }
+                    },
+                    {
+                        table: 'sys_choice'
+                        id: 'ff0d360eb9014e0286e12b203934bc15'
+                        key: {
+                            name: 'x_2225382_nwforge_emp_asset_re'
+                            element: 'request_type'
+                            value: '1'
+                            language: 'en'
+                            dependent_value: 'NULL'
                         }
                     },
                 ]

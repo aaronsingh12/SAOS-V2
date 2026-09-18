@@ -755,3 +755,118 @@ test('A43 — §21: a reference to a live platform table resolves against the di
   });
   assert.equal(withDictionary.fatal.some((p) => p.code === 'reference_target_unknown'), false);
 });
+
+test('A44 - an explicit one-table request refuses extra table components', () => {
+  const contract = B.contractFromRequest(`
+Table Label:
+Employee Asset Request
+
+Table Name:
+employee_asset_request
+
+Also create a Flow Designer flow.
+`);
+  const named = B.applyNaming([
+    component('table', 'Employee Asset Request', { name: 'Employee Asset Request', label: 'Employee Asset Request' }),
+    component('table', 'Employee Equipment Request', { name: 'Employee Equipment Request', label: 'Employee Equipment Request' }),
+    component('flow', 'Manager Approval Flow', { name: 'Manager Approval Flow', table: `${PREFIX}employee_asset_request` }),
+  ], { prefix: PREFIX });
+  const v = B.validateContract({ contract, components: named.components });
+  assert.equal(v.ok, false);
+  assert.ok(v.fatal.some((p) => p.code === 'extra_table'));
+});
+
+test('A45 - a requested flow cannot be silently dropped from the architecture', () => {
+  const contract = B.contractFromRequest('Table Name: employee_asset_request\nAlso create: Flow Designer flow for manager approval');
+  const named = B.applyNaming([
+    component('table', 'Employee Asset Request', { name: 'Employee Asset Request', label: 'Employee Asset Request' }),
+  ], { prefix: PREFIX });
+  const v = B.validateContract({ contract, components: named.components });
+  assert.equal(v.ok, false);
+  assert.ok(v.fatal.some((p) => p.code === 'requested_flow_missing'));
+});
+
+test('A46 - fields for a new table are folded into the single table-create step', () => {
+  const table = component('table', `${PREFIX}employee_asset_request`, {
+    name: `${PREFIX}employee_asset_request`,
+    label: 'Employee Asset Request',
+    extends: 'task',
+    autoNumber: { prefix: 'EAR' },
+  });
+  const requestedFor = component('field', 'requested_for', {
+    table: `${PREFIX}employee_asset_request`,
+    name: 'requested_for',
+    label: 'Requested For',
+    type: 'reference',
+    reference: 'sys_user',
+    mandatory: true,
+  }, [table.name]);
+  const requestType = component('field', 'request_type', {
+    table: `${PREFIX}employee_asset_request`,
+    name: 'request_type',
+    label: 'Request Type',
+    type: 'choice',
+    choices: [{ value: 'new', label: 'New' }],
+  }, [table.name]);
+
+  const { steps, folded } = B.buildPlan({ ordered: [table, requestedFor, requestType], requirements: REQUIREMENTS });
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].tool, 'dba_create_table');
+  assert.equal(steps[0].inputs.spec.extends, 'task');
+  assert.equal(steps[0].inputs.spec.autoNumber.prefix, 'EAR');
+  assert.deepEqual(steps[0].inputs.spec.fields.map((f) => f.name), ['requested_for', 'request_type']);
+  assert.equal(folded.length, 2);
+  assert.ok(folded.every((f) => f.built_by === table.name));
+});
+
+test('A47 - explicit table contract preserves extends, auto-number, listed fields, and unsupported UI Policy', () => {
+  const contract = B.contractFromRequest(`
+Table Label:
+Employee Asset Request
+
+Table Name:
+employee_asset_request
+
+Extends:
+Task
+
+Create these custom fields:
+
+1. Requested For
+2. Request Type
+3. Business Justification
+
+Do not recreate fields inherited from Task such as:
+- Number
+- State
+
+Configure auto-number prefix:
+EAR
+
+Also create:
+- UI Policy: Existing Asset mandatory when Request Type = Replacement
+- Flow Designer flow for manager approval
+`);
+
+  const named = B.applyNaming([
+    component('table', 'Employee Asset Request', {
+      name: 'Employee Asset Request',
+      label: 'Employee Asset Request',
+      extends: 'task',
+      autoNumber: { prefix: 'EAR' },
+    }),
+    component('field', 'requested_for', { table: 'Employee Asset Request', name: 'requested_for', label: 'Requested For', type: 'reference' }),
+    component('field', 'request_type', { table: 'Employee Asset Request', name: 'request_type', label: 'Request Type', type: 'choice' }),
+    component('field', 'business_justification', { table: 'Employee Asset Request', name: 'business_justification', label: 'Business Justification', type: 'string' }),
+    component('field', 'state', { table: 'Employee Asset Request', name: 'state', label: 'State', type: 'choice' }),
+    component('flow', 'Manager Approval Flow', { name: 'Manager Approval Flow', table: 'Employee Asset Request' }),
+  ], { prefix: PREFIX });
+
+  const v = B.validateContract({ contract, components: named.components });
+  assert.equal(v.ok, false);
+  assert.equal(v.fatal.some((p) => p.code === 'requested_extends_missing'), false);
+  assert.equal(v.fatal.some((p) => p.code === 'requested_autonumber_missing'), false);
+  assert.equal(v.fatal.some((p) => p.code === 'requested_field_missing'), false);
+  assert.ok(v.fatal.some((p) => p.code === 'inherited_task_field_recreated'));
+  assert.ok(v.fatal.some((p) => p.code === 'requested_ui_policy_unsupported'));
+});

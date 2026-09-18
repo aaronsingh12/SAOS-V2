@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
 import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, subflowCatalog, verify } from '../servicenow/fluent.js';
 import { startBuildRun, finishBuildRun, auditedEmit } from '../memory/audit.js';
+import { assertSessionUsableOnCurrentInstance } from '../memory/sessions.js';
 import { awaitApprovalDecision } from '../agent/orchestrator.js';
 import { log } from '../logging.js';
 
@@ -48,6 +49,11 @@ flowsRouter.post('/live', async (req, res) => {
   const sessionId = String(req.body?.sessionId || 'flows-page');
   const text = spec || (blueprint ? blueprintToSpec(blueprint) : null);
   if (!text) return res.status(400).json({ message: 'spec (or blueprint) is required' });
+  try {
+    assertSessionUsableOnCurrentInstance(sessionId);
+  } catch (err) {
+    return res.status(err.status || 409).json({ message: err.message });
+  }
   if (artifactType && !['flow', 'subflow'].includes(artifactType)) {
     return res.status(400).json({ message: 'artifact_type must be "flow" or "subflow"' });
   }

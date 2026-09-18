@@ -36,6 +36,10 @@ agentRouter.get('/info', (_req, res) => res.json(providerInfo()));
 agentRouter.get('/sessions', (_req, res) => res.json(listSessions()));
 
 agentRouter.post('/sessions', (req, res) => {
+  const id = req.body?.id;
+  if (id && getSession(id) && !sessionBelongsToCurrentInstance(id)) {
+    return res.status(409).json({ message: 'This chat belongs to another instance. Start a new chat for the current instance.' });
+  }
   res.json(createSession({ id: req.body?.id, title: req.body?.title }));
 });
 

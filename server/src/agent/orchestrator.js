@@ -2765,7 +2765,7 @@ ${skillNote}` : text);
         try {
           const raw = await executeTool(tool, call.input || {}, approval, {
             source: approvedSource, autoApprove: Boolean(agent.autoApprove),
-          }, { sessionId, turnSeq });
+          }, { sessionId, turnSeq, userText });
 
           // The write landed on the instance. Whether it landed as REQUESTED is
           // a different question, and until this the answer was never asked.

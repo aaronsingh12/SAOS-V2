@@ -31,9 +31,6 @@ import AgentWelcome from '../components/AgentWelcome.jsx';
 import { AnimatedItem } from '../components/AnimatedList.jsx';
 
 const SESSION_KEY = 'nowhelpassist.sessionId';
-// Read once, for anyone who had a chat open across the rename. Cleared on the
-// first write, so this is not a key the app keeps two of.
-const LEGACY_SESSION_KEY = 'nowforge.sessionId';
 const scopedSessionKey = (instanceUrl) => `${SESSION_KEY}:${instanceUrl || 'unbound'}`;
 
 let nextId = 1;
@@ -107,8 +104,7 @@ export default function AgentChat() {
   const openAgent = () => { if (window.location.pathname !== '/agent') navigate('/agent'); };
   const [sessionId, setSessionId] = useState(
     () => params.get('session')
-      || localStorage.getItem(SESSION_KEY)
-      || localStorage.getItem(LEGACY_SESSION_KEY)
+      || localStorage.getItem(scopedSessionKey(null))
       || crypto.randomUUID()
   );
   // Set when this chat came from a meeting. Drives the banner and the rail mark.
@@ -302,9 +298,7 @@ export default function AgentChat() {
       storedInstanceRef.current = instanceUrl;
       return;
     }
-    localStorage.setItem(SESSION_KEY, sessionId);
     localStorage.setItem(scopedSessionKey(instanceUrl), sessionId);
-    localStorage.removeItem(LEGACY_SESSION_KEY);
   }, [sessionId, instanceUrl]);
 
   useEffect(() => {

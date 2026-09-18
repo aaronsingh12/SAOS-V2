@@ -1,18 +1,25 @@
 import { Router } from 'express';
 import { listCapturedSets, setContents, isCaptureOn, setCapture, classifyTable } from '../servicenow/transport.js';
 import { exportUpdateSet } from '../servicenow/transport-export.js';
+import { assertSessionUsableOnCurrentInstance } from '../memory/sessions.js';
 
 export const transportRouter = Router();
 
 /** GET /api/transport/capture/:session — is capture on for this session? */
 transportRouter.get('/capture/:session', (req, res, next) => {
-  try { res.json({ session: req.params.session, enabled: isCaptureOn(req.params.session) }); }
+  try {
+    assertSessionUsableOnCurrentInstance(req.params.session);
+    res.json({ session: req.params.session, enabled: isCaptureOn(req.params.session) });
+  }
   catch (err) { next(err); }
 });
 
 /** POST /api/transport/capture/:session { enabled } */
 transportRouter.post('/capture/:session', (req, res, next) => {
-  try { res.json(setCapture(req.params.session, req.body?.enabled !== false)); }
+  try {
+    assertSessionUsableOnCurrentInstance(req.params.session);
+    res.json(setCapture(req.params.session, req.body?.enabled !== false));
+  }
   catch (err) { next(err); }
 });
 
@@ -27,7 +34,10 @@ transportRouter.get('/classify/:table', async (req, res, next) => {
 
 /** GET /api/transport/sets?session= */
 transportRouter.get('/sets', async (req, res, next) => {
-  try { res.json(await listCapturedSets({ sessionId: req.query.session || null })); }
+  try {
+    if (req.query.session) assertSessionUsableOnCurrentInstance(req.query.session);
+    res.json(await listCapturedSets({ sessionId: req.query.session || null }));
+  }
   catch (err) { next(err); }
 });
 
