@@ -1,0 +1,117 @@
+{
+  "setup": {
+    "table": "sc_req_item",
+    "payload": {
+      "cat_item": "86b710978313c75037f1fcb6feaad3cf",
+      "short_description": "Test Laptop Request",
+      "requested_for": "6816f79cc0a8016401c5a33be04be441",
+      "variables.laptop_type": "Gaming"
+    }
+  },
+  "wait": {
+    "flowName": "Laptop Request Fulfillment",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "sysapproval_approver",
+      "locate": {
+        "byQuery": "document_id={{setup.sys_id}}^approverISNOTEMPTY^groupISEMPTY"
+      },
+      "field": "state",
+      "expect": {
+        "value": "requested"
+      },
+      "note": "manager approval record created"
+    },
+    {
+      "table": "sysapproval_approver",
+      "locate": {
+        "byQuery": "document_id={{setup.sys_id}}^group=5f63e48fc0a8010e00eeaad81cd4dd37"
+      },
+      "field": "state",
+      "expect": {
+        "value": "requested"
+      },
+      "note": "group approval record created for high‑end laptop"
+    },
+    {
+      "table": "sc_task",
+      "locate": {
+        "byQuery": "request_item={{setup.sys_id}}"
+      },
+      "field": "assignment_group",
+      "expect": {
+        "value": "5f63e48fc0a8010e00eeaad81cd4dd37"
+      },
+      "note": "provisioning task created"
+    }
+  ],
+  "unverifiable": [
+    {
+      "effect": "sets close_code to 'unresolved' and state to '4' on the request item",
+      "kind": "field_absent",
+      "table": "sc_req_item",
+      "field": "close_code",
+      "note": "close_code field does not exist in this instance's schema"
+    },
+    {
+      "effect": "sets close_code to 'rejected' and state to '4' on the request item",
+      "kind": "field_absent",
+      "table": "sc_req_item",
+      "field": "close_code",
+      "note": "close_code field does not exist in this instance's schema"
+    },
+    {
+      "effect": "sets close_code to 'completed' and state to '3' on the request item",
+      "kind": "field_absent",
+      "table": "sc_req_item",
+      "field": "close_code",
+      "note": "close_code field does not exist in this instance's schema"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "sc_req_item",
+      "locate": {
+        "bySetupRecord": true
+      }
+    },
+    {
+      "table": "sysapproval_approver",
+      "locate": {
+        "byQuery": "document_id={{setup.sys_id}}"
+      }
+    },
+    {
+      "table": "sc_task",
+      "locate": {
+        "byQuery": "request_item={{setup.sys_id}}"
+      }
+    }
+  ],
+  "resume": {
+    "table": "sysapproval_approver",
+    "locate": {
+      "byQuery": "document_id={{setup.sys_id}}^approverISNOTEMPTY^state=requested"
+    },
+    "patch": {
+      "state": "approved"
+    },
+    "waitSec": 90,
+    "note": "approve the manager approval so the flow continues"
+  },
+  "assertAfterResume": [
+    {
+      "table": "sysapproval_approver",
+      "locate": {
+        "byQuery": "document_id={{setup.sys_id}}^approverISNOTEMPTY"
+      },
+      "field": "state",
+      "expect": {
+        "value": "approved"
+      },
+      "note": "manager approval approved to continue flow"
+    }
+  ]
+}

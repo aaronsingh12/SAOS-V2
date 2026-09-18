@@ -1211,6 +1211,106 @@ declare global {
                         id: '724901780a6d4508bb397e78c6ed5ac4'
                         deleted: true
                     }
+                    lrf_close_complete: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '30e428bbc262418d9e16514086baf528'
+                    }
+                    lrf_close_rejected: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '9dcaf5a6a6604a9284523d4937a7ed57'
+                    }
+                    lrf_close_unresolved: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'bd0f8c6751c544b8bfb70f0b999e4f4c'
+                    }
+                    lrf_create_group_approval: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '84663b3b335b427ca65e78ca710265e6'
+                    }
+                    lrf_create_manager_approval: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '965f1a71e4524370887404461341aa1d'
+                    }
+                    lrf_create_provision_task: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '7341467072264f92bdd876b720009f7a'
+                    }
+                    lrf_else_approvals_approved: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '140a54de14da4906baf3cad8b5e6f053'
+                    }
+                    lrf_else_manager_exists: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '7698542d71e54f898ac72c2a74a4915e'
+                    }
+                    lrf_end_no_manager: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '6d0ff6b54ab944ffa07e3b2c6e5859f6'
+                    }
+                    lrf_end_rejection: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '7de4c3c56650458798332603fc77eec0'
+                    }
+                    lrf_end_success: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: 'cdc25082ff554fe09fefee1ad04499ac'
+                    }
+                    lrf_flow: {
+                        table: 'sys_hub_flow'
+                        id: '90093f9f704541478a0c11a13a7e0b54'
+                    }
+                    lrf_if_high_end_laptop: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: 'e5ac0fe33ce241eabad00211e3f78941'
+                    }
+                    lrf_if_no_manager: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '82d5d8c7b1b94aaebdee095861aa4a45'
+                    }
+                    lrf_if_rejected: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: 'c398b612051a4e6b8966a69637b60907'
+                    }
+                    lrf_lookup_first_approval: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '1dbe826bf2604f37be600b2cff42fbff'
+                    }
+                    lrf_lookup_rejected: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '3d9369e33f764674852bdd2fe9fab212'
+                    }
+                    lrf_lookup_user: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'a470df4f7260459e8a01dc6f29191010'
+                    }
+                    lrf_send_ack: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '243841aa01d14dcc8d90e4c936aa8a9f'
+                    }
+                    lrf_send_completion: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'b185c7370c1c4d93ae8370baa8c02897'
+                    }
+                    lrf_send_no_manager: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'ef769e66d7634c0f85fdd6ac3bc9a394'
+                    }
+                    lrf_send_rejection: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '8d30b5a6bc594fcaa0b7ff26032a5b24'
+                    }
+                    lrf_trigger: {
+                        table: 'sys_hub_trigger_instance_v2'
+                        id: 'fce073b87c804abfb47867e8ba35fffd'
+                    }
+                    lrf_wait_approvals: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '83814283e89a4b9c85872b1974a7f912'
+                    }
+                    lrf_wait_task: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '4ac8b28c2630482a91e87072ceb4918b'
+                    }
                     mlap_add_initial_note: {
                         table: 'sys_hub_action_instance_v2'
                         id: '19c5c00418d6446e839c5184fa0c02b6'
@@ -1498,6 +1598,10 @@ declare global {
                     ramm_resolve_approval_matrix: {
                         table: 'sys_hub_flow'
                         id: 'df89537b38d0432eb162bb51219d249c'
+                    }
+                    ramm_resolve_approval_matrix_log: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '3116363d3e284d4584bb03732ffbc63a'
                     }
                     rmah_else_no_manager: {
                         table: 'sys_hub_flow_logic_instance_v2'
