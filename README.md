@@ -74,15 +74,17 @@ cd server/fluent-workspace && now-sdk dependencies
 
 The Flows page shows a green banner when this is ready, and the exact fix commands when it isn't. `GET /api/flows/live/capability` returns the same detail (add `?deep=true` to actually round-trip the instance instead of just reading the local credential store).
 
-**On the scope name:** the deployed application is still scoped
-`x_2196302_nwforge` and named "NowForge Flows" — that is an address on the
-instance, not a label, and renaming it in source would install a *second*,
-empty application rather than rename the existing one. Same for the
-`// nowforge-spec:` markers that match a request to its already-deployed
-source. See `docs/fluent-research.md` §25 for the full list of what was and
-was not renamed, and why.
+**On the scope name:** the application's scope is the `scope` in
+`server/fluent-workspace/now.config.template.json` — currently `x_2002152_nwforge`,
+named "NowForge Flows". That string is an address on the instance, not a label:
+renaming it in source installs a *second*, empty application rather than renaming
+the existing one. Same for the `// nowforge-spec:` markers that match a request to
+its already-deployed source. See `docs/fluent-research.md` §25 for the full list of
+what was and was not renamed, and why — noting that it, and the other diagnostics
+under `docs/`, quote `x_2196302_nwforge`, which was the scope of the application
+installed on the PDI of the day. The template file is the current answer.
 
-**On credentials:** the SDK keeps its own credential store, addressed by alias — it does **not** read `server/data/settings.json`, and there is no `.env` anywhere in this project. For CI, skip the stored alias and export `SN_SDK_NODE_ENV=SN_SDK_CI_INSTALL`, `SN_SDK_AUTH_TYPE`, `SN_SDK_INSTANCE_URL`, `SN_SDK_USER`, `SN_SDK_USER_PWD` (or the OAuth pair) instead. Note that `keys.ts` — despite living under a docs page called "keys file" — is a **sys_id map, not credentials**; commit it.
+**On credentials:** the SDK's instance binding is **derived from the UI configuration on every invocation**, not from a stored alias. Each `now-sdk` call is given `SN_SDK_NODE_ENV=SN_SDK_CI_INSTALL` plus the auth variables built from the bound instance in `server/data/settings.json` (gitignored), and — measured — those override the CLI's stored alias completely. That closed a real failure: the alias was a second place an instance address could live, and it pointed at a retired PDI while the REST tier had moved on. Any alias still in the SDK's own store is listed as **inert**. There is no `.env` anywhere in this project. Note that `keys.ts` — despite living under a docs page called "keys file" — is a **sys_id map, not credentials**; commit it.
 
 Because the SDK and NowHelpAssist authenticate separately, they can point at different instances. The capability banner warns you when they do, since flows would deploy somewhere other than the instance you're reading.
 
@@ -117,7 +119,7 @@ The item view itself has three tabs:
 - **Semantic verification:** press **Verify** and NowHelpAssist fires the flow on a real record, asserts the effects your sentence promised, and deletes the test data. Compiling proves a flow is well-formed; this proves it is *correct*. A **subflow** has no trigger, so it is *called* instead: a one-shot scheduled job invokes it through `sn_fd.FlowAPI` with the spec's test inputs, and both its effects on records and the values it **returns** are asserted. The job and its result row are deleted and read back. See [docs/demo.md](docs/demo.md) for a five-minute walkthrough, and `docs/fluent-research.md` §32 for the measurements behind the harness.
 - **Dependency safety:** every managed artifact carries `calls` and `calledBy`. Deleting a subflow a live flow still calls is refused, with the callers named — deleting it would leave their sources untouched, so the build would stay green and every execution would fail at the subflow step.
 - **Design with AI:** describe an automation → a precise blueprint (trigger, exact actions, configs, reference fields, test plan). Download it, or hit **Deploy as real flow** to feed it straight into the live pipeline.
-- **Classic fallback:** where the SDK can't run, record-triggered blueprints still become an equivalent **Business Rule** (`sys_script`), always created **inactive** for review.
+- **No substitute when the SDK can't run:** the capability banner prints the exact fix commands and the agent reports `REQUIRES_MANUAL_ACTION`. Nothing is silently put in a flow's place — the Business Rule fallback was removed on 2026-09-08 (Session 1, WI-4). A Business Rule is created only when one is asked for by name, and `sys_hub_*` is never written over REST.
 
 #### How live authoring works
 
@@ -133,12 +135,31 @@ plain-language spec
         │
         ├─► LLM ──► Fluent TypeScript          (cheatsheet + hard rules in the prompt)
         │
+        ├─► STATIC GATES          every check runs together and every diagnostic comes
+        │                          back as one message, BEFORE anything is written to
+        │                          src/ and before the SDK is spawned.
+        │                          MODE: `NOWFORGE_FLOW_GATES=advisory` (the default while
+        │                          the authoring path is being proven end to end) runs every
+        │                          check and blocks on none of OURS — findings come back on
+        │                          `gateAdvisories`. `=enforce` makes a finding reject the
+        │                          candidate. `$id` identity blocks in BOTH modes: it is the
+        │                          SDK's rule, not ours, and a duplicate key aborts the build.
+        │     promised literals · blueprint fidelity · artifact type + subflow contract ·
+        │     subflow reuse · trigger strategy · $id identity · and the FLOW DESIGN read —
+        │     trigger form and parameters, the trigger condition checked against the
+        │     table's real dictionary and its real choice VALUES, each action's own
+        │     parameter names and output casing, subflow inputs against the callee's
+        │     declared contract, and the flow logic
+        │
         ├─► now-sdk build          OFFLINE. Compile errors never reach the instance.
         │     └─ on failure: feed the compiler's own diagnostics back, retry (max 3),
         │        then delete the candidate and rebuild so src/ stays clean
         │
-        ├─► now-sdk install        serialized; deploys the WHOLE managed app and
-        │                          auto-activates flows
+        ├─► now-sdk install        serialized; deploys the WHOLE managed app. An install
+        │                          re-applies the app FROM SOURCE, and a flow in source
+        │                          is a draft — so the post-install reconciler republishes
+        │                          every flow recorded as meant to be live, and reads each
+        │                          one back (publishing is a separate act: `activate_flow`)
         │
         ├─► read back via flows.detail()  ──► {sys_id, type, active, link, counts}
         │

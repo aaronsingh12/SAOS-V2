@@ -38,8 +38,29 @@ const SERVER_ROOT = path.resolve(__dirname, '../..');
  */
 const SEARCH_ROOTS = [SERVER_ROOT];
 
-/** A workspace is any directory holding a now.config.json. */
-const CONFIG_NAME = 'now.config.json';
+/**
+ * A workspace is any directory holding a workspace identity.
+ *
+ * TWO FILES, ONE IDENTITY. `now.config.json` is GENERATED and gitignored — a
+ * build materialises the instance-local scope sys_id into it and restores it
+ * afterwards (fluent.js withMaterializedConfig), so on a fresh clone, and
+ * between builds, it may not exist at all. The tracked source of truth is
+ * `now.config.template.json` (fluent.js readAppIdentity).
+ *
+ * Discovering by the generated file alone is why a fresh clone reported NO
+ * managed scope: the Applications page flagged our own application as
+ * unmanaged, and the capture sweep could not key a row to its workspace. The
+ * registry therefore reads the generated config when it is there and the
+ * template when it is not, and says which it used.
+ */
+const CONFIG_NAMES = Object.freeze(['now.config.json', 'now.config.template.json']);
+const configPathIn = (dir) => {
+  for (const name of CONFIG_NAMES) {
+    const p = path.join(dir, name);
+    if (fs.existsSync(p)) return { path: p, name, generated: name === CONFIG_NAMES[0] };
+  }
+  return null;
+};
 
 /**
  * Discovery is cached for the process, because the Applications page and every
@@ -56,11 +77,15 @@ let cache = null;
  * answer than an error.
  */
 async function readWorkspace(dir) {
-  const configPath = path.join(dir, CONFIG_NAME);
+  const found = configPathIn(dir);
+  const configName = found?.name ?? CONFIG_NAMES[0];
+  const configPath = found?.path ?? path.join(dir, configName);
   const entry = {
     id: path.basename(dir),
     dir,
     configPath,
+    /* which identity was read: the generated config, or the tracked template */
+    identitySource: found ? (found.generated ? 'generated' : 'template') : null,
     scope: null,
     scopeId: null,
     name: null,
@@ -83,9 +108,9 @@ async function readWorkspace(dir) {
      */
     entry.scopeId = null;
     entry.name = cfg.name || null;
-    if (!entry.scope) entry.error = `${CONFIG_NAME} has no "scope"`;
+    if (!entry.scope) entry.error = `${configName} has no "scope"`;
   } catch (err) {
-    entry.error = `${CONFIG_NAME} unreadable: ${err.message}`;
+    entry.error = `${configName} unreadable: ${err.message}`;
     return entry;
   }
 
@@ -121,7 +146,7 @@ export async function listWorkspaces() {
     for (const ent of entries) {
       if (!ent.isDirectory() || ent.name === 'node_modules') continue;
       const dir = path.join(root, ent.name);
-      if (fs.existsSync(path.join(dir, CONFIG_NAME))) found.push(await readWorkspace(dir));
+      if (configPathIn(dir)) found.push(await readWorkspace(dir));
     }
   }
   cache = found;

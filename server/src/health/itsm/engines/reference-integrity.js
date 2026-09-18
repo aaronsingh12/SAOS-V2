@@ -1,6 +1,6 @@
 import { declareRequirement, isCompleteFor } from '../data-access.js';
 import { recordFinding } from '../findings.js';
-import { result, preflight, STATUS, empty as isEmpty, truthy } from './result.js';
+import { result, preflight, STATUS, empty as isEmpty, truthy, notePopulation } from './result.js';
 
 /**
  * ENGINE 3 — Reference Integrity.
@@ -21,7 +21,7 @@ import { result, preflight, STATUS, empty as isEmpty, truthy } from './result.js
  */
 
 export const ENGINE_KEY = 'reference_integrity';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 export const BATCH = 50;
 
 export const CHECKS = Object.freeze(['exists', 'active', 'state', 'members_active']);
@@ -184,6 +184,8 @@ export const engine = Object.freeze({
     const reported = c.report || ['missing', 'inactive', 'invalid_state'];
     const offenders = reported.reduce((n, kind) => n + (checked[kind] || []).length, 0);
     const evaluated = rows.length - checked.unverifiable.length - (reported.includes('empty') ? 0 : checked.empty.length);
+    /* EMPTY POPULATION (Phase 5 closure): judged = the rows the check could answer for, as the kpi counts them. */
+    notePopulation(out, { total: rows.length, judged: evaluated, unit: `${c.table} records`, basis: `${c.table}${c.scope ? ` where ${c.scope}` : ''} → ${c.field} (${c.check})` });
     out.kpis.push({ rule_id: rule.id, numerator: evaluated - offenders, denominator: evaluated, pass_pct: evaluated ? Number((100 * (1 - offenders / evaluated)).toFixed(1)) : null, basis: `${c.field} → ${c.target} (${c.check}: ${reported.join('/')})`, complete: checked.complete && isCompleteFor(coverage, [c.field]) });
     return out;
   },

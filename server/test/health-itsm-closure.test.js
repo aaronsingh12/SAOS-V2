@@ -60,12 +60,24 @@ test('VERIFIED OBJECTS: 005 priority-matrix mismatch, 011 stale notification rec
   assert.deepEqual(ids(get('ITSM-139')), ['kt-retired']);
 });
 
-test('VERIFIED OBJECTS negative and unavailable: a CAB meeting in the window silences 082; no delegation → 088 passes; an absent matrix / notification table is UNAVAILABLE at table_discovery, an approval table lacking a field at schema_verification', async () => {
+test('VERIFIED OBJECTS negative and unavailable: a CAB meeting in the window silences 082; healthy delegations → 088 passes, no delegation at all → 088 inconclusive (empty population); an absent matrix / notification table is UNAVAILABLE at table_discovery, an approval table lacking a field at schema_verification', async () => {
   const cab = await run(['ITSM-082'], { cab_meeting: [{ sys_id: 'cab1', start: '2026-09-01 10:00:00', end: '2026-09-01 11:00:00', state: 'complete' }] });
   assert.equal(cab.get('ITSM-082').findings.length, 0);
   assert.equal(cab.get('ITSM-082').verdict, 'inconclusive', 'the CAB-configuration half is a declared detection gap, so no finding is not a pass');
+  /*
+   * PHASE 5 CLOSURE — mandated semantic change: this line asserted `pass` over an
+   * empty sys_user_delegate. "No delegation" is an empty population, so the verdict
+   * is inconclusive; the negative this test guards (no false FAIL) still holds, and
+   * the pass is now asserted over delegations that exist and are healthy.
+   */
   const noDelegation = await run(['ITSM-088'], { sys_user_delegate: [] });
-  assert.deepEqual([noDelegation.get('ITSM-088').status, noDelegation.get('ITSM-088').verdict], ['evaluated', 'pass']);
+  assert.deepEqual([noDelegation.get('ITSM-088').status, noDelegation.get('ITSM-088').verdict, noDelegation.get('ITSM-088').findings.length], ['evaluated', 'inconclusive', 0]);
+  assert.equal(noDelegation.get('ITSM-088').undetermined.kind, 'empty_population');
+  const healthy = await run(['ITSM-088'], { sys_user_delegate: [
+    { sys_id: 'dg-open-ok', user: 'u1', delegate: 'u2', starts: '2026-01-01 00:00:00', ends: '' },
+    { sys_id: 'dg-bounded-ok', user: 'u2', delegate: 'u1', starts: '2026-01-01 00:00:00', ends: '2026-12-31 00:00:00' },
+  ] });
+  assert.deepEqual([healthy.get('ITSM-088').status, healthy.get('ITSM-088').verdict, healthy.get('ITSM-088').findings.length], ['evaluated', 'pass', 0]);
   const gone = ['dl_u_priority', 'sysevent_email_action', 'sysapproval_approver'];
   const absent = await run(['ITSM-005', 'ITSM-011', 'ITSM-121'], { sys_db_object: ESTATE.sys_db_object.filter((o) => !gone.includes(o.name)) }, { instance: { absent: [...ABSENT, ...gone] } });
   for (const id of ['ITSM-005', 'ITSM-011', 'ITSM-121']) {

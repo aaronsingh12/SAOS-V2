@@ -1,6 +1,6 @@
 import { declareRequirement } from '../data-access.js';
 import { recordFinding } from '../findings.js';
-import { result, preflight, STATUS, empty as isEmpty } from './result.js';
+import { result, preflight, STATUS, empty as isEmpty, notePopulation, withhold, UNDETERMINED } from './result.js';
 
 /**
  * ENGINE 4 — Cross-Record Linkage.
@@ -24,7 +24,7 @@ import { result, preflight, STATUS, empty as isEmpty } from './result.js';
  */
 
 export const ENGINE_KEY = 'linkage';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 export const LINK_KINDS = Object.freeze(['reference', 'm2m']);
 export const EXPECTATIONS = Object.freeze(['exists', 'absent', 'count_gte', 'all_in_state', 'any_in_state']);
@@ -185,6 +185,8 @@ export const engine = Object.freeze({
       case 'any_in_state': offenders = stateJoin(from.rows, to.rows, link, c.state_test, { mode: 'any' }); break;
       default: throw new LinkageError(c.expect);
     }
+    /* EMPTY POPULATION (Phase 5 closure): the population is the source side — every record whose links are judged. */
+    notePopulation(out, { total: from.coverage.totalKnown ?? from.rows.length, judged: from.rows.length, unit: `${c.from.table} records`, basis: c.from.query ? `${c.from.table} where ${c.from.query}` : `every ${c.from.table} record` });
     const share = from.rows.length ? Number((100 * offenders.length / from.rows.length).toFixed(1)) : null;
     if ((c.report_ratio || c.threshold) && from.rows.length) {
       out.kpis.push({ rule_id: rule.id, numerator: from.rows.length - offenders.length, denominator: from.rows.length, pass_pct: Number((100 - share).toFixed(1)), basis: `${c.from.table} → ${c.to.table} (${c.expect})`, complete: from.coverage.rowsComplete && to.coverage.rowsComplete });
@@ -194,7 +196,11 @@ export const engine = Object.freeze({
       /* Estate-level: findings only when the offending share breaches. */
       const cmp = { gt: (a, b) => a > b, gte: (a, b) => a >= b, lt: (a, b) => a < b, lte: (a, b) => a <= b }[c.threshold.op];
       if (!cmp) throw new LinkageError(`threshold op ${c.threshold.op}`);
-      if (c.minimum_volume != null && from.rows.length < c.minimum_volume) { out.skipped.push({ rule: rule.id, table: c.from.table, reason: `population ${from.rows.length} is below the minimum volume ${c.minimum_volume}` }); return out; }
+      if (c.minimum_volume != null && from.rows.length < c.minimum_volume) {
+        out.skipped.push({ rule: rule.id, table: c.from.table, reason: `population ${from.rows.length} is below the minimum volume ${c.minimum_volume}` });
+        if (from.rows.length) withhold(out, UNDETERMINED.BELOW_MINIMUM_VOLUME, `population ${from.rows.length} is below the minimum volume ${c.minimum_volume}`);
+        return out;
+      }
       if (share == null || !cmp(share, c.threshold.value)) return out;
     }
     if (offenders.length) {

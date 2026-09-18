@@ -152,6 +152,8 @@ function baseline(over = {}) {
       runId: 'run-1', status: 'completed', checkedAt: '2026-09-15T09:00:00.000Z', engineKey: KEYS.itsm, user: 'admin',
       dependencies: ['incident', 'change_request', 'problem'], stamps,
       specHashes: Object.fromEntries(Object.keys(stamps).map((t) => [t, specHash(t)])),
+      /* The ITSM catalogue's own read stamps (Phase 5). Empty here: these tests are about the table stamps. */
+      metaStamps: {},
       ...over,
     },
   };
@@ -182,6 +184,22 @@ test('PLAN: unchanged inputs keep the result — verified now, nothing read', as
   assert.equal(plan.modules.itsm.verified_at, NOW.toISOString());
   assert.equal(client.asked.find(([t]) => t === 'incident')[1], sliceWhere('incident', '2026-09-15 10:00:00'),
     'the check and the read ask different questions — a record dated in the future would look like a change for ever');
+});
+
+test('PLAN (ITSM Phase 5): the catalogue\'s own reads decide reuse too — no stamps re-reads; a changed catalogue table re-reads, naming it; unchanged keeps', async () => {
+  const catalogue = { task_sla: { table: 'task_sla', query: '', ...stamp(40, '2026-09-10 00:00:00') }, sysapproval_approver: { table: 'sysapproval_approver', query: '', ...stamp(12, '2026-09-01 00:00:00') } };
+  const none = await planScan({ modules: ['itsm'], client: stampClient(same), baselines: baseline({ metaStamps: null }), engineKeys: KEYS, user: 'admin', now: NOW });
+  assert.deepEqual(none.read, ['itsm']);
+  assert.match(none.modules.itsm.reasons.join(' '), /catalogue reads were recorded before change stamps existed/);
+
+  const kept = await planScan({ modules: ['itsm'], client: stampClient({ ...same, task_sla: stamp(40, '2026-09-10 00:00:00'), sysapproval_approver: stamp(12, '2026-09-01 00:00:00') }), baselines: baseline({ metaStamps: catalogue }), engineKeys: KEYS, user: 'admin', now: NOW });
+  assert.deepEqual(kept.reuse, ['itsm']);
+
+  const moved = await planScan({ modules: ['itsm'], client: stampClient({ ...same, task_sla: stamp(41, '2026-09-16 00:00:00'), sysapproval_approver: stamp(12, '2026-09-01 00:00:00') }), baselines: baseline({ metaStamps: catalogue }), engineKeys: KEYS, user: 'admin', now: NOW });
+  assert.deepEqual(moved.read, ['itsm']);
+  assert.match(moved.modules.itsm.reasons.join(' '), /task_sla \(read by the ITSM catalogue\): row count moved from 40 to 41/);
+  assert.equal(moved.meta['itsm:task_sla'].changed, true);
+  assert.equal(moved.meta['itsm:sysapproval_approver'].changed, false);
 });
 
 test('PLAN: an insert or update moves the newest timestamp; a delete moves the count — either re-reads', async () => {
@@ -367,6 +385,16 @@ function fakeInstance(tables) {
     },
     async count(t) { return (tables[t] || []).length; },
     async countBy() { return {}; },
+    /* The real client serves the Aggregate API; the ITSM catalogue (Phase 5) calls it. */
+    async aggregate(t, { groupBy = [] } = {}) {
+      const groups = new Map();
+      for (const r of tables[t] || []) {
+        const key = groupBy.map((f) => r[f] ?? '').join('|');
+        if (!groups.has(key)) groups.set(key, { group: Object.fromEntries(groupBy.map((f) => [f, String(r[f] ?? '')])), count: 0, avg: {}, sum: {}, min: {}, max: {} });
+        groups.get(key).count += 1;
+      }
+      return [...groups.values()];
+    },
     async query(t, { query, limit }) {
       if (TABLES[t]) calls.pages += 1;
       const rows = [...(tables[t] || [])].sort((a, b) => a.sys_id.localeCompare(b.sys_id));
@@ -386,7 +414,7 @@ function baselinesFrom(results) {
     out[m] = {
       runId: r.id, status: r.status, checkedAt: r.at, engineKey: r.manifest.engine_keys[m], user: r.manifest.connection_user,
       dependencies: r.manifest.dependencies[m], stamps: r.manifest.stamps, specHashes: r.manifest.spec_hashes,
-      metaStamps: m === 'cmdb' ? r.manifest.meta_stamps : undefined,
+      metaStamps: m === 'cmdb' ? r.manifest.meta_stamps : m === 'itsm' ? r.manifest.itsm_stamps : undefined,
     };
   }
   return out;

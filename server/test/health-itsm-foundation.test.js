@@ -259,7 +259,8 @@ test('ENGINE KEY: health/itsm stays outside the shared engine hash; the ITSM key
   assert.equal(re.test('itsm'), false);
   assert.equal(re.test('rules'), false);
   assert.equal(fs.existsSync(path.join(SRC, 'health/catalogue/itsm.json')), false);
-  assert.ok(src.includes("m === 'itsm' ? itsmEngineKey().key : undefined"), 'the ITSM key must be folded into the ITSM module key, and only there');
+  /* Phase 5: the key is built from the scan's registry (declarations + instance overrides), still for ITSM only. */
+  assert.ok(src.includes("m === 'itsm' ? itsmEngineKey(itsmParameters ? { parameters: itsmParameters } : {}).key : undefined"), 'the ITSM key must be folded into the ITSM module key, and only there');
 });
 
 /* ════════════════════════ registry ════════════════════════ */
@@ -302,7 +303,7 @@ test('REGISTRY: every rule has a Phase 4 configuration; evaluating a rule WITHOU
 
 /* ════════════════════════ the Phase 3 boundary ════════════════════════ */
 
-test('BOUNDARY: the only module outside health/itsm that imports it is health/incremental.js (the DECISION 8 key) — rules.js, index.js, scopes.js, routes and the agent do not', () => {
+test('BOUNDARY (Phase 5): outside health/itsm only incremental.js (the DECISION 8 key) and index.js (the scan) import it — rules.js, scopes.js, routes and the agent do not', () => {
   const offenders = [];
   const walk = (dir) => {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -312,7 +313,10 @@ test('BOUNDARY: the only module outside health/itsm that imports it is health/in
     }
   };
   walk(SRC);
-  assert.deepEqual(offenders, ['health/incremental.js'], 'something other than the engine-key wiring imports health/itsm');
+  /* Phase 4 allowed only the engine key. Phase 5 connects the runner to the scan
+     in index.js — deliberately, and nowhere else: rules.js receives the
+     normalized results as data and never imports the engine. */
+  assert.deepEqual(offenders.sort(), ['health/incremental.js', 'health/index.js'], 'something other than the engine key and the scan imports health/itsm');
 });
 
 test('BOUNDARY: the eleven hard-coded ITSM rules are still the ones that run, unchanged in identity', () => {

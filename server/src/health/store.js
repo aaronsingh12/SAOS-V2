@@ -36,6 +36,12 @@ function scoringOf(f) {
     modifiers: f.modifiers ?? null,
     false_positive_guard: f.false_positive_guard ?? null,
     materiality: f.materiality ?? null,
+    /* ITSM Phase 5 — the catalogue finding's shape and its trace to rule, engine
+       and verdict. health_findings has no columns for them and drops unknown
+       fields, so they travel in this nullable JSON column (no migration). */
+    ...(f.kind ? { kind: f.kind } : {}),
+    ...(f.detail ? { detail: f.detail } : {}),
+    ...(f.itsm ? { itsm: f.itsm } : {}),
   };
 }
 
@@ -326,6 +332,29 @@ export function cmdbMeasureHistory({ limit = 12, fingerprintRuns = 6 } = {}) {
 }
 
 /**
+ * The stored runs an ITSM scan's trend rules may draw readings from — newest
+ * first, for the bound instance only. Shaped and filtered by the health facade
+ * (`itsmMeasureHistoryFrom`, itsm/measure-history.js): this only reads.
+ */
+export function itsmHistoryRuns({ limit = 24 } = {}) {
+  const bound = boundInstance();
+  const rows = getDb().prepare(`
+    SELECT id, started_at, status, manifest_json FROM health_runs
+     WHERE instance_key = ? AND status IN ('completed','partial')
+     ORDER BY started_at DESC LIMIT ?
+  `).all(bound.key || 'unbound', limit * 2);
+  const runs = [];
+  for (const r of rows) {
+    let manifest = null;
+    try { manifest = r.manifest_json ? JSON.parse(r.manifest_json) : null; } catch { manifest = null; }
+    if (!manifest?.itsm) continue;
+    runs.push({ id: r.id, started_at: r.started_at, status: r.status, manifest });
+    if (runs.length >= limit) break;
+  }
+  return runs;
+}
+
+/**
  * Per-scope summaries for a run — stored ones, or computed for an older run.
  *
  * Runs recorded before the switch existed carry no `scopes` in their manifest.
@@ -460,10 +489,40 @@ export function moduleBaselines() {
       degraded: man.degraded?.[m] ?? null,
       stamps: man.stamps ?? null,
       specHashes: man.spec_hashes ?? null,
-      metaStamps: m === 'cmdb' ? (man.meta_stamps ?? null) : undefined,
+      /* The stamps a module's own reads were compared against: CMDB's governance
+         reads, and — ITSM Phase 5 — every table the ITSM catalogue read. */
+      metaStamps: m === 'cmdb' ? (man.meta_stamps ?? null) : m === 'itsm' ? (man.itsm_stamps ?? null) : undefined,
     };
   }
   return out;
+}
+
+/* ── ITSM catalogue parameter overrides (ITSM Phase 5, migration 29) ──────── */
+
+/** This instance's stored overrides, as `{ rule_id, key, value, set_by, set_at }`. */
+export function itsmParameterOverrides() {
+  const bound = boundInstance();
+  return getDb().prepare(`
+    SELECT rule_id, param_key, value_json, set_by, set_at FROM health_itsm_parameters
+     WHERE instance_key = ? ORDER BY rule_id, param_key
+  `).all(bound.key || 'unbound').map((r) => ({ rule_id: r.rule_id, key: r.param_key, value: JSON.parse(r.value_json), set_by: r.set_by, set_at: r.set_at }));
+}
+
+/** Store one override. The caller validates it against the declaration first. */
+export function setItsmParameterOverride({ ruleId, key, value, by = null }) {
+  const bound = boundInstance();
+  getDb().prepare(`
+    INSERT INTO health_itsm_parameters (instance_key, rule_id, param_key, value_json, set_by, set_at)
+    VALUES (?,?,?,?,?,?)
+    ON CONFLICT (instance_key, rule_id, param_key) DO UPDATE SET value_json = excluded.value_json, set_by = excluded.set_by, set_at = excluded.set_at
+  `).run(bound.key || 'unbound', ruleId, key, JSON.stringify(value), by, nowIso());
+}
+
+/** Remove one override; true when there was one. */
+export function clearItsmParameterOverride({ ruleId, key }) {
+  const bound = boundInstance();
+  return getDb().prepare('DELETE FROM health_itsm_parameters WHERE instance_key = ? AND rule_id = ? AND param_key = ?')
+    .run(bound.key || 'unbound', ruleId, key).changes > 0;
 }
 
 /** Per table: the incremental setting the change check honours. */

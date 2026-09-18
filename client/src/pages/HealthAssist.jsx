@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { SkeletonLines, EmptyState } from '../components/states.jsx';
 import { toast } from '../components/toast.js';
 import RemediationDrawer from '../components/RemediationDrawer.jsx';
+import { ItsmCatalogue, ItsmParameters, CrossDomainLinks, ItsmFindingDetail } from '../components/HealthItsm.jsx';
 import {
   useHealthRun, isActive, startHealthRun, stopHealthRun, discoverHealthRun, getHealthRun,
 } from '../components/healthRun.js';
@@ -893,7 +894,8 @@ export default function HealthAssist() {
   const manifest = run?.manifest;
   const metrics = manifest?.metrics || {};
   const coverage = manifest?.coverage || {};
-  const skipped = manifest?.skipped_checks || [];
+  /* A module tab lists its own skipped checks — the server names each one's scope. */
+  const skipped = (manifest?.skipped_checks || []).filter((s) => scope === 'all' || !s.scope || s.scope === scope);
   const scopeInfo = scopeList.find((x) => x.key === scope) || scopeList[0];
   /* Every number below comes from the SERVER's summary for this scope, which
      was computed over every finding the run detected — never from the page of
@@ -1087,6 +1089,8 @@ export default function HealthAssist() {
                     </table>
                   </>
                 )}
+
+                {f.itsm && <ItsmFindingDetail f={f} />}
 
                 <div className="hs-sub">Evidence · {f.evidence?.length ?? 0} field read(s)</div>
                 <div className="table-wrap">
@@ -1377,6 +1381,12 @@ export default function HealthAssist() {
                     : <>{summary?.score_definition || metrics.score_definition} <b>{summary?.score_basis}</b></>}
                 </p>
                 {scope === 'cmdb' && <TrustVariants composite={cmdbQ?.composite} />}
+                {scope === 'itsm' && (
+                  <p className="hs-fine">
+                    The score counts the eleven original ITSM rules. The {manifest?.itsm?.catalogue_rules ?? 139}-rule catalogue below
+                    reports a verdict and findings for every rule; its findings are counted here, and do not move the score.
+                  </p>
+                )}
                 <div className="hs-facts">
                   <div><b>{(summary?.findings ?? 0).toLocaleString()}</b><span>found in {scopeInfo?.label}</span></div>
                   <div><b>{coverageRows.length}</b><span>tables read</span></div>
@@ -1451,6 +1461,19 @@ export default function HealthAssist() {
                 )}
               </div>
             </div>
+          )}
+
+          {/* ── ITSM: the catalogue, its parameters, and the links it states. ── */}
+          {scope === 'itsm' && (
+            <ItsmCatalogue
+              itsm={manifest?.itsm}
+              activeRule={filter.rule}
+              onPickRule={(rule) => applyFilter({ rule: filter.rule === rule ? '' : rule })}
+            />
+          )}
+          {scope === 'itsm' && <ItsmParameters />}
+          {(scope === 'itsm' || scope === 'cmdb') && (
+            <CrossDomainLinks links={manifest?.links} onOpenFinding={openDetail} />
           )}
 
           {/* ── SEVERITY. Status scale: colour + word + glyph + number, so

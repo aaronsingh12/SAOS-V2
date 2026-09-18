@@ -1,6 +1,6 @@
 import { table as instanceClient } from '../../servicenow/client.js';
 import { createRunContext } from './run-context.js';
-import { createReadCache } from './data-access.js';
+import { createReadCache, countMemo } from './data-access.js';
 import { createProbes } from './capability.js';
 import { ITSM_PARAMETERS } from './parameters.js';
 
@@ -22,13 +22,15 @@ export function createEvaluationContext({
   parameters = ITSM_PARAMETERS, signal = null, runtimeParameters = {}, measureHistory = {},
 } = {}) {
   const run = createRunContext({ now, timezone, runId });
-  const reads = createReadCache({ client, signal });
-  const probes = createProbes({ client });
+  /* reads and probes share one count per (table, query) for the run — data-access.js countMemo */
+  const counted = countMemo(client);
+  const reads = createReadCache({ client: counted.client, signal });
+  const probes = createProbes({ client: counted.client });
   const shared = new Map();
   const results = new Map();     // rule id → evaluation result (the composite engine's cache)
   return Object.freeze({
     run,
-    client,
+    client: counted.client,
     signal,
     reads,
     probes,
@@ -50,5 +52,7 @@ export function createEvaluationContext({
     },
     results,
     cancelled: () => Boolean(signal?.aborted),
+    /** What the run's caches saved: requirement reads, capability probes, instance counts. */
+    cacheStats: () => ({ reads: reads.stats(), probes: probes.cacheStats(), counts: counted.stats() }),
   });
 }

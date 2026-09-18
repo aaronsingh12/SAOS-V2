@@ -2,7 +2,7 @@ import { declareRequirement } from '../data-access.js';
 import { fromSnowTime } from '../run-context.js';
 import { CAPABILITY } from '../capability.js';
 import { historicalFinding } from '../findings.js';
-import { result, preflight, STATUS } from './result.js';
+import { result, preflight, STATUS, notePopulation } from './result.js';
 import { readConfiguration } from './configuration.js';
 
 /**
@@ -27,7 +27,7 @@ import { readConfiguration } from './configuration.js';
  */
 
 export const ENGINE_KEY = 'audit_history';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 export const BATCH = 50;
 
 const chunks = (xs, n = BATCH) => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, i * n + n));
@@ -275,6 +275,8 @@ export const engine = Object.freeze({
       for (const r of j.rows) { if (!by.has(r.element_id)) by.set(r.element_id, []); by.get(r.element_id).push(r.sys_created_on); }
       derived = new Map([...by].map(([id, ts]) => [id, maxGap(ts)]));
     } else throw new Error(`unknown history source ${c.source}`);
+    /* EMPTY POPULATION (Phase 5 closure): every record in scope has its history judged. */
+    notePopulation(out, { total: pop.coverage.totalKnown ?? pop.rows.length, judged: pop.rows.length, unit: `${c.table} records`, basis: c.scope ? `${c.table} where ${c.scope}` : `every ${c.table} record` });
     const offenders = pop.rows.filter((r) => c.offend(derived.has(r.sys_id) ? derived.get(r.sys_id) : null, r));
     if (offenders.length) {
       out.findings.push(historicalFinding({

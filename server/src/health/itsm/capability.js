@@ -43,7 +43,9 @@ function failure(err) {
 
 export function createProbes({ client = instanceClient } = {}) {
   const cache = new Map();
+  let asked = 0;
   const memo = async (key, fn) => {
+    asked += 1;
     if (!cache.has(key)) cache.set(key, fn().catch((err) => failure(err)));
     return cache.get(key);
   };
@@ -188,7 +190,7 @@ export function createProbes({ client = instanceClient } = {}) {
     return verdict(CAPABILITY.AVAILABLE, 'every requirement is available', { parts: verdicts });
   };
 
-  return Object.freeze({ tableExists, fieldsExist, auditEnabled, readable, anyRows, relationshipExists, configurationObject, combine, cacheSize: () => cache.size });
+  return Object.freeze({ tableExists, fieldsExist, auditEnabled, readable, anyRows, relationshipExists, configurationObject, combine, cacheSize: () => cache.size, cacheStats: () => ({ asked, misses: cache.size, hits: asked - cache.size }) });
 }
 
 /** The gate every engine applies: only AVAILABLE runs; PARTIAL runs only if the caller says its missing parts are tolerable. */

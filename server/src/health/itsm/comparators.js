@@ -4,6 +4,7 @@ import { fromSnowTime } from './run-context.js';
 import { readConfiguration } from './engines/configuration.js';
 import { boundedGraph } from './engines/relationship-graph.js';
 import { createResolver } from './engines/reference-integrity.js';
+import { undeterminedOf } from './engines/result.js';
 
 /**
  * ITSM PHASE 4 — the named callbacks a declarative rule config may reference.
@@ -15,6 +16,9 @@ import { createResolver } from './engines/reference-integrity.js';
  *                 `{ offenders, observed, expected, absent }` — or
  *                 `{ unavailable: reason }` when the usage read failed, which
  *                 the engine turns into UNAVAILABLE, never "absent".
+ *                 Every answer also carries `population` (engines/result.js):
+ *                 what the comparison judged. Without one, "no offender" is not
+ *                 read as a pass (Phase 5 closure).
  *   EXPANDERS     temporal engine `expand_keys`: `{ prepare(ctx, keys) }` that
  *                 builds a key → related keys function over the given keys only
  *                 (DECISION 11).
@@ -44,14 +48,14 @@ const and = (...clauses) => clauses.filter(Boolean).join('^');
 
 const COMPARATORS_MUTABLE = {
   /** The object is absent: no rows at all. */
-  absent: () => async (rows) => ({ offenders: [], observed: rows.length, expected: '≥ 1', absent: rows.length === 0 }),
+  absent: () => async (rows) => ({ offenders: [], observed: rows.length, expected: '≥ 1', absent: rows.length === 0, population: { total: 1, judged: 1, unit: 'presence check', basis: 'whether the object has any row — its absence is the finding' } }),
 
   /** Rows matching a selector are the offenders (`selector` is a compiled or raw expression). */
   rows_where: ({ selector, field = 'configuration' }) => {
     const test = typeof selector === 'function' ? selector : compileLazy(selector);
     return async (rows) => {
       const offenders = rows.filter((r) => test(r)).map((r) => ({ sys_id: r.sys_id, field, value: r[field] ?? r.name ?? null }));
-      return { offenders, observed: offenders.length, expected: 0, absent: false };
+      return { offenders, observed: offenders.length, expected: 0, absent: false, population: { total: rows.length, judged: rows.length, unit: 'configuration rows', basis: `the ${field} rows the selector is tested on` } };
     };
   },
 
@@ -65,10 +69,15 @@ const COMPARATORS_MUTABLE = {
     if (agg.unavailable) return agg;
     const used = new Map(agg.groups.map((g) => [String(g.group[field] ?? ''), g.count]));
     const offenders = [];
-    if (unused) for (const ch of rows) if (!used.get(String(ch.value))) offenders.push({ sys_id: ch.sys_id, field: 'unused_choice', value: ch.value });
+    /*
+     * EMPTY POPULATION (Phase 5 closure): with no record in the window every choice
+     * reads as "unused" — a FAIL built on nothing. Usage is judged only when there
+     * is usage to judge; otherwise the population is empty and the rule says so.
+     */
+    if (unused && agg.total > 0) for (const ch of rows) if (!used.get(String(ch.value))) offenders.push({ sys_id: ch.sys_id, field: 'unused_choice', value: ch.value });
     const distribution = [...used.entries()].map(([value, count]) => ({ value, count, share: agg.total ? round1(100 * count / agg.total) : null })).sort((a, b) => b.count - a.count);
     if (dominance_share != null) for (const d of distribution) if (d.share != null && d.share > dominance_share) offenders.push({ sys_id: rows.find((ch) => String(ch.value) === d.value)?.sys_id ?? null, field: 'dominant_choice', value: `${d.value} (${d.share}%)` });
-    return { offenders, observed: { choices: rows.length, used: used.size, total: agg.total, distribution }, expected: { unused: 0, dominance_share }, absent: false };
+    return { offenders, observed: { choices: rows.length, used: used.size, total: agg.total, distribution }, expected: { unused: 0, dominance_share }, absent: false, population: { total: agg.total, judged: agg.total, unit: `${table} records`, basis: `${table} usage of ${field}${window ? ' in the window' : ''} against ${rows.length} configured choice(s)` } };
   },
 
   /**
@@ -84,7 +93,7 @@ const COMPARATORS_MUTABLE = {
     const offenders = agg.groups
       .filter((g) => !isEmpty(g.group[child_field]) && !valid.has(`${g.group[parent_field] ?? ''}|${g.group[child_field]}`))
       .map((g) => ({ sys_id: null, field: `${parent_field}/${child_field}`, value: `${g.group[parent_field]} / ${g.group[child_field]} (${g.count})` }));
-    return { offenders, observed: { pairs_in_use: agg.groups.length, invalid: offenders.length }, expected: 'every pair in use configured as a dependent choice', absent: false };
+    return { offenders, observed: { pairs_in_use: agg.groups.length, invalid: offenders.length }, expected: 'every pair in use configured as a dependent choice', absent: false, population: { total: agg.total, judged: agg.total, unit: `${table} records`, basis: `${table} with ${child_field} set${scope ? ` where ${scope}` : ''}` } };
   },
 
   /**
@@ -98,7 +107,7 @@ const COMPARATORS_MUTABLE = {
     const offenders = agg.groups
       .filter((g) => g.count > 0 && !conditions.some((cnd) => cnd.includes(`${field}=${g.group[field]}`) || cnd.includes(`${field}IN`) && cnd.split('^').some((cl) => cl.startsWith(`${field}IN`) && cl.slice(field.length + 2).split(',').includes(String(g.group[field])))))
       .map((g) => ({ sys_id: null, field, value: `${g.group[field]} (${g.count} records, no SLA start condition)` }));
-    return { offenders, observed: { bands: agg.groups.map((g) => ({ [field]: g.group[field], count: g.count })), definitions: rows.length }, expected: 'a start condition per band with volume', absent: rows.length === 0 };
+    return { offenders, observed: { bands: agg.groups.map((g) => ({ [field]: g.group[field], count: g.count })), definitions: rows.length }, expected: 'a start condition per band with volume', absent: rows.length === 0, population: { total: agg.total, judged: agg.total, unit: `${table} records`, basis: `${table} with ${field} set — the bands with volume` } };
   },
 
   /**
@@ -107,7 +116,8 @@ const COMPARATORS_MUTABLE = {
    * One count per field, server-side.
    */
   custom_field_population: ({ table, prefix = 'u_', population_rate, scope = '', require_not_mandatory = false }) => async (rows, ctx) => {
-    const custom = rows.filter((d) => String(d.element ?? '').startsWith(prefix) && (!require_not_mandatory || !['true', '1', 'yes'].includes(String(d.mandatory ?? '').toLowerCase())));
+    const candidates = rows.filter((d) => String(d.element ?? '').startsWith(prefix));
+    const custom = candidates.filter((d) => !require_not_mandatory || !['true', '1', 'yes'].includes(String(d.mandatory ?? '').toLowerCase()));
     const totalReq = await ctx.reads.read(declareRequirement({ table, query: scope, strategy: 'exists' }));
     if (totalReq.count == null) return { unavailable: `count over ${table} failed (${totalReq.coverage.status})`, coverage: totalReq.coverage };
     const total = totalReq.count;
@@ -119,7 +129,13 @@ const COMPARATORS_MUTABLE = {
       observed.push({ element: d.element, populated: r.count, rate });
       if (rate != null && rate < population_rate) offenders.push({ sys_id: d.sys_id, field: d.element, value: `${rate}% populated` });
     }
-    return { offenders, observed: { custom_fields: custom.length, total, fields: observed }, expected: `≥ ${population_rate}% populated`, absent: false };
+    /*
+     * EMPTY POPULATION (Phase 5 closure): the population is the candidate fields. A
+     * field enforced as mandatory is judged by that (where the rule requires it not
+     * to be); every other field is judged only by a rate, and a rate needs records.
+     */
+    const judged = (candidates.length - custom.length) + observed.filter((o) => o.rate != null).length;
+    return { offenders, observed: { custom_fields: custom.length, total, fields: observed }, expected: `≥ ${population_rate}% populated`, absent: false, population: { total: candidates.length, judged, unit: 'fields', basis: `${table} fields${prefix ? ` prefixed ${prefix}` : ''}${require_not_mandatory ? ' (mandatory ones judged as enforced)' : ''}, rates over ${total} record(s)` } };
   },
 
   /**
@@ -138,7 +154,7 @@ const COMPARATORS_MUTABLE = {
     const offenders = rows
       .filter((ch) => custom_values.map(String).includes(String(ch.value)) && (volume.get(String(ch.value)) || 0) > 0 && !text.includes(`${field}=${ch.value}`) && !text.split('^').some((cl) => cl.startsWith(`${field}IN`) && cl.slice(field.length + 2).split(',').includes(String(ch.value))))
       .map((ch) => ({ sys_id: ch.sys_id, field, value: `${ch.label ?? ch.value} (${volume.get(String(ch.value))} records)` }));
-    return { offenders, observed: { custom_states: custom_values.length, definitions: sla.rows.length }, expected: 'each custom state in a pause or stop condition', absent: false };
+    return { offenders, observed: { custom_states: custom_values.length, definitions: sla.rows.length }, expected: 'each custom state in a pause or stop condition', absent: false, population: { total: agg.total, judged: agg.total, unit: `${table} records`, basis: `${table} volume per ${field} — a custom state is judged by its volume` } };
   },
 };
 
@@ -173,7 +189,7 @@ Object.assign(COMPARATORS_MUTABLE, {
       if (exp !== String(g.group[output] ?? '')) { mismatched += g.count; offenders.push({ sys_id: null, field: [...inputs, output].join('/'), value: `${inputs.map((f) => `${f}=${g.group[f]}`).join(', ')} → ${output}=${g.group[output]} (lookup says ${exp}) × ${g.count}` }); }
     }
     const judged = agg.total - unverifiable;
-    return { offenders, observed: { lookup_rows: rows.length, records: agg.total, mismatched, unverifiable, ratio: judged ? round1(100 * mismatched / judged) : null }, expected: 'every record\'s output equals the lookup row for its inputs', absent: false };
+    return { offenders, observed: { lookup_rows: rows.length, records: agg.total, mismatched, unverifiable, ratio: judged ? round1(100 * mismatched / judged) : null }, expected: 'every record\'s output equals the lookup row for its inputs', absent: false, population: { total: agg.total, judged, unit: `${table} records`, basis: `${table} with ${inputs.join(' and ')} set; records whose inputs have no lookup row are not judged` } };
   },
 
   /**
@@ -183,16 +199,33 @@ Object.assign(COMPARATORS_MUTABLE, {
    */
   rules_referencing_fields: ({ table, fields, scope = '' }) => async (rows, ctx) => {
     const offenders = []; const observed = {};
+    let referenced = 0;
     for (const f of fields) {
       const referencing = rows.filter((r) => conditionFields(r.condition).has(f));
       observed[f] = { rules_referencing: referencing.length };
       if (!referencing.length) continue;
+      referenced += 1;
       const r = await ctx.reads.read(declareRequirement({ table, query: and(scope, `${f}ISEMPTY`), strategy: 'exists' }));
       if (r.count == null) return { unavailable: `count of ${table} with empty ${f} failed (${r.coverage.status})`, coverage: r.coverage };
       observed[f].records_empty = r.count;
       if (r.count > 0) offenders.push({ sys_id: null, field: f, value: `${r.count} ${table} record(s) with empty ${f}; referenced by ${referencing.map((x) => x.name || x.sys_id).join(', ')}` });
     }
-    return { offenders, observed, expected: 'no empty routing field where an assignment rule evaluates it', absent: false };
+    /*
+     * EMPTY POPULATION (Phase 5 closure). Two populations, in the workbook's order:
+     *   no rule references any of the fields → the workbook's own gate ("fires only
+     *     where routing rules reference the fields") answers: nothing is routed on
+     *     them, which is determinate, not empty data;
+     *   a rule references one → the records in scope are the population, and with
+     *     none of them "no empty field" establishes nothing.
+     */
+    if (!referenced) return { offenders, observed, expected: 'no empty routing field where an assignment rule evaluates it', absent: false, population: { total: 0, judged: 0, unit: 'routing fields referenced by an active assignment rule', basis: `${fields.join(', ')} on ${table}`, determinate_when_empty: 'the workbook threshold: "Fires only where routing rules reference the fields" — no active assignment rule references them' } };
+    let inScope = null;
+    if (!offenders.length) {
+      const pop = await ctx.reads.read(declareRequirement({ table, query: scope, strategy: 'exists' }));
+      if (pop.count == null) return { unavailable: `count of ${table}${scope ? ` where ${scope}` : ''} failed (${pop.coverage.status})`, coverage: pop.coverage };
+      inScope = pop.count;
+    }
+    return { offenders, observed, expected: 'no empty routing field where an assignment rule evaluates it', absent: false, population: { total: inScope, judged: inScope ?? null, unit: `${table} records`, basis: `${table}${scope ? ` where ${scope}` : ''}, routed on ${fields.filter((f) => observed[f].rules_referencing).join(', ')}` } };
   },
 
   /**
@@ -214,14 +247,18 @@ Object.assign(COMPARATORS_MUTABLE, {
       const empty = split(r[group_field]).filter((g) => (active.get(g) || []).length === 0);
       if (inactive.length || empty.length) offenders.push({ sys_id: r.sys_id, field: 'recipients', value: `${r.name ?? r.sys_id}: ${inactive.length} inactive/missing user(s), ${empty.length} empty group(s)` });
     }
-    return { offenders, observed: { notifications: rows.length, users_checked: users.length, groups_checked: groups.length }, expected: 'every recipient resolves to an active user or a group with active members', absent: false };
+    return { offenders, observed: { notifications: rows.length, users_checked: users.length, groups_checked: groups.length }, expected: 'every recipient resolves to an active user or a group with active members', absent: false, population: { total: rows.length, judged: rows.length, unit: 'notifications', basis: 'notification rules and their recipients' } };
   },
 
   /** The object (rows) is absent while `volume_table` has records in the window — absence that matters. */
   absent_despite_volume: ({ volume_table, window = null, query = '' }) => async (rows, ctx) => {
     const r = await ctx.reads.read(declareRequirement({ table: volume_table, query: and(query, windowClause(ctx, window)), strategy: 'exists' }));
     if (r.count == null) return { unavailable: `count over ${volume_table} failed (${r.coverage.status})`, coverage: r.coverage };
-    return { offenders: [], observed: { rows: rows.length, [`${volume_table}_in_window`]: r.count }, expected: rows.length ? 'present' : `≥ 1 where ${volume_table} has volume`, absent: rows.length === 0 && r.count > 0 };
+    /* EMPTY POPULATION (Phase 5 closure): present is judged by presence; absent is judged only where there is volume. */
+    const population = rows.length
+      ? { total: 1, judged: 1, unit: 'presence check', basis: 'the object has rows' }
+      : { total: r.count, judged: r.count, unit: `${volume_table} records${window ? ' in the window' : ''}`, basis: `absence matters only where ${volume_table} has volume` };
+    return { offenders: [], observed: { rows: rows.length, [`${volume_table}_in_window`]: r.count }, expected: rows.length ? 'present' : `≥ 1 where ${volume_table} has volume`, absent: rows.length === 0 && r.count > 0, population };
   },
 });
 
@@ -311,7 +348,15 @@ export const COMBINATORS = Object.freeze({
       return { id, rate, threshold: null, breached: (r.findings || []).length > 0, judged_by: 'findings', evaluable: true };
     });
     const measures = { [`${rule.id}:breaching_inputs`]: { value: judged.filter((j) => j.breached).length, population: entries.length, distribution: judged.map((j) => ({ value: j.id, count: j.rate, share: j.rate })), at: ctx.run.run_started_at } };
-    if (judged.some((j) => !j.evaluable)) return { findings: [], kpis: [], measures, unavailable: `input ${judged.filter((j) => !j.evaluable).map((j) => j.id).join(', ')} recorded no rate to judge against its threshold` };
+    /*
+     * An input with no rate because its population was EMPTY is not an unavailable
+     * input — it evaluated and established nothing, which the composite engine
+     * reports as inconclusive (Phase 5 closure). Any other missing rate stays
+     * UNAVAILABLE, as before.
+     */
+    const noRate = judged.filter((j) => !j.evaluable);
+    if (noRate.some((j) => !undeterminedOf(inputs[j.id]))) return { findings: [], kpis: [], measures, unavailable: `input ${noRate.map((j) => j.id).join(', ')} recorded no rate to judge against its threshold` };
+    if (noRate.length) return { findings: [], kpis: [], measures };
     if (!entries.length || judged.some((j) => !j.breached)) return { findings: [], kpis: [], measures };
     const metric = { measure: 'count', observed: judged.length, threshold: { op: 'gte', value: entries.length }, breached: true, population: entries.length, basis: `all of ${judged.map((j) => `${j.id} (${j.rate ?? '?'}%${j.threshold ? ` ${j.threshold.op} ${j.threshold.value}` : ''})`).join(', ')} breached`, distribution: judged.map((j) => ({ group: { rule: j.id }, count: j.rate, share: j.rate })) };
     return { findings: [aggregateFinding({ rule, table: 'estate', metric, title: title || rule.title, description: description || rule.whatItMeans, severity: severity || rule.base, confidence: 1.0, recommendation: null, collected_at: ctx.run.run_started_at })], kpis: [], measures };

@@ -138,7 +138,7 @@ export function comparableHistory(history, key) {
   return out;
 }
 
-/** The rule-id prefixes the CMDB module owns — mirrors RULE_PREFIX_SCOPE in scopes.js (a test holds them together). */
+/** The rule-id prefixes the CMDB module owns — mirrors RULE_PREFIXES in scopes.js (a test holds them together). */
 export const CMDB_RULE_PREFIX = /^(CMDB|REL|CSDM)-/;
 
 /** Is this stored run a genuine snapshot of the CMDB? `{ ok, why }`. */

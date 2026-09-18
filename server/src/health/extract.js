@@ -23,6 +23,9 @@ import { pageAll } from '../servicenow/dba-metadata.js';
 
 /** Coverage statuses that mean rows are usable. Anything else is a reason, not a count. */
 export const USABLE = Object.freeze(['complete', 'limited', 'truncated']);
+/* A read that FAILED — not a table the instance lacks or rows an ACL hides, which
+   are stable facts. A result built on one is never reused (index.js degraded). */
+export const FAILED_READ_STATUSES = Object.freeze(['forbidden', 'unauthorized', 'rate_limited', 'upstream_error', 'invalid_query', 'truncated']);
 
 const PAGE_SIZE = 500;
 const MAX_PER_TABLE = 100_000;

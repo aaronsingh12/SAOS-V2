@@ -42,7 +42,18 @@ import { REMEDIATION } from './remediation.js';
 
 const CMDB_DOMAINS = ['CMDB', 'CMDB_GOVERNANCE', 'RELATIONSHIP', 'FRESHNESS', 'LIFECYCLE', 'ATTESTATION', 'OWNERSHIP', 'CSDM'];
 const ITOM_DOMAINS = ['DISCOVERY', 'CREDENTIALS', 'MID_SERVER', 'SERVICE_MAPPING', 'EVENT_MANAGEMENT', 'AVAILABILITY'];
-const ITSM_DOMAINS = ['INCIDENT', 'CHANGE', 'PROBLEM'];
+/* `ITSM` is the domain of the 139-rule catalogue's findings (ITSM Phase 5); the
+   other three are the eleven hard-coded rules'. All four ROUTE to the ITSM scope. */
+const ITSM_DOMAINS = ['INCIDENT', 'CHANGE', 'PROBLEM', 'ITSM'];
+/*
+ * THE DOMAINS THE ITSM SCORE COUNTS — frozen at the legacy three (ITSM Phase 5,
+ * 17 Sep 2026). The ITSM score is the eleven hard-coded rules' record pass rate,
+ * and it stays exactly that until a 139-rule scoring model is approved
+ * (DECISIONS.md §6; rules/itsm/SCORING-OPTIONS.md). Catalogue findings are routed
+ * into the scope and counted in its findings and severities, but they never move
+ * the score: a number must not change for a reason nobody designed.
+ */
+export const ITSM_SCORED_DOMAINS = Object.freeze(['INCIDENT', 'CHANGE', 'PROBLEM']);
 const PLATFORM_DOMAINS = ['CUSTOMIZATION', 'INTEGRATION', 'PERFORMANCE', 'UPGRADE', 'SECURITY'];
 
 /**
@@ -151,16 +162,31 @@ export function moduleTables(modules) {
  * for the Group 13 findings that did. Tests hold the two answers equal for every
  * catalogue rule under any domain.
  */
-const RULE_PREFIX_SCOPE = Object.freeze([
-  [/^(CMDB|REL|CSDM)-/, 'cmdb'],
-  [/^(MID|DISC|CRED|SM|EVENT|OUTAGE)-/, 'itom'],
-  [/^ITSM-/, 'itsm'],
+/*
+ * The prefixes are DATA, not regular expressions, because the SQL filter
+ * (`scopeFilter`) must route stored findings exactly as `scopeOf` routes them in
+ * memory, and both are derived from this one table. `exact` names a rule id that
+ * is a family label rather than a rule: the eleven legacy ITSM rules log their
+ * table skips as rule `ITSM`, which a prefix of `ITSM-` never matched — those
+ * skips routed to Platform and were dropped from every ITSM-only scan. The CSDM
+ * service rules (`serviceRules`) and the ITOM service-mapping rules
+ * (`serviceMappingRules`) log theirs as `CSDM` and `SM` — the same defect, found
+ * in the Phase 6 discovery (PHASE6-DISCOVERY.md §6 D2).
+ */
+export const RULE_PREFIXES = Object.freeze([
+  Object.freeze({ key: 'cmdb', prefixes: Object.freeze(['CMDB-', 'REL-', 'CSDM-']), exact: Object.freeze(['CSDM']) }),
+  Object.freeze({ key: 'itom', prefixes: Object.freeze(['MID-', 'DISC-', 'CRED-', 'SM-', 'EVENT-', 'OUTAGE-']), exact: Object.freeze(['SM']) }),
+  Object.freeze({ key: 'itsm', prefixes: Object.freeze(['ITSM-']), exact: Object.freeze(['ITSM']) }),
 ]);
+const prefixScopeOf = (ruleId) => {
+  const id = String(ruleId || '');
+  for (const p of RULE_PREFIXES) if (p.exact.includes(id) || p.prefixes.some((x) => id.startsWith(x))) return p.key;
+  return null;
+};
 export function scopeOfRule(ruleId) {
   const override = RULE_SCOPE[ruleId];
   if (override) return override;
-  for (const [re, key] of RULE_PREFIX_SCOPE) if (re.test(String(ruleId || ''))) return key;
-  return 'platform';
+  return prefixScopeOf(ruleId) ?? 'platform';
 }
 
 /** Which scope a finding belongs to. A rule override outranks its domain. */
@@ -181,8 +207,8 @@ export function scopeOf(finding) {
    * through this filter. The prefix now decides first; the domain decides only
    * for a rule id no module prefix claims.
    */
-  const id = String(finding?.rule_id || '');
-  for (const [re, key] of RULE_PREFIX_SCOPE) if (re.test(id)) return key;
+  const byPrefix = prefixScopeOf(finding?.rule_id);
+  if (byPrefix) return byPrefix;
   const domain = finding?.domain;
   for (const s of SCOPES) if (s.domains?.includes(domain)) return s.key;
   /* A domain no scope claims belongs to Platform rather than vanishing: a
@@ -202,21 +228,41 @@ export function normaliseScope(key) {
 /**
  * The SQL shape of a scope, for filtering stored findings.
  *
- * Built from the same definitions `scopeOf` uses, so the list the page loads
- * and the counts beside it cannot disagree about which scope a rule is in.
+ * It is `scopeOf` written in SQL, in the same order: a rule override, then the
+ * rule-id prefix, then the domain, then Platform for a domain no scope claims.
+ * The first version filtered by domain alone, while `scopeOf` had learned to
+ * route by prefix first — so the CMDB-124…130 findings (domain PERFORMANCE) were
+ * counted in the CMDB summary and missing from the CMDB list, and the ITSM
+ * catalogue's findings (domain ITSM) would have been missing from every list.
+ * The parity test now covers prefixed rules under a foreign domain.
  */
 export function scopeFilter(key) {
   const scope = byKey[normaliseScope(key)];
   if (!scope?.domains) return null;
-  const into = Object.entries(RULE_SCOPE).filter(([, k]) => k === scope.key).map(([r]) => r);
-  const awayFrom = Object.entries(RULE_SCOPE).filter(([, k]) => k !== scope.key).map(([r]) => r);
-  const marks = (xs) => xs.map(() => '?').join(',');
-  let clause = `(domain IN (${marks(scope.domains)})`;
-  const args = [...scope.domains];
-  if (awayFrom.length) { clause += ` AND rule_id NOT IN (${marks(awayFrom)})`; args.push(...awayFrom); }
-  clause += ')';
-  if (into.length) { clause = `(${clause} OR rule_id IN (${marks(into)}))`; args.push(...into); }
-  return { clause, args };
+  const args = [];
+  const marks = (xs) => { args.push(...xs); return xs.map(() => '?').join(','); };
+  const matches = (p) => {
+    const parts = p.prefixes.map((x) => { args.push(x.length, x); return 'substr(rule_id, 1, ?) = ?'; });
+    if (p.exact.length) parts.push(`rule_id IN (${marks(p.exact)})`);
+    return `(${parts.join(' OR ')})`;
+  };
+  const overrides = Object.entries(RULE_SCOPE);
+  const into = overrides.filter(([, k]) => k === scope.key).map(([r]) => r);
+  const own = RULE_PREFIXES.find((p) => p.key === scope.key);
+
+  const branches = [];
+  if (into.length) branches.push(`rule_id IN (${marks(into)})`);
+  const routed = [];
+  if (overrides.length) routed.push(`rule_id NOT IN (${marks(overrides.map(([r]) => r))})`);
+  const byPrefix = own ? matches(own) : null;
+  const noPrefix = `NOT (${RULE_PREFIXES.map(matches).join(' OR ')})`;
+  const byDomain = scope.key === 'platform'
+    /* scopeOf's fallback: any domain the other scopes do not claim is Platform's. */
+    ? `domain NOT IN (${marks(SCOPES.filter((x) => x.domains && x.key !== 'platform').flatMap((x) => x.domains))})`
+    : `domain IN (${marks(scope.domains)})`;
+  routed.push(byPrefix ? `(${byPrefix} OR (${noPrefix} AND ${byDomain}))` : `(${noPrefix} AND ${byDomain})`);
+  branches.push(`(${routed.join(' AND ')})`);
+  return { clause: `(${branches.join(' OR ')})`, args };
 }
 
 /**
@@ -328,7 +374,7 @@ function itsmScore(coverage, findings) {
 
   const affected = new Set();
   for (const f of findings) {
-    if (ITSM_DOMAINS.includes(f.domain) && usable.includes(f.table)) {
+    if (ITSM_SCORED_DOMAINS.includes(f.domain) && usable.includes(f.table)) {
       for (const id of f.target_ids || []) affected.add(`${f.table}:${id}`);
     }
   }
@@ -339,7 +385,7 @@ function itsmScore(coverage, findings) {
       + (slice ? ` (${slice})` : '')
       + (excluded.length ? `; ${excluded.join(', ')} excluded — not read completely` : ''),
     definition: 'Share of open or recent incidents, changes and problems no ITSM rule objected to.',
-    drivers: drivers(findings, { domains: ITSM_DOMAINS, tables: usable, scanned }),
+    drivers: drivers(findings, { domains: ITSM_SCORED_DOMAINS, tables: usable, scanned }),
   };
 }
 

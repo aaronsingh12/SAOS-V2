@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "doctor": "node scripts/flow-doctor.mjs",
+    "flow:readback": "node scripts/flow-readback.mjs",
+    "flow:matrix": "node scripts/flow-e2e-matrix.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

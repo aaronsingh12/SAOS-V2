@@ -1,6 +1,6 @@
 import { declareRequirement } from '../data-access.js';
 import { relationshipFinding } from '../findings.js';
-import { result, preflight, STATUS } from './result.js';
+import { result, preflight, STATUS, notePopulation, withhold, UNDETERMINED } from './result.js';
 import { canRun } from '../capability.js';
 
 /**
@@ -23,7 +23,7 @@ import { canRun } from '../capability.js';
  */
 
 export const ENGINE_KEY = 'relationship_graph';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.3.0';
 
 /** Build from cmdb_rel_ci rows: `{ parent, child, type, type.name?, sys_id }`. */
 export function buildGraph(rels, { coverage = null, serviceIds = [] } = {}) {
@@ -226,9 +226,13 @@ export const engine = Object.freeze({
       return out;
     }
     const seeds = [...new Set(src.rows.map((r) => r[c.ci_field]).filter(Boolean))];
+    /* EMPTY POPULATION (Phase 5 closure): the population is the records that reference a CI — the workbook's denominator. */
+    const referencing = src.rows.filter((r) => r[c.ci_field]).length;
+    const population = { unit: `${c.table} records referencing a CI`, basis: `${c.table}${c.scope ? ` where ${c.scope}` : ''}, ${c.ci_field} set` };
     if (!seeds.length) {
       /* Nothing references a CI: no relationship is needed, so none is read — not even a capability probe. */
       out.graph_scope = { seeds: [], depth: 0, reached: 0 };
+      notePopulation(out, { ...population, total: 0, judged: 0 });
       if (c.report_ratio || c.threshold) out.kpis.push({ rule_id: rule.id, numerator: 0, denominator: 0, pass_pct: null, basis: `no ${c.table} record in scope references a CI` });
       return out;
     }
@@ -243,6 +247,15 @@ export const engine = Object.freeze({
     out.coverage.push(graph.coverage);
     out.graph_scope = graph.scope;
     let unverifiable = 0; let evaluated = 0; let offenders = 0;
+    /*
+     * PHASE 6 — the per-CI answers, whatever the threshold decides. A rule whose
+     * findings appear only above a threshold (ITSM-130: 25%) still judged every
+     * record; a cross-domain link (health/cross-domain/links.js) joins on those
+     * judgements, not on the findings. One entry per CI the evaluated records
+     * reference — bounded by the seeds already in memory. Additive: nothing here
+     * changes a verdict, a finding or the kpi.
+     */
+    const byCi = new Map();
     const pending = [];
     for (const row of src.rows) {
       const ci = row[c.ci_field];
@@ -257,7 +270,12 @@ export const engine = Object.freeze({
       } else throw new Error(`unknown graph question ${c.question}`);
       if (answer.found === null) { unverifiable += 1; continue; }
       evaluated += 1;
-      if (c.offend(answer, row)) {
+      const offends = Boolean(c.offend(answer, row));
+      const seen = byCi.get(ci) || { ci, records: 0, record_ids: [], offending: offends, ...(answer.degree != null ? { degree: answer.degree } : {}) };
+      seen.records += 1;
+      if (seen.record_ids.length < 25) seen.record_ids.push(row.sys_id);
+      byCi.set(ci, seen);
+      if (offends) {
         offenders += 1;
         pending.push(relationshipFinding({
           rule, source: { table: c.table, sys_id: row.sys_id }, target: answer.service ? { table: 'cmdb_ci_service', sys_id: answer.service } : { table: 'cmdb_ci', sys_id: ci },
@@ -269,6 +287,8 @@ export const engine = Object.freeze({
     }
     if (unverifiable) out.skipped.push({ rule: rule.id, table: 'cmdb_rel_ci', reason: 'relationships for these CIs could not be read completely, so absence cannot be claimed', excluded_records: unverifiable });
     if (unverifiable && !evaluated) { out.status = STATUS.UNAVAILABLE; return out; }
+    out.answers_by_ci = Object.freeze([...byCi.values()].sort((a, b) => b.records - a.records || String(a.ci).localeCompare(String(b.ci))));
+    notePopulation(out, { ...population, total: referencing, judged: evaluated });
     const share = evaluated ? Number((100 * offenders / evaluated).toFixed(1)) : null;
     if (c.report_ratio || c.threshold) {
       out.kpis.push({ rule_id: rule.id, numerator: evaluated - offenders, denominator: evaluated, pass_pct: share == null ? null : Number((100 - share).toFixed(1)), basis: `${c.table} records whose CI answers "${c.question}" as offending`, complete: unverifiable === 0 });
@@ -278,7 +298,11 @@ export const engine = Object.freeze({
       const t = c.threshold;
       const cmp = { gt: (a, b) => a > b, gte: (a, b) => a >= b, lt: (a, b) => a < b, lte: (a, b) => a <= b }[t.op];
       if (!cmp) throw new Error(`${rule.id}: threshold op ${t.op}`);
-      if (c.minimum_volume != null && evaluated < c.minimum_volume) { out.skipped.push({ rule: rule.id, table: c.table, reason: `population ${evaluated} is below the minimum volume ${c.minimum_volume}` }); return out; }
+      if (c.minimum_volume != null && evaluated < c.minimum_volume) {
+        out.skipped.push({ rule: rule.id, table: c.table, reason: `population ${evaluated} is below the minimum volume ${c.minimum_volume}` });
+        if (evaluated) withhold(out, UNDETERMINED.BELOW_MINIMUM_VOLUME, `population ${evaluated} is below the minimum volume ${c.minimum_volume}`);
+        return out;
+      }
       if (share != null && cmp(share, t.value)) out.findings.push(...pending);
       return out;
     }

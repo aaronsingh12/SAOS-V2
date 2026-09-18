@@ -1,4 +1,4 @@
-import { result, preflight, STATUS } from './result.js';
+import { result, preflight, STATUS, notePopulation, withhold, UNDETERMINED } from './result.js';
 
 /**
  * ENGINE 10 — Composite / Rule Dependency.
@@ -18,7 +18,7 @@ import { result, preflight, STATUS } from './result.js';
  */
 
 export const ENGINE_KEY = 'composite';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 export class DependencyError extends Error {
   constructor(message, detail = null) { super(message); this.name = 'DependencyError'; this.detail = detail; }
@@ -178,7 +178,22 @@ export const engine = Object.freeze({
     out.findings = (combined?.findings || []).map((f) => ({ ...f, confidence: Math.min(f.confidence ?? 1, confidence) }));
     out.kpis = combined?.kpis || [];
     out.measures = combined?.measures || {};
-    out.inputs = Object.fromEntries(Object.entries(inputs).map(([id, r]) => [id, { status: r.status, findings: (r.findings || []).length }]));
+    out.inputs = Object.fromEntries(Object.entries(inputs).map(([id, r]) => [id, { status: r.status, verdict: r.verdict ?? null, findings: (r.findings || []).length }]));
+    /*
+     * EMPTY POPULATION (Phase 5 closure): a composite's population is its inputs'
+     * judgements. An input that evaluated but established nothing (inconclusive —
+     * an empty population, a withheld judgement, a partial detection) cannot
+     * support "no composite offender", so without a finding the composite is
+     * inconclusive too. A composite FINDING is still built from real input
+     * findings and stands.
+     */
+    const ids = Object.keys(inputs);
+    const open = ids.filter((id) => inputs[id].verdict === 'inconclusive' || inputs[id].verdict == null);
+    notePopulation(out, { total: ids.length, judged: ids.length - open.length, unit: 'input rules', basis: ids.join(', ') });
+    if (open.length && !out.findings.length) {
+      const why = open.map((id) => `${id} ${inputs[id].undetermined?.reason ?? (inputs[id].scope?.partial ? `covers part of its detection (${inputs[id].scope.kind})` : `verdict ${inputs[id].verdict ?? 'none'}`)}`).join('; ');
+      withhold(out, UNDETERMINED.INPUT_INCONCLUSIVE, `input ${why}`);
+    }
     return out;
   },
 });

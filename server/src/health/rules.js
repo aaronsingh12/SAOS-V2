@@ -106,6 +106,9 @@ export const AGENTS = Object.freeze({
   incident_agent: ['INCIDENT', 'Incident hygiene'],
   change_agent: ['CHANGE', 'Change hygiene'],
   problem_agent: ['PROBLEM', 'Problem hygiene'],
+  /* The 139-rule ITSM catalogue (health/itsm/, wired in ITSM Phase 5). Routed to
+     the ITSM scope; its findings do not count toward the ITSM score. */
+  itsm_agent: ['ITSM', 'ITSM catalogue'],
 });
 
 const SEVERITY_RANK = Object.freeze({ SYSTEMIC: 6, CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 });
@@ -420,7 +423,7 @@ export class EstateRules {
    * those tables are unchanged, and the list comes from what the rules actually
    * read rather than from a list somebody has to keep in step with them.
    */
-  analyze({ modules = null } = {}) {
+  analyze({ modules = null, external = {} } = {}) {
     const want = new Set(modules && modules.length ? modules : MODULE_KEYS);
     const raw = { estate: this.estate, coverage: this.coverage };
     const touched = {};
@@ -507,7 +510,22 @@ export class EstateRules {
       });
       family(['platform', 'itom'], () => stage('platform + itom rules', () => this.platformRules()));
       family(['itom'], () => stage('itom rules', () => this.itomRules()));
-      family(['itsm'], () => stage('itsm rules', () => this.itsmRules()));
+      family(['itsm'], () => {
+        stage('itsm rules', () => this.itsmRules());
+        /*
+         * ITSM PHASE 5 — the 139-rule catalogue. Its runner is asynchronous and
+         * reads through its own capability pipeline, so it runs BEFORE analyze()
+         * (index.js) and its normalized results join here: through the same scope
+         * filter, the same synthesize() (priority and impact are NOT NULL in
+         * storage) and every count, exactly like any other finding.
+         */
+        if (external.itsm) {
+          stage('itsm catalogue (139 rules)', () => {
+            this.findings.push(...external.itsm.findings);
+            this.skipped.push(...external.itsm.skipped);
+          });
+        }
+      });
       this.findings = this.findings.filter((f) => want.has(scopeOf(f)));
       this.skipped = this.skipped.filter((x) => want.has(scopeOfRule(x.rule)));
       /* Impact is traced through the CI graph, and only CMDB findings name CIs,

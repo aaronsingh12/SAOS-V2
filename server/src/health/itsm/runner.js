@@ -5,7 +5,7 @@ import { ITSM_RULE_CONFIGS } from './rules/index.js';
 import { compileRuleConfig, resolveParameters, referencedParameters, RESERVED_KEYS, RuleConfigError } from './rule-config.js';
 import { readConfiguration } from './engines/configuration.js';
 import { runOrdered } from './engines/composite.js';
-import { result, STATUS } from './engines/result.js';
+import { result, STATUS, notePopulation, withhold, undeterminedOf } from './engines/result.js';
 import { CAPABILITY } from './capability.js';
 import { PARAMETER_STATUS } from './parameters.js';
 import { declareRequirement } from './data-access.js';
@@ -44,6 +44,10 @@ import { declareRequirement } from './data-access.js';
  *   inconclusive  evaluated, no finding, but the configuration declares a
  *                 `partial` scope whose uncovered half could hide an offender —
  *                 never presented as a pass
+ *                 — or (Phase 5 closure) the population it judged was empty,
+ *                 nothing in it could be judged, or the judgement was withheld
+ *                 (below minimum volume, too little history, an input that
+ *                 established nothing): engines/result.js `undeterminedOf`
  *   null          not evaluated (see `blocker`)
  *
  * Nothing in here is keyed on a rule id.
@@ -99,6 +103,8 @@ function verdictOf(res, partial) {
   if (res.findings.length) return 'fail';
   if (partial?.kind === 'detection_gap') return 'inconclusive';
   if ((res.variants || []).some((v) => v.status !== STATUS.EVALUATED)) return 'inconclusive';
+  /* EMPTY POPULATION (Phase 5 closure): "no offender" over nothing judged is not health. */
+  if (undeterminedOf(res)) return 'inconclusive';
   return 'pass';
 }
 
@@ -110,6 +116,9 @@ function explain(res, rule) {
     blocker: res.blocker ?? null, scope: res.scope ?? null,
     parameters_used: params, findings: res.findings.length, kpis: res.kpis.map((k) => ({ numerator: k.numerator, denominator: k.denominator, pass_pct: k.pass_pct, basis: k.basis, complete: k.complete ?? null, variant: k.variant ?? null })),
     reasons: res.skipped.map((x) => x.reason), confidence: res.findings.length ? Math.min(...res.findings.map((f) => f.confidence ?? 1)) : null,
+    population: res.population ? { ...res.population } : null,
+    population_empty: res.undetermined?.kind === 'empty_population',
+    undetermined: res.undetermined ? { ...res.undetermined } : null,
   });
 }
 
@@ -333,7 +342,7 @@ function mergeVariants(rule, engineKey, results, labels) {
   if (results.length === 1) return results[0];
   const out = result(rule, engineKey, { parameters: results[0].parameters });
   const statuses = results.map((r) => r.status);
-  out.variants = results.map((r, i) => ({ variant: labels[i], status: r.status, findings: r.findings.length }));
+  out.variants = results.map((r, i) => ({ variant: labels[i], status: r.status, findings: r.findings.length, ...(r.status === STATUS.EVALUATED ? { population: r.population ?? null, undetermined: undeterminedOf(r) } : {}) }));
   for (const [i, r] of results.entries()) {
     out.findings.push(...r.findings);
     out.kpis.push(...r.kpis.map((k) => ({ ...k, variant: labels[i] })));
@@ -341,6 +350,20 @@ function mergeVariants(rule, engineKey, results, labels) {
     out.coverage.push(...r.coverage);
     Object.assign(out.measures, Object.fromEntries(Object.entries(r.measures || {}).map(([k, v]) => [`${k}[${labels[i]}]`, v])));
     if (r.capability) out.capability = r.capability;
+  }
+  /*
+   * The rule's population is its variants' together; a variant that established
+   * nothing leaves the whole rule undetermined (a pass needs every variant to
+   * have judged something, as it needs every variant to have run).
+   */
+  const ev = results.map((r, i) => [r, labels[i]]).filter(([r]) => r.status === STATUS.EVALUATED);
+  if (ev.length) {
+    const pops = ev.map(([r]) => r.population);
+    const known = (k) => (pops.every((p) => p && p[k] != null) ? pops.reduce((n, p) => n + p[k], 0) : null);
+    const determinate = pops.every((p) => p?.determinate_when_empty) ? pops[0].determinate_when_empty : null;
+    notePopulation(out, { total: known('total'), judged: known('judged'), unit: `${pops[0]?.unit ?? 'records'} (summed over variants)`, basis: ev.map(([r, l]) => `${l}: ${r.population?.judged ?? '?'} of ${r.population?.total ?? '?'}`).join('; '), determinate_when_empty: determinate });
+    const withheldBy = ev.map(([r, l]) => [undeterminedOf(r), l]).find(([u]) => u);
+    if (withheldBy) withhold(out, withheldBy[0].kind, `variant ${withheldBy[1]}: ${withheldBy[0].reason}`);
   }
   /* When no variant evaluated, the first variant's blocker is the rule's. */
   if (!statuses.includes(STATUS.EVALUATED)) out.blocker = results.find((r) => r.blocker)?.blocker ?? null;
@@ -420,6 +443,14 @@ export async function evaluateConfiguredRule(entry, ctx) {
     res.blocker = inferBlocker(res);
     res.scope = raw.partial ? Object.freeze({ partial: true, kind: raw.partial.kind, not_covered: raw.partial.not_covered }) : Object.freeze({ partial: false });
     res.verdict = verdictOf(res, raw.partial);
+    if (res.status === STATUS.EVALUATED && !res.findings.length) {
+      /* An evaluated rule that established nothing says so, machine-readably, beside the verdict it got. */
+      const u = undeterminedOf(res);
+      if (u) {
+        res.undetermined = Object.freeze({ ...u });
+        res.skipped.push({ rule: rule.id, table: null, reason: `${u.reason} — health could not be established, so the verdict is ${res.verdict}, not pass`, undetermined: u.kind });
+      }
+    }
     res.explanation = explain(res, rule);
     return res;
   }

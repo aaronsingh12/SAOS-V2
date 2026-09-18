@@ -1,6 +1,6 @@
 import { declareRequirement } from '../data-access.js';
 import { aggregateFinding } from '../findings.js';
-import { result, preflight, STATUS } from './result.js';
+import { result, preflight, STATUS, notePopulation, withhold, UNDETERMINED } from './result.js';
 
 /**
  * ENGINE 2 — Aggregate & Distribution.
@@ -27,7 +27,7 @@ import { result, preflight, STATUS } from './result.js';
  */
 
 export const ENGINE_KEY = 'aggregate';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 export const MEASURES = Object.freeze(['count', 'share', 'ratio', 'percentage', 'average', 'sum', 'distribution', 'joint_share']);
 export const THRESHOLD_OPS = Object.freeze(['gt', 'gte', 'lt', 'lte']);
@@ -243,7 +243,11 @@ function judgeTrend(rule, ctx, out, metric) {
   const t = trend([...history, { value: metric.observed, at: ctx.run.run_started_at }], { minWindows: c.trend.min_windows ?? 3 });
   out.trend = t;
   out.measures[key] = { value: metric.observed, population: metric.population, at: ctx.run.run_started_at };
-  if (t.status !== 'ok') { out.skipped.push({ rule: rule.id, table: c.table, reason: `trend needs ${t.required} windows, ${t.windows} recorded — no direction claimed` }); return out; }
+  if (t.status !== 'ok') {
+    out.skipped.push({ rule: rule.id, table: c.table, reason: `trend needs ${t.required} windows, ${t.windows} recorded — no direction claimed` });
+    if (metric.population) withhold(out, UNDETERMINED.INSUFFICIENT_HISTORY, `trend needs ${t.required} windows, ${t.windows} recorded`);
+    return out;
+  }
   if (t.direction === c.trend.direction) {
     out.findings.push(aggregateFinding({ rule, table: c.table, metric: { ...metric, breached: true, basis: `${c.trend.direction} over ${t.windows} windows (${t.first} → ${t.last})` }, title: c.title || rule.title, description: c.description || rule.whatItMeans, severity: c.severity || rule.base, confidence: c.confidence ?? 1.0, recommendation: c.recommendation ?? null, collected_at: ctx.run.run_started_at }));
   }
@@ -256,8 +260,11 @@ async function evaluateCountRatio(rule, ctx, windowClause) {
   const out = result(rule, ENGINE_KEY, { coverage: r.coverage, parameters: ctx.parametersFor(rule.id) });
   if (r.status !== 'ok') { out.status = STATUS.UNAVAILABLE; out.skipped.push({ rule: rule.id, table: c.table, reason: r.reason }); return out; }
   out.ratios = r.rows;
+  /* The population is the denominator: every record the ratio is over. */
+  const population = { unit: `${typeof c.denominator_query === 'object' && c.denominator_query?.table ? c.denominator_query.table : c.table} records`, basis: c.basis ?? (typeof (c.denominator_query ?? c.query) === 'string' ? (c.denominator_query ?? c.query) || `every ${c.table} record` : JSON.stringify(c.denominator_query)) };
   if (c.trend) {
     const row = r.rows[0];
+    notePopulation(out, { ...population, total: row?.denominator ?? 0 });
     return judgeTrend(rule, ctx, out, { measure: 'percentage', observed: row?.percentage ?? null, population: row?.denominator ?? 0, count: row?.numerator ?? 0, percentage: row?.percentage ?? null, threshold: null, basis: c.basis ?? null });
   }
   const t = validateThreshold(c.threshold);
@@ -277,6 +284,10 @@ async function evaluateCountRatio(rule, ctx, windowClause) {
     }
   }
   if (withheld) out.skipped.push({ rule: rule.id, table: c.table, reason: `${withheld} group(s) below the minimum volume ${c.minimum_volume} were not judged` });
+  const total = r.rows.reduce((n, row) => n + (row.denominator || 0), 0);
+  const judged = r.rows.reduce((n, row) => n + (c.minimum_volume != null && row.denominator < c.minimum_volume ? 0 : (row.denominator || 0)), 0);
+  notePopulation(out, { ...population, total, judged });
+  if (total > 0 && judged === 0) withhold(out, UNDETERMINED.BELOW_MINIMUM_VOLUME, `every group is below the minimum volume ${c.minimum_volume} (${total} records in all)`);
   return out;
 }
 
@@ -309,11 +320,16 @@ export const engine = Object.freeze({
       primary: c.primary ?? null, secondary: c.secondary ?? null, minimum_group_volume: c.minimum_group_volume ?? null,
     });
     out.measures[c.measure_key || `${rule.id}:${c.measure}`] = { value: metric.observed, population: metric.population, at: ctx.run.run_started_at };
+    /* The population the measure is over; a joint share judges only the pairs whose primary has the minimum volume. */
+    const judgedVolume = c.measure === 'joint_share' ? (metric.pairs || []).reduce((n, p) => n + p.count, 0) : (metric.population ?? 0);
+    notePopulation(out, { total: c.measure === 'average' ? groups.reduce((n, g) => n + g.count, 0) : (metric.population ?? 0), judged: judgedVolume, unit: `${c.table} records`, basis: c.basis ?? (c.query || `every ${c.table} record`) });
+    if (c.measure === 'joint_share' && metric.population > 0 && judgedVolume === 0 && metric.primaries_withheld) withhold(out, UNDETERMINED.BELOW_MINIMUM_VOLUME, `every ${c.primary} value is below the minimum group volume ${c.minimum_group_volume}`);
     if (metric.population != null && ['ratio', 'percentage', 'share'].includes(c.measure)) {
       out.kpis.push({ rule_id: rule.id, numerator: metric.count ?? null, denominator: metric.population, pass_pct: metric.percentage != null ? round1(100 - metric.percentage) : null, basis: c.basis ?? c.measure });
     }
     if (metric.status === 'insufficient_volume') {
       out.skipped.push({ rule: rule.id, table: c.table, reason: `population ${metric.population} is below the minimum volume ${c.minimum_volume}` });
+      if (metric.population > 0) withhold(out, UNDETERMINED.BELOW_MINIMUM_VOLUME, `population ${metric.population} is below the minimum volume ${c.minimum_volume}`);
       return out;
     }
     if (c.trend) return judgeTrend(rule, ctx, out, metric);

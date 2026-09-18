@@ -8,6 +8,7 @@ import {
 import { catalog } from '../servicenow/catalog.js';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
 import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify, activateManagedFlow } from '../servicenow/fluent.js';
+import { recordIntendedState } from '../servicenow/post-install-state.js';
 import { listSlas, getSla, slaMeta, createSla, verifySla } from '../servicenow/sla.js';
 import { listPoliciesForItem, itemVariables, createPolicy, CONDITION_OPERATORS } from '../servicenow/catalogPolicy.js';
 import { aclReport, aclDiff, explainAclReport } from '../servicenow/acl.js';
@@ -1127,7 +1128,30 @@ ${description}` : description);
       },
       required: ['name'],
     },
-    execute: ({ name }) => activateManagedFlow(name),
+    execute: async ({ name }) => {
+      const result = await activateManagedFlow(name);
+      /*
+       * Publishing is not expressible in the SDK source model, so the NEXT
+       * install — of this flow or of anything else in the app — re-applies the
+       * application from source and returns this header to draft. Recording the
+       * intent here is what makes a publish survive a later deploy: the
+       * post-install reconciler re-applies it and reads it back
+       * (post-install-state.js, kind `flow_published`).
+       *
+       * Recorded only on a PROVEN publish. An intent filed off a failed
+       * activation would have the reconciler publishing, later and unattended,
+       * something this call could not publish now.
+       */
+      if (result.ok) {
+        try {
+          recordIntendedState({ kind: 'flow_published', target: result.name, value: true, why: 'published through activate_flow' });
+        } catch (err) {
+          result.intentWarning = `Published, but the intent could not be recorded (${err.message}), so the next install will `
+            + 'revert this flow to draft without saying so.';
+        }
+      }
+      return result;
+    },
     /*
      * The write is a publish: the platform sets `active` and points the header
      * at a snapshot. `mechanism: 'sdk'` because this is the SDK's own

@@ -3,7 +3,7 @@ import { fromSnowTime, windowMs, parseWindow } from '../run-context.js';
 import { crossDomainFinding, recordFinding } from '../findings.js';
 import { expandSchedule } from '../schedules.js';
 import { readConfiguration } from './configuration.js';
-import { result, preflight, STATUS } from './result.js';
+import { result, preflight, STATUS, notePopulation } from './result.js';
 
 /**
  * ENGINE 7 — Temporal Correlation.
@@ -21,7 +21,7 @@ import { result, preflight, STATUS } from './result.js';
  */
 
 export const ENGINE_KEY = 'temporal_correlation';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 export class TemporalError extends Error {
   constructor(message) { super(message); this.name = 'TemporalError'; }
@@ -162,7 +162,12 @@ async function evaluateScheduleIntersection(rule, ctx) {
     out.coverage.push(src.coverage);
     if (!['complete', 'limited', 'truncated'].includes(src.coverage.status)) { out.status = STATUS.UNAVAILABLE; out.skipped.push({ rule: rule.id, table: c.table, reason: `${c.table} could not be read (${src.coverage.status})` }); return out; }
     const times = src.rows.flatMap((r) => [fromSnowTime(r[c.start_field]), fromSnowTime(r[c.end_field])]).filter(Boolean).map((d) => d.getTime());
-    if (!times.length) { out.kpis.push({ rule_id: rule.id, numerator: 0, denominator: 0, pass_pct: null, basis: 'no records with interval bounds' }); return out; }
+    if (!times.length) {
+      out.kpis.push({ rule_id: rule.id, numerator: 0, denominator: 0, pass_pct: null, basis: 'no records with interval bounds' });
+      /* EMPTY POPULATION (Phase 5 closure): no interval to intersect — nothing was judged. */
+      notePopulation(out, { total: src.rows.length, judged: 0, unit: `${c.table} records`, basis: `${c.table}${c.scope ? ` where ${c.scope}` : ''} with ${c.start_field} and ${c.end_field}` });
+      return out;
+    }
     window = { start: new Date(Math.min(...times)), end: new Date(Math.max(...times)), label: 'extent of the records', spec: null };
   }
   const sched = await expandedSchedules(ctx, { table: c.schedule_table ?? 'cmn_schedule', type: c.schedule_type ?? null, window, dayCodeBase: c.day_code_base ?? 1 });
@@ -194,6 +199,7 @@ async function evaluateScheduleIntersection(rule, ctx) {
     }));
   }
   const evaluated = intervals.length - x.unevaluable;
+  notePopulation(out, { total: intervals.length, judged: evaluated, unit: `${c.table} records`, basis: `${c.table}${c.scope ? ` where ${c.scope}` : ''} with ${c.start_field} and ${c.end_field}` });
   out.kpis.push({ rule_id: rule.id, numerator: evaluated - offenders.length, denominator: evaluated, pass_pct: evaluated ? Number((100 * (1 - offenders.length / evaluated)).toFixed(1)) : null, basis: `${sched.schedules} ${c.schedule_table ?? c.schedule_type ?? 'cmn_schedule'} schedule(s) expanded to ${sched.intervals.length} interval(s) over ${window.label}` });
   return out;
 }
@@ -273,6 +279,8 @@ async function evaluateBeforeAfter(rule, ctx) {
     out.findings.push(recordFinding({ rule, table: c.left.table, records: offenders, fields: [...(c.evidence_fields || []), 'incidents_before', 'incidents_after'], title: c.title || rule.title, description: c.description || rule.whatItMeans, severity: c.severity || rule.base, confidence: c.confidence ?? 1.0, recommendation: c.recommendation ?? null, collected_at: ctx.run.run_started_at }));
   }
   out.before_after = details;
+  /* EMPTY POPULATION (Phase 5 closure): judged = anchors whose after-window has elapsed. */
+  notePopulation(out, { total: left.rows.length, judged, unit: `${c.left.table} records`, basis: `${c.left.table}${c.left.query ? ` where ${c.left.query}` : ''}, after-window ${c.window} elapsed` });
   out.kpis.push({ rule_id: rule.id, numerator: judged - offenders.length, denominator: judged, pass_pct: judged ? Number((100 * (1 - offenders.length / judged)).toFixed(1)) : null, basis: `${c.right.table} per ${c.left.table} in ${c.window} before vs after; required decline ${Math.round(c.required_decline * 100)}%` });
   return out;
 }
@@ -340,6 +348,8 @@ export const engine = Object.freeze({
       }));
     }
     const evaluated = left.rows.length - joined.unevaluable;
+    /* EMPTY POPULATION (Phase 5 closure): the left side is the population the correlation is over. */
+    notePopulation(out, { total: left.rows.length, judged: evaluated, unit: `${c.left.table} records`, basis: `${c.left.table}${c.left.query ? ` where ${c.left.query}` : ''}` });
     out.kpis.push({ rule_id: rule.id, numerator: evaluated - offenders.length, denominator: evaluated, pass_pct: evaluated ? Number((100 * (1 - offenders.length / evaluated)).toFixed(1)) : null, basis: `${c.left.table} ${c.offend === 'unmatched' ? 'not ' : ''}correlated with ${c.right.table} within ${c.window} ${c.direction || 'before'} (${joined.matched} matched)`, complete: left.coverage.rowsComplete && right.coverage.rowsComplete });
     return out;
   },

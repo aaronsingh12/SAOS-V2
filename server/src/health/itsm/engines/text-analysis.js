@@ -1,7 +1,7 @@
 import { REDACTED, recordFinding } from '../findings.js';
 import { declareRequirement } from '../data-access.js';
 import { fromSnowTime } from '../run-context.js';
-import { result, preflight, STATUS } from './result.js';
+import { result, preflight, STATUS, notePopulation } from './result.js';
 
 /**
  * ENGINE 9 — Text Analysis.
@@ -22,7 +22,7 @@ import { result, preflight, STATUS } from './result.js';
  */
 
 export const ENGINE_KEY = 'text_analysis';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 export class TextAnalysisError extends Error {
   constructor(message) { super(message); this.name = 'TextAnalysisError'; }
@@ -303,6 +303,9 @@ function finding(rule, c, ctx, records, fields, titleSuffix = '') {
   });
 }
 
+/** The text population: rows in scope (those refused by the character budget included), and how many were judged. */
+const textPopulation = (c, read, judged) => ({ total: read.rows.length + (read.refused || 0), judged, unit: `${c.table} records`, basis: `${c.table}${c.scope ? ` where ${c.scope}` : ''}` });
+
 const compiledPatterns = (patterns) => patterns.map((q) => ({ ...q, regex: q.regex instanceof RegExp ? q.regex : new RegExp(q.regex, q.flags ?? '') }));
 
 export const engine = Object.freeze({
@@ -341,6 +344,8 @@ export const engine = Object.freeze({
       if (unevaluable) out.skipped.push({ rule: rule.id, table: c.table, reason: 'rows with a hidden or empty text field could not be compared', excluded_records: unevaluable });
       if (offenders.length) out.findings.push(finding(rule, c, ctx, offenders, [...(c.evidence_fields || []), 'similarity']));
       const evaluated = rows.length;
+      /* EMPTY POPULATION (Phase 5 closure): judged = rows whose text could be compared (or offended on length). */
+      notePopulation(out, textPopulation(c, read, read.rows.length - unevaluable));
       out.kpis.push({ rule_id: rule.id, numerator: evaluated - offenders.length, denominator: evaluated, pass_pct: evaluated ? Number((100 * (1 - offenders.length / evaluated)).toFixed(1)) : null, basis: `${provider.name} ${a} vs ${b} ≥ ${threshold}${c.min_length != null ? ` or ${c.length_field ?? b} < ${c.min_length}` : ''}`, complete: !read.sampled });
       out.text = { provider: provider.name, corpus_size: provider.corpus_size, vocabulary: provider.vocabulary, sampled: read.sampled, admitted: read.admitted, refused: read.refused };
       return out;
@@ -371,6 +376,7 @@ export const engine = Object.freeze({
       }
       if (c.top_n != null) clusters = clusters.slice(0, c.top_n);
       out.clusters = clusters;
+      notePopulation(out, textPopulation(c, read, read.rows.length));
       for (const cl of clusters) out.findings.push(finding(rule, c, ctx, cl.members, c.evidence_fields || [], ` — cluster of ${cl.size}${cl.block ? ` (${c.block_field}=${cl.block})` : ''}`));
       out.kpis.push({ rule_id: rule.id, numerator: clusters.reduce((n, cl) => n + cl.size, 0), denominator: read.rows.length, pass_pct: null, basis: `${clusters.length} cluster(s) at ${provider.name} ≥ ${threshold}, size ≥ ${minSize}`, complete: !read.sampled });
       out.text = { provider: provider.name, corpus_size: provider.corpus_size, vocabulary: provider.vocabulary, sampled: read.sampled, admitted: read.admitted, refused: read.refused };
@@ -387,6 +393,7 @@ export const engine = Object.freeze({
       const freq = frequency(read.rows, field, { minVolume: c.min_volume ?? 2 });
       const byId = new Map(read.rows.map((r) => [r.sys_id, r]));
       const hits = freq.map((f) => ({ ...f, share: total ? Number((100 * f.count / total).toFixed(1)) : null })).filter((f) => f.share != null && f.share >= share);
+      notePopulation(out, textPopulation(c, read, total));
       out.frequency = hits.map((f) => ({ value: f.value.slice(0, 120), count: f.count, share: f.share }));
       for (const f of hits) out.findings.push(finding(rule, c, ctx, f.sys_ids.map((id) => byId.get(id)), c.evidence_fields || [], ` — ${f.count} identical (${f.share}%)`));
       out.kpis.push({ rule_id: rule.id, numerator: total - hits.reduce((n, f) => n + f.count, 0), denominator: total, pass_pct: total ? Number((100 * (1 - hits.reduce((n, f) => n + f.count, 0) / total)).toFixed(1)) : null, basis: `identical ${field} values at ≥ ${share}% of ${total}`, complete: !read.sampled });
@@ -406,6 +413,7 @@ export const engine = Object.freeze({
       const byId = new Map(read.rows.map((r) => [r.sys_id, r]));
       const perPattern = {};
       for (const h of hits) for (const m of h.matches) perPattern[m.name] = (perPattern[m.name] || 0) + counted(m);
+      notePopulation(out, textPopulation(c, read, read.rows.length));
       out.pattern_hits = { records: new Set(hits.map((h) => h.sys_id)).size, by_pattern: perPattern, by_field: Object.fromEntries(fields.map((f) => [f, hits.filter((h) => h.field === f).length])) };
       if (hits.length) {
         const records = [...new Set(hits.map((h) => h.sys_id))].map((id) => ({ sys_id: id, ...Object.fromEntries((c.evidence_fields || []).map((f) => [f, byId.get(id)?.[f]])), matched: hits.filter((h) => h.sys_id === id).map((h) => `${h.field}: ${h.matches.map((m) => m.name).join(', ')}`).join('; ') }));

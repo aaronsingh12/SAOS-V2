@@ -1,7 +1,7 @@
 import { declareRequirement } from '../data-access.js';
 import { configurationFinding } from '../findings.js';
 import { CAPABILITY } from '../capability.js';
-import { result, preflight, STATUS } from './result.js';
+import { result, preflight, STATUS, notePopulation } from './result.js';
 
 /**
  * ENGINE 5 — Configuration Inspection.
@@ -35,7 +35,7 @@ import { result, preflight, STATUS } from './result.js';
  */
 
 export const ENGINE_KEY = 'configuration';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 export class ConfigurationError extends Error {
   constructor(message) { super(message); this.name = 'ConfigurationError'; }
@@ -258,6 +258,12 @@ export const engine = Object.freeze({
       return out;
     }
     out.observed = cmp?.observed ?? null;
+    /*
+     * EMPTY POPULATION (Phase 5 closure): the comparator knows what it judged — the
+     * usage records, the fields, the notifications — and says so. One that does
+     * not declares nothing, and its "no finding" is not read as a pass.
+     */
+    if (cmp?.population) notePopulation(out, cmp.population);
     if (cmp?.offenders?.length || cmp?.absent) {
       out.findings.push(configurationFinding({
         rule, object: c.reader, table: ESTABLISHED[c.reader]?.table ?? null, records: cmp.offenders || [], observed: cmp.observed, expected: cmp.expected,

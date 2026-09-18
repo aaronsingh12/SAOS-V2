@@ -72,7 +72,10 @@ test('the chat pins itself by scrolling its own column, not via scrollIntoView',
     'AgentChat calls scrollIntoView, which walks scrollable ancestors and scrolled the whole page'
   );
   assert.ok(agentCode.includes('msgsRef.current'), 'the message column is not held by a ref');
-  assert.match(agentCode, /scrollTo\(\{\s*top:\s*el\.scrollHeight/);
+  /* The guarantee is the CALL, not the local name it is made through: the column
+     the ref holds is scrolled to its own scrollHeight. Pinning `el` failed the
+     day the local became `node`, while the behaviour was unchanged. */
+  assert.match(agentCode, /scrollTo\(\{\s*top:\s*[A-Za-z_$][\w$]*\.scrollHeight/);
 });
 
 test('the auto-scroll honours prefers-reduced-motion', () => {

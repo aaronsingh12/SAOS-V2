@@ -25,7 +25,12 @@ itsm/rules/<engine>.json ───► rules/index.js (validated at load) ──�
 - **106 are executable**: 76 TESTED with workbook defaults, 30 UNCONFIGURED (a referenced threshold has no workbook default — DECISION 3 — or, for ITSM-024, the detection itself is a declared specification gap; an instance override or an explicit decision makes it run).
 - **33 are UNAVAILABLE by declaration**: they need an object or dependency neither the workbook nor DECISIONS.md defines (major incident, approval routing, PIR, conflict detection, knowledge suggestion, change models, templates, policies, calendar, the auto-close property, the KE ↔ article link, an assignment-rule evaluator, a per-group SLA pause rate, a density spike, ITOM-147, SLA-to-service scoping). The runner walks the DECISION 5 pipeline for every candidate and answers UNAVAILABLE with the step reached — never PASS.
 - **Objects verified on a real instance** (dev442675, 2026-09-17, read-only; `rules/itsm/instance-validation.json`) are read through VERIFIED readers or `requires_tables`, each re-verified by the pipeline at run time: the priority data lookup (`dl_u_priority`), assignment rules, notifications, CAB meetings, delegations (`sys_user_delegate`), approval records (`sysapproval_approver`), attached knowledge (`m2m_kb_task`), problem / change tasks, attachments, and the platform's blackout / maintenance schedule classes (`cmn_schedule_blackout` / `cmn_schedule_maintenance`).
-- Nothing here changes the Health page: `health/rules.js`, `health/index.js`, `health/scopes.js` and every route are untouched. The eleven hard-coded ITSM rules still produce the ITSM score. The one edit outside this directory is `health/incremental.js` (DECISION 8, below). Wiring the runner's results into a scan is Phase 5.
+- **Phase 5:** the runner runs inside the Health Checker scan whenever ITSM is read. `integration.js` normalises its results (findings with their rule trace, 139 rule rows with design-time classification and run-time status / verdict, skipped checks, aggregation, failed-read detection, performance) and `health/index.js` hands them to `EstateRules.analyze`. Instance parameter overrides persist per instance (`/api/health/itsm/parameters`) and feed a per-scan registry and the engine key; every table the catalogue reads is stamped before its first read for the change check. The eleven hard-coded ITSM rules still produce the ITSM score. See `../rules/itsm/PHASE5-REPORT.md`.
+- **The ITSM section (Phase 6):**
+  - **Measure history.** `measure-history.js` supplies trend rules with earlier readings. Each scan stores its readings in `manifest.itsm.measures`, each carrying a comparability key: rule configuration + resolved parameter values + engine version. A later scan compares only readings of the same bound instance under the same key; everything else is set aside and counted (`manifest.itsm.measure_history`). ITSM-041 stays inconclusive until three comparable scans exist.
+  - **Per-CI answers.** The relationship-graph engine also exposes `answers_by_ci`, used by the cross-domain link ITSM-130 ⋈ CMDB-058 (`../cross-domain/links.js`); verdicts are unchanged.
+  - **Catalogue guidance.** Finding detail and remediation read the workbook articulation, registered by the health facade.
+  - **Health page.** The ITSM tab shows the catalogue (`client/src/components/HealthItsm.jsx`): every rule's outcome, what it judged, why, its parameters and dependencies. It also lets you set the parameters the workbook leaves open, and shows the cross-domain links.
 
 ## The runner
 
@@ -64,7 +69,24 @@ read · input · error, plus the pipeline step / fields / parameters), a
 `verdict` when evaluated (`fail` · `pass` · `inconclusive` — a rule whose
 config declares a `partial` scope with a *detection gap* never passes), its
 declared `scope`, and an `explanation` (parameters used with their source,
-kpis, reasons, confidence).
+kpis, reasons, confidence, population).
+
+**Empty population (Phase 5 closure).** Every evaluated result declares the
+`population` it judged — `{ total, judged, unit, basis }` (`engines/result.js`
+`notePopulation`) — and, when an engine withholds its judgement over a
+population that was there, `undetermined` (`withhold`: below_minimum_volume,
+insufficient_history, input_inconclusive). The runner's one verdict decision
+(`verdictOf` → `undeterminedOf`) answers `inconclusive`, never `pass`, for an
+evaluated rule with no finding when nothing was judged (empty_population,
+nothing_judgeable), the judgement was withheld, the population count failed,
+or no population was declared at all (the fail-safe). The result then carries
+`undetermined { kind, reason }` and a skipped-check entry saying health could
+not be established. A finding is still a FAIL; empty data is never a FAIL and
+stays apart from UNAVAILABLE and UNCONFIGURED. The one declared exception,
+`determinate_when_empty`, is where the workbook makes an empty configuration
+population the answer (the `rules_referencing_fields` comparator: "fires only
+where routing rules reference the fields"). Per-rule audit:
+`../rules/itsm/phase5-empty-population-audit.md`.
 
 ## The engine contract
 
@@ -78,6 +100,8 @@ kpis, reasons, confidence).
 `status` is `evaluated | unconfigured | unavailable | not_configured | skipped | error`
 (`engines/result.js`). None but `evaluated` is a pass, none produces a
 finding; a `kpis[]` entry is emitted whether or not a threshold was breached.
+An evaluated result also carries `population` (and `undetermined` when the
+engine withheld its judgement) — see *Empty population* above.
 
 | Engine (`key`) | Generic mechanism | Phase 4 additions |
 |---|---|---|

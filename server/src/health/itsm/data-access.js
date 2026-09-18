@@ -216,6 +216,35 @@ export async function fetchRequirement(req, opts = {}) {
 }
 
 /**
+ * PHASE 5 CLOSURE — one COUNT per (table, encoded query) per run.
+ *
+ * A rows read counts its query for the total; an `exists` read and a capability
+ * probe count the same query again under a different requirement key, so the
+ * read cache alone let a run ask the instance for `count(problem, '')` six times
+ * (26 of 384 requests on the offline estate). The count is a number at the run's
+ * anchor; asking twice in one run can only return the same number or a
+ * mid-run drift nobody wants. Only successful counts are kept — a failed count
+ * is asked again, exactly as before — and nothing but `count` is touched.
+ */
+export function countMemo(client) {
+  const counts = new Map();
+  let hits = 0; let misses = 0;
+  const wrapped = { ...client };
+  if (typeof client?.count === 'function') {
+    wrapped.count = (table, query = '', ...rest) => {
+      if (rest.length) return client.count(table, query, ...rest);
+      const key = JSON.stringify([table, query ?? '']);
+      if (counts.has(key)) { hits += 1; return counts.get(key); }
+      misses += 1;
+      const p = Promise.resolve().then(() => client.count(table, query)).catch((err) => { counts.delete(key); throw err; });
+      counts.set(key, p);
+      return p;
+    };
+  }
+  return { client: wrapped, stats: () => ({ hits, misses, distinct: counts.size }) };
+}
+
+/**
  * A per-run read cache: the same requirement (table + query + fields +
  * strategy) is read ONCE however many rules declare it. Engines share fetched
  * data through this rather than re-querying.
@@ -223,14 +252,18 @@ export async function fetchRequirement(req, opts = {}) {
 export function createReadCache({ client = instanceClient, signal = null } = {}) {
   const cache = new Map();
   const requests = [];   // every distinct requirement, in order — the audit trail of what a run read
+  let reads = 0;
   const keyOf = (req) => JSON.stringify([req.table, req.strategy, req.query, req.fields, req.groupBy, req.avg, req.sum, req.min, req.max, req.maxRows]);
   return {
     async read(req) {
       const key = keyOf(req);
+      reads += 1;
       if (!cache.has(key)) { requests.push(req); cache.set(key, fetchRequirement(req, { client, signal })); }
       return cache.get(key);
     },
     size: () => cache.size,
+    /** Requirements declared vs distinct requirements read: the difference was served from the cache. */
+    stats: () => ({ reads, misses: cache.size, hits: reads - cache.size }),
     /** The distinct requirements this run declared — what a test proves was (or was not) read. */
     entries: () => requests.map((req) => ({ req })),
     coverage: async () => {

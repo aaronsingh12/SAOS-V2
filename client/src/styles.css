@@ -2102,3 +2102,18 @@ body:has(.agent-host:not([hidden])) .dock { bottom: 104px; }
 .hs-scanstate td, .hs-scanstate th { font-size: 12px; vertical-align: top; }
 @media (max-width: 640px) { .hs-scanopt.is-reuse { margin-left: 0; } }
 .hs-degraded { color: var(--amber); font-style: normal; }
+
+/* ── ITSM section: catalogue, parameters, cross-domain links ── */
+.chip.is-on { color: var(--text); border-color: var(--verdigris); background: var(--panel); }
+.chip .hs-glyph { color: var(--hs-tone, var(--muted)); }
+.hs-itsm-filters { gap: 8px; margin: 4px 0 10px; flex-wrap: wrap; align-items: center; }
+.hs-itsm-filters .select { max-width: 280px; }
+.hs-itsm-filters .input { min-width: 220px; flex: 1; max-width: 360px; }
+.hs-itsm-table td { vertical-align: top; }
+.hs-itsm-table tr.is-active td { background: var(--panel-2); }
+.hs-itsm-group { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.hs-itsm-why { font-size: 12px; color: var(--muted); white-space: normal; }
+.hs-itsm-detail > td { background: var(--panel-2); padding: 10px 12px; }
+.hs-itsm-rule .table { background: var(--panel); }
+.hs-itsm-link { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; margin-top: 10px; }
+.hs-itsm-spec { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }

@@ -1,7 +1,7 @@
 import { declareRequirement, isCompleteFor } from '../data-access.js';
 import { fromSnowTime, toSnowTime, shiftDate, UNITS_MS, parseWindow } from '../run-context.js';
 import { recordFinding } from '../findings.js';
-import { result, preflight, STATUS, empty as isEmpty } from './result.js';
+import { result, preflight, STATUS, empty as isEmpty, notePopulation } from './result.js';
 
 /**
  * ENGINE 1 — Record Predicate.
@@ -30,7 +30,7 @@ import { result, preflight, STATUS, empty as isEmpty } from './result.js';
  */
 
 export const ENGINE_KEY = 'record_predicate';
-export const ENGINE_VERSION = '1.1.0';
+export const ENGINE_VERSION = '1.2.0';
 
 export const OPS = Object.freeze([
   'empty', 'not_empty', 'equals', 'not_equals', 'in', 'not_in',
@@ -196,12 +196,31 @@ export const engine = Object.freeze({
         recommendation: c.recommendation ?? null, collected_at: ctx.run.run_started_at, sensitive: c.sensitive || [],
       }));
     }
+    /*
+     * EMPTY POPULATION (Phase 5 closure): the population is the rule's scope — the
+     * records the predicate is about — not the offenders the pushed query returns.
+     * It is counted when the ratio needs it, or when no offender was found (a
+     * finding already proves there was something to judge). With nothing pushed
+     * into the query and every row read, the rows ARE the scope: no second read.
+     */
+    const popQuery = c.population_query ?? c.scope ?? '';
+    const basis = popQuery ? `${c.table} where ${popQuery}` : `every ${c.table} record`;
+    let populationTotal = null;
+    if (!c.report_ratio && !offenders.length) {
+      if (!plan.pushed.length && c.population_query === undefined && coverage.rowsComplete) populationTotal = rows.length;
+      else {
+        const pop = await ctx.reads.read(declareRequirement({ table: c.table, query: popQuery, strategy: 'exists' }));
+        out.coverage.push(pop.coverage);
+        populationTotal = pop.count;
+      }
+    }
     if (c.report_ratio) {
       /* The denominator is the population the rule is about (an encoded query), counted server-side. */
       const popReq = declareRequirement({ table: c.table, query: c.population_query ?? c.scope ?? '', strategy: 'exists' });
       const pop = await ctx.reads.read(popReq);
       out.coverage.push(pop.coverage);
       const denominator = pop.count;
+      populationTotal = denominator;
       if (denominator != null && denominator > 0) {
         out.kpis.push({
           rule_id: rule.id, numerator: denominator - offenders.length, denominator,
@@ -211,6 +230,7 @@ export const engine = Object.freeze({
         });
       }
     }
+    notePopulation(out, { total: populationTotal, judged: populationTotal == null ? (offenders.length ? evaluated : null) : Math.max(0, populationTotal - unevaluable), unit: `${c.table} records`, basis });
     return out;
   },
 });
