@@ -99,6 +99,7 @@ const MAX_VERIFY_ATTEMPTS = 4;
 const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 const QUICK_TIMEOUT_MS = 2 * 60 * 1000;
+const SDK_BOOTSTRAP_TIMEOUT_MS = 5 * 60 * 1000;
 /* How long to keep asking the instance after an install reports failure. The
  * SDK aborts at a fixed 300s; records have been seen landing minutes later. */
 const SETTLE_WAIT_MS = 5 * 60 * 1000;
@@ -144,6 +145,7 @@ const PROBE_TIMEOUT_MS = 120_000;
  * ------------------------------------------------------------------ */
 
 let sdkEntryCache;
+let sdkBootstrap = null;
 
 export function resetSdkEntryCache() {
   sdkEntryCache = undefined;
@@ -159,10 +161,10 @@ function resolveSdkEntry() {
   const rel = 'node_modules/@servicenow/sdk/bin/index.js';
   const candidates = [
     process.env.SN_SDK_ENTRY,
+    path.join(WORKSPACE, rel),
     process.env.APPDATA && path.join(process.env.APPDATA, 'npm', rel),
     '/usr/local/lib/' + rel,
     '/usr/lib/' + rel,
-    path.join(WORKSPACE, rel),
     path.join(REPO_ROOT, rel),
   ].filter(Boolean);
   sdkEntryCache = candidates.find((c) => fs.existsSync(c)) || null;
@@ -170,6 +172,64 @@ function resolveSdkEntry() {
 }
 
 const stripAnsi = (s) => String(s || '').replace(/\[[0-9;]*m/g, '');
+
+function localSdkEntry() {
+  return path.join(WORKSPACE, 'node_modules/@servicenow/sdk/bin/index.js');
+}
+
+function npmCommand() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
+async function autoBootstrapSdkWorkspace() {
+  const entry = localSdkEntry();
+  if (fs.existsSync(entry)) {
+    return { attempted: false, ok: true, reason: 'local SDK already installed', entry };
+  }
+  if (!fs.existsSync(path.join(WORKSPACE, 'package.json'))) {
+    return { attempted: false, ok: false, reason: 'Fluent workspace package.json is missing.' };
+  }
+  if (sdkBootstrap) return sdkBootstrap;
+
+  log.info('fluent', 'ServiceNow SDK is not installed in server/fluent-workspace; running npm install for the managed workspace.');
+  sdkBootstrap = pexec(npmCommand(), ['install', '--prefix', WORKSPACE], {
+    cwd: SERVER_ROOT,
+    timeout: SDK_BOOTSTRAP_TIMEOUT_MS,
+    maxBuffer: 8 * 1024 * 1024,
+    windowsHide: true,
+    env: process.env,
+  })
+    .then(({ stdout, stderr }) => {
+      sdkEntryCache = undefined;
+      const ok = fs.existsSync(entry);
+      const result = {
+        attempted: true,
+        ok,
+        command: `npm install --prefix ${path.relative(REPO_ROOT, WORKSPACE).replace(/\\/g, '/')}`,
+        stdout: stripAnsi(stdout).slice(-1200),
+        stderr: stripAnsi(stderr).slice(-1200),
+        entry: ok ? entry : null,
+      };
+      if (ok) log.info('fluent', 'ServiceNow SDK workspace dependencies are installed.');
+      else log.warn('fluent', 'npm install finished, but the ServiceNow SDK entry point is still missing.');
+      return result;
+    })
+    .catch((err) => {
+      sdkEntryCache = undefined;
+      const result = {
+        attempted: true,
+        ok: false,
+        command: `npm install --prefix ${path.relative(REPO_ROOT, WORKSPACE).replace(/\\/g, '/')}`,
+        error: stripAnsi(err.stderr || err.stdout || err.message).slice(0, 1200),
+        code: err.code ?? null,
+        timedOut: err.killed === true,
+      };
+      log.warn('fluent', `could not auto-install ServiceNow SDK workspace dependencies: ${result.error}`);
+      return result;
+    })
+    .finally(() => { sdkBootstrap = null; });
+  return sdkBootstrap;
+}
 
 /** Where the SDK's JS entry point lives, for callers that scaffold a NEW workspace. */
 export { resolveSdkEntry };
@@ -1172,19 +1232,25 @@ export async function capability({ deep = false, force = false } = {}) {
   }
 
   const fixes = [];
+  const bootstrap = await autoBootstrapSdkWorkspace();
   const entry = resolveSdkEntry();
 
   // --- CLI ---
   const cli = { present: Boolean(entry), entry, version: null, error: null };
   if (!entry) {
-    cli.error = 'ServiceNow SDK not found on this machine.';
-    fixes.push({ problem: 'SDK CLI missing', command: 'npm i -g @servicenow/sdk' });
+    cli.error = bootstrap?.attempted
+      ? `ServiceNow SDK not found on this machine, and automatic workspace install failed: ${bootstrap.error || bootstrap.reason || 'unknown error'}`
+      : 'ServiceNow SDK not found on this machine.';
+    fixes.push({
+      problem: 'SDK CLI missing',
+      command: bootstrap?.command || 'npm install --prefix server/fluent-workspace',
+    });
   } else {
     const v = await runSdk(['--version']);
     if (v.ok) cli.version = v.stdout.trim().split('\n').pop().trim();
     else {
       cli.error = (v.stderr || 'now-sdk --version failed').slice(0, 400);
-      fixes.push({ problem: 'SDK CLI not runnable', command: 'npm i -g @servicenow/sdk@latest' });
+      fixes.push({ problem: 'SDK CLI not runnable', command: 'npm install --prefix server/fluent-workspace' });
     }
   }
 
@@ -1317,6 +1383,7 @@ export async function capability({ deep = false, force = false } = {}) {
     workspace,
     cheatsheet,
     llm: { provider: settings.llm.provider, model: settings.llm.model || null },
+    bootstrap,
     lastInstall: state.lastInstall || null,
     queueDepth,
     fixes,

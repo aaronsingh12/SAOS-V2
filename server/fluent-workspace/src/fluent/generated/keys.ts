@@ -379,6 +379,10 @@ declare global {
                         table: 'catalog_ui_policy'
                         id: '196e6cb274ef42b4bcbd3827a0d241cc'
                     }
+                    cuip_c15f556f_make_os_read_only_when_macbook_selected: {
+                        table: 'catalog_ui_policy'
+                        id: '0963e232603743e79e610a8556831471'
+                    }
                     cvi_call_approval: {
                         table: 'sys_hub_sub_flow_instance_v2'
                         id: '46118b87d3b74269ac5776476c999200'
@@ -1669,6 +1673,42 @@ declare global {
                         table: 'sys_hub_flow'
                         id: '964921fb389d47b2ba636866f1e35523'
                         deleted: true
+                    }
+                    mlr_approval: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '167e9355ffe44224958e2dc003930cbd'
+                    }
+                    mlr_close_ritm: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'edecbfe345834188aa648c42c98a4ce7'
+                    }
+                    mlr_create_task: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '36ad9d1bae3e40e49673b4c8d81264fe'
+                    }
+                    mlr_else_reject: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '196280a81f8a49da913d256f7fb6668f'
+                    }
+                    mlr_flow: {
+                        table: 'sys_hub_flow'
+                        id: 'e20e7b613da1407db26539673a57d1e3'
+                    }
+                    mlr_if_approved: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '2a43f50c186c4dc38458f643e365fe23'
+                    }
+                    mlr_log_reject: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'ff7af1ba452341c1b3dad80c8d8ad4fe'
+                    }
+                    mlr_trigger: {
+                        table: 'sys_hub_trigger_instance_v2'
+                        id: 'ca80f1d925344246b2a5c742e377c131'
+                    }
+                    mlr_wait_task: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '496796f3caad4fb9a55b5c8d28741c57'
                     }
                     mlsa_mgr_group_lookup: {
                         table: 'sys_hub_action_instance_v2'
@@ -4192,6 +4232,14 @@ declare global {
                             name: 'x_2225382_nwforge_net_inc_demo'
                             element: 'state'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'catalog_ui_policy_action'
+                        id: '54f0549e7ca24027af596527ffc13ee2'
+                        key: {
+                            ui_policy: '0963e232603743e79e610a8556831471'
+                            catalog_variable: 'IO:df5f996fc31fc310341abecdd401313f'
                         }
                     },
                     {

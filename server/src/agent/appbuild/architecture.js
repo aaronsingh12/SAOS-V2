@@ -43,6 +43,9 @@ export function architectSystem({ prefix, maxScope, fieldTypes }) {
   return [
     'You turn structured requirements for a ServiceNow application into a list of ARTIFACTS.',
     'You are not deciding what can be built; something else checks that.',
+    'For Service Catalog work, design only the catalog items, variables, producers, guides or policies the',
+    'requirements actually state. Do not add default requested-for fields, approval flows, tasks, categories,',
+    'user criteria, prices, SLAs, scripts or fulfillment groups unless the user asked for them.',
     '',
     'Answer with JSON only:',
     '{ "components": [ { "type": "...", "name": "...", "purpose": "...", "depends_on": [], "spec": {} } ] }',
@@ -71,6 +74,8 @@ export function architectSystem({ prefix, maxScope, fieldTypes }) {
     '  7. "depends_on" lists the NAMES of other components this one needs. Do not invent dependencies:',
     '     a field depends on its table because it cannot exist without it, not because it feels related.',
     '  8. Design only what the requirements ask for. Do not add artifacts nobody requested.',
+    '  9. A catalog variable type is explicit. If the requirements do not state enough to choose one, leave',
+    '     the type absent so validation asks for clarification; never default to Single Line Text.',
   ].join('\n');
 }
 
@@ -519,6 +524,18 @@ export function validateArchitecture({
     }
     if (c.type === COMPONENT.CATALOG_VARIABLE && !text(c.spec.catalog_item)) {
       fail('variable_without_item', `Catalog variable "${c.name}" names no catalog item to belong to.`, c.id);
+    }
+    if (c.type === COMPONENT.CATALOG_VARIABLE) {
+      const type = c.spec.type;
+      if (type === undefined || type === null || String(type).trim?.() === '') {
+        fail('catalog_variable_type_missing',
+          `Catalog variable "${c.name}" states no type, and this build does not guess one. Ask for the `
+          + 'variable type or provide it in the request.', c.id);
+      } else if (!Number.isFinite(Number(type))) {
+        fail('catalog_variable_type_invalid',
+          `Catalog variable "${c.name}" asks for type "${type}", which is not a Service Catalog variable type code.`,
+          c.id);
+      }
     }
   }
 

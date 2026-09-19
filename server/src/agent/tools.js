@@ -917,7 +917,7 @@ export const TOOLS = [
   {
     name: 'create_catalog_item',
     description:
-      'Composite builder: create a catalog item WITH its variables (and their choices) in one shot. Variable types: 1 Yes/No, 2 Multi Line Text, 3 Multiple Choice, 5 Select Box, 6 Single Line Text, 7 Checkbox, 8 Reference (set reference_table), 9 Date, 10 Date/Time, 21 List Collector (set reference_table), 25 Masked, 26 Email. Requires user approval.',
+      'Composite builder: create a catalog item WITH only the variables the user explicitly requested (and their choices) in one shot. Do not invent extra questions, approvals, fulfillment, categories, variable sets, scripts, user criteria, or flows. Every variable needs an explicit type code from the request/context: 1 Yes/No, 2 Multi Line Text, 3 Multiple Choice, 5 Select Box, 6 Single Line Text, 7 Checkbox, 8 Reference (set reference_table), 9 Date, 10 Date/Time, 21 List Collector (set reference_table), 25 Masked, 26 Email. Requires user approval.',
     mutating: true,
     inputSchema: {
       type: 'object',
@@ -933,7 +933,7 @@ export const TOOLS = [
             properties: {
               name: { type: 'string', description: 'internal name, snake_case' },
               question_text: { type: 'string' },
-              type: { type: 'number', description: 'variable type code' },
+              type: { type: 'number', description: 'explicit ServiceNow variable type code; do not default when the request did not specify enough detail' },
               mandatory: { type: 'boolean' },
               reference_table: { type: 'string', description: 'for type 8 / 21' },
               choices: {

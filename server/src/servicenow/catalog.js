@@ -84,6 +84,26 @@ const CHOICE_TYPE_CODES = new Set([3, 5, 18, 22]);
 const REFERENCE_TYPE_CODES = new Set([8]);
 const LIST_TYPE_CODES = new Set([21]);
 
+function choiceValue(text) {
+  return String(text).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function normalizeChoice(choice) {
+  if (typeof choice === 'string') {
+    const text = choice.trim();
+    return text ? { text, value: choiceValue(text) } : null;
+  }
+  if (!choice || typeof choice !== 'object') return null;
+  const text = String(choice.text ?? choice.label ?? choice.name ?? '').trim();
+  if (!text) return null;
+  const rawValue = choice.value == null ? '' : String(choice.value).trim();
+  return {
+    text,
+    value: rawValue || choiceValue(text),
+    ...(choice.order != null ? { order: choice.order } : {}),
+  };
+}
+
 // Order guide "Rule base" entries. Verify this table name on your release via
 // the schema explorer (Settings → Table lookup) if adds fail — it can vary.
 export const GUIDE_RULE_TABLE = 'sc_cat_item_guide_items';
@@ -163,6 +183,9 @@ export const catalog = {
    */
   async createVariable(target, v) {
     const typeCode = Number(v.type);
+    if (!Number.isFinite(typeCode)) {
+      throw Object.assign(new Error(`Catalog variable "${v.name || v.question_text || '(unnamed)'}" needs an explicit ServiceNow variable type code.`), { status: 400 });
+    }
     const payload = {
       ...target,
       type: String(typeCode),
@@ -181,13 +204,14 @@ export const catalog = {
     if (CHOICE_TYPE_CODES.has(typeCode) && Array.isArray(v.choices)) {
       let order = 100;
       for (const c of v.choices) {
-        if (!c?.text) continue;
+        const choice = normalizeChoice(c);
+        if (!choice) continue;
         choices.push(
           await table.create('question_choice', {
             question: createdId,
-            text: c.text,
-            value: c.value || c.text.toLowerCase().replace(/\s+/g, '_'),
-            order: String(c.order ?? (order += 10)),
+            text: choice.text,
+            value: choice.value,
+            order: String(choice.order ?? (order += 100)),
           }, 'false'),
         );
       }
@@ -242,7 +266,7 @@ export const catalog = {
       // and punctuation is dropped, not underscored: "Contractor (30 days)" was
       // producing `contractor_(30_days)`, a value nobody wants to type into a
       // condition and one that reads like a mistake when it turns up there.
-      value: value || String(text).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+      value: value || choiceValue(text),
       order: String(order ?? next),
       inactive: inactive ? 'true' : 'false',
     }, 'false');
@@ -323,7 +347,7 @@ export const catalog = {
       name,
       table_name,
       short_description: short_description || '',
-      script: script || '// Map producer variables to the target record here.\n// current.short_description = producer.short_description;\n',
+      script: script || '',
       active: 'true',
     }),
 

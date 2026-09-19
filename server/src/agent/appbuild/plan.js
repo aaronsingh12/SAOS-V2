@@ -308,10 +308,11 @@ function tableFieldPayload(f) {
 
 /** A catalog variable in the shape `create_catalog_item` takes. */
 function variablePayload(v) {
+  const type = v.spec?.type;
   return {
     name: v.spec?.name ?? v.name,
     question_text: v.spec?.label ?? v.spec?.question_text ?? v.name,
-    type: Number(v.spec?.type ?? 6),
+    ...(type !== undefined && type !== null && String(type).trim?.() !== '' ? { type: Number(type) } : {}),
     ...(v.spec?.mandatory !== undefined ? { mandatory: Boolean(v.spec.mandatory) } : {}),
     ...(v.spec?.reference_table ? { reference_table: v.spec.reference_table } : {}),
     /*

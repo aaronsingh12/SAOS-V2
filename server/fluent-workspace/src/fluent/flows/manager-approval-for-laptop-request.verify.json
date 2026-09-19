@@ -1,0 +1,68 @@
+{
+  "setup": {
+    "table": "sc_req_item",
+    "payload": {
+      "cat_item": "c15f556fc31fc310341abecdd4013157",
+      "short_description": "Test laptop request"
+    }
+  },
+  "wait": {
+    "flowName": "Manager Approval for Laptop Request",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "sysapproval_approver",
+      "locate": {
+        "byQuery": "document_id={{setup.sys_id}}"
+      },
+      "field": "state",
+      "expect": {
+        "display": "requested"
+      },
+      "note": "creates a manager approval record for the RITM"
+    },
+    {
+      "table": "sc_task",
+      "locate": {
+        "byQuery": "request_item={{setup.sys_id}}"
+      },
+      "field": "assignment_group",
+      "expect": {
+        "display": "IT Manager Approvers"
+      },
+      "note": "creates a catalog task assigned to the manager approvers group"
+    },
+    {
+      "table": "sc_req_item",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "state",
+      "expect": {
+        "display": "Closed Complete"
+      },
+      "note": "sets the RITM state to Complete after task completion"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "sc_req_item",
+      "locate": {
+        "bySetupRecord": true
+      }
+    },
+    {
+      "table": "sysapproval_approver",
+      "locate": {
+        "byQuery": "document_id={{setup.sys_id}}"
+      }
+    },
+    {
+      "table": "sc_task",
+      "locate": {
+        "byQuery": "request_item={{setup.sys_id}}"
+      }
+    }
+  ]
+}

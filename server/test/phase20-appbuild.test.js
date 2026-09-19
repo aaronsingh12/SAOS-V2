@@ -870,3 +870,21 @@ Also create:
   assert.ok(v.fatal.some((p) => p.code === 'inherited_task_field_recreated'));
   assert.ok(v.fatal.some((p) => p.code === 'requested_ui_policy_unsupported'));
 });
+
+test('A73 - catalog variables do not silently default to Single Line Text', () => {
+  const v = B.validateArchitecture({
+    components: [component('catalog_variable', 'business_justification', {
+      catalog_item: 'Laptop Request', name: 'business_justification', label: 'Business justification',
+    })],
+    naming, fieldTypes: FIELD_TYPES,
+  });
+  assert.ok(v.fatal.some((p) => p.code === 'catalog_variable_type_missing'));
+  assert.match(v.fatal.find((p) => p.code === 'catalog_variable_type_missing').message, /does not guess/);
+
+  const item = component('catalog', 'Laptop Request', { name: 'Laptop Request', short_description: 'Request a laptop' });
+  const missingType = component('catalog_variable', 'business_justification', {
+    catalog_item: 'Laptop Request', name: 'business_justification', label: 'Business justification',
+  }, ['Laptop Request']);
+  const { steps } = B.buildPlan({ ordered: [item, missingType], requirements: REQUIREMENTS });
+  assert.equal('type' in steps[0].inputs.variables[0], false, 'the plan injected a hardcoded type');
+});
