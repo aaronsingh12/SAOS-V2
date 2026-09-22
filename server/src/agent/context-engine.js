@@ -100,6 +100,11 @@ export function buildContextProfile({ goal, tools, capability = null, priorCapab
      */
     const prior = Array.isArray(priorCapabilities) ? priorCapabilities.filter(isCapability) : [];
     const verdict = classifyRequest(goal, { explicitCapability: capability });
+    /* An inventory question is answered from everything — a prior turn's
+       capabilities must not narrow it back to a slice. */
+    if (verdict.reason === 'capability_inventory') {
+      return fullProfile({ goal, reason: verdict.reason, totals });
+    }
     if (!verdict.confident && !prior.length) {
       return fullProfile({ goal, reason: verdict.reason, totals });
     }

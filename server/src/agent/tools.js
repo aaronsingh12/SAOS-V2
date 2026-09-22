@@ -6,6 +6,7 @@ import {
   waitForFlowExecution, WAIT_LIMITS,
 } from '../servicenow/diagnostics.js';
 import { catalog, variablePayload } from '../servicenow/catalog.js';
+import { EXTENDED_TOOLS } from './tools-extended.js';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
 import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify, activateManagedFlow } from '../servicenow/fluent.js';
 import { recordIntendedState } from '../servicenow/post-install-state.js';
@@ -2862,6 +2863,10 @@ ${description}` : description);
     },
     execute: ({ base_table, fields }) => dbaAugmentTable({ baseTable: base_table, fields: fields || [] }),
   },
+
+  /* Catalogs, variable sets, custom applications, business rules, notifications,
+     server scripts and the capability inventory — see tools-extended.js. */
+  ...EXTENDED_TOOLS,
 ];
 
 export const toolMap = new Map(TOOLS.map((t) => [t.name, t]));

@@ -112,10 +112,32 @@ const unclaimedMutating = () => {
  * declared shape, checked below.
  */
 
-test('E1 — exactly eleven mutating tools are unclaimed, and they are these eleven', () => {
+/*
+ * THE SECOND ADJUDICATION (2026-09-22) — thirteen more, and all stay unclaimed.
+ *
+ * The chat-agent tools that closed the "I cannot do that" gaps: create_catalog,
+ * create_catalog_category, create_variable_set, add_variable_set_variable,
+ * attach_variable_set, detach_variable_set, update_ui_policy, delete_ui_policy,
+ * create_custom_application, create_business_rule, update_business_rule,
+ * create_notification and run_server_script. Same two facts decide it: leaving
+ * them unclaimed keeps them out of the PLANNER prompt (a person asks for them in
+ * chat, behind the per-write approval card), and E3 below shows the recovery
+ * engine already classifies every one UNKNOWN, so none is ever auto-retried.
+ * run_server_script in particular must never be plannable or retryable: it
+ * declares no describeWrite on purpose — a script has no single record to diff.
+ */
+test('E1 — exactly these mutating tools are unclaimed', () => {
   assert.deepEqual(unclaimedMutating(), [
+    'add_variable_set_variable',
+    'attach_variable_set',
+    'create_business_rule',
+    'create_catalog',
+    'create_catalog_category',
+    'create_custom_application',
     'create_incident',
+    'create_notification',
     'create_record_producer',
+    'create_variable_set',
     'dba_augment_table',
     'dba_create_record',
     'dba_delete_record',
@@ -124,7 +146,12 @@ test('E1 — exactly eleven mutating tools are unclaimed, and they are these ele
     'dba_modify_field',
     'dba_set_field_value',
     'delete_live_flow',
+    'delete_ui_policy',
+    'detach_variable_set',
+    'run_server_script',
+    'update_business_rule',
     'update_catalog_variable',
+    'update_ui_policy',
   ], 'the unclaimed set changed — re-run the §8 adjudication before accepting it');
 });
 
@@ -141,7 +168,8 @@ test('E2 — none of them is ever shown to the planner', () => {
   }));
   const prompt = P.plannerSystem({ capabilities: caps, semantics: null });
   for (const name of unclaimedMutating()) {
-    assert.ok(!prompt.includes(name), `${name} is now shown to the planner`);
+    // Whole names: `create_catalog` is a prefix of the claimed `create_catalog_item`.
+    assert.ok(!new RegExp(`\b${name}\b`).test(prompt), `${name} is now shown to the planner`);
   }
 });
 
@@ -158,12 +186,18 @@ test('E4 — the reason each is unclaimed is a property of the TOOL, not its nam
   // Nine of the eleven declare no `describeWrite`, which is what makes them
   // undiffable by the generic verifier and UNKNOWN to the recovery engine.
   const noDescriptor = unclaimedMutating().filter((n) => typeof toolMap.get(n).describeWrite !== 'function');
-  assert.equal(noDescriptor.length, 9,
-    `${noDescriptor.length} unclaimed tools lack describeWrite, not 9: ${noDescriptor.join(', ')}`);
+  assert.equal(noDescriptor.length, 10,
+    `${noDescriptor.length} unclaimed tools lack describeWrite, not 10: ${noDescriptor.join(', ')}`);
+  assert.ok(noDescriptor.includes('run_server_script'), 'a script has no record to diff, so it must stay descriptor-less');
   // The two that DO declare one are the two the adjudication called "sufficient
   // evidence, no safety gain from claiming".
   const withDescriptor = unclaimedMutating().filter((n) => typeof toolMap.get(n).describeWrite === 'function');
-  assert.deepEqual(withDescriptor, ['create_incident', 'create_record_producer']);
+  assert.deepEqual(withDescriptor, [
+    'add_variable_set_variable', 'attach_variable_set', 'create_business_rule', 'create_catalog',
+    'create_catalog_category', 'create_custom_application', 'create_incident', 'create_notification',
+    'create_record_producer', 'create_variable_set', 'delete_ui_policy', 'detach_variable_set',
+    'update_business_rule', 'update_ui_policy',
+  ]);
 });
 
 test('E5 — the Tier 3 irreversible tool demands four things no plan can supply', () => {

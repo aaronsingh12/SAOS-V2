@@ -58,7 +58,13 @@ const SIGNALS = Object.freeze([
   { capability: 'incident', re: /\b(incidents?|inc\d{5,}|p1|p2|major incidents?)\b/i },
 
   // Applications and scopes.
-  { capability: 'application', re: /\b(applications?|scoped? app|app scope|sys_scope|sys_app|studio|vendor prefix)\b/i },
+  { capability: 'application', re: /\b(applications?|scoped? app|app scope|sys_scope|sys_app|studio|vendor prefix|(?:custom|new|scoped|global)\s+apps?|(?:create|make|build)\s+(?:an?\s+|my\s+)?(?:\w+\s+)?apps?)\b/i },
+
+  { capability: 'business_rule', re: /\b(business rules?|sys_script|before (?:insert|update)|after (?:insert|update)|async rules?)\b/i },
+
+  { capability: 'notification', re: /\b(notifications?|sysevent_email_action|email (?:alerts?|templates?)|send (?:an? )?e-?mails?)\b/i },
+
+  { capability: 'scripting', re: /\b(background scripts?|server[- ]side scripts?|run (?:a |this )?scripts?|fix scripts?|glide ?record)\b/i },
 
   // Update sets and transport.
   { capability: 'update_set', re: /\b(update sets?|sys_update_set|transport|captured? sets?)\b/i },
@@ -98,6 +104,8 @@ const SIGNALS = Object.freeze([
  * request, a very short one, and — most importantly — one where no signal fired
  * at all, which is exactly the case a scoring classifier would paper over.
  */
+const INVENTORY = /\b(what (?:all |else )?(?:can|could) you (?:do|perform|build|create|make)|what are you (?:able|capable)|what (?:all )?(?:are )?your (?:tools|capabilit\w+|skills|abilities)|list (?:all |every )?(?:of )?(?:the |your )?(?:things?|tools?|capabilit\w+|skills?|abilities|actions?)(?: (?:that )?(?:you|u|yiu) can)?|(?:all )?(?:things?|tools?) (?:that )?(?:you|u|yiu) (?:can|cannot|can't) (?:do|perform))\b/i;
+
 export function classifyRequest(text, { explicitCapability = null } = {}) {
   /*
    * An explicitly supplied capability WINS and is not second-guessed.
@@ -127,6 +135,17 @@ export function classifyRequest(text, { explicitCapability = null } = {}) {
   const q = String(text || '').trim();
   if (q.length < 8) {
     return { capabilities: null, matched: [], confident: false, reason: 'request_too_short' };
+  }
+
+  /*
+   * "What can you do?" is a question about the WHOLE surface. Classified by its
+   * words it matched only `record_read` ("list"), and the answer then described
+   * the agent's limits from a read-only slice — listing SLAs, ACLs, tables and
+   * deletes as impossible when the tools existed. It gets the full registry,
+   * and buildContextProfile honours that even on a follow-up turn.
+   */
+  if (INVENTORY.test(q)) {
+    return { capabilities: null, matched: [], confident: false, reason: 'capability_inventory' };
   }
 
   const matched = [];

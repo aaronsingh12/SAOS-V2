@@ -136,13 +136,15 @@ export const BUILT_IN = Object.freeze([
     version: '1.0.0',
     description:
       'Design a scoped application as a dependency graph, validate it against the instance, and build only what the environment can legitimately build.',
-    capabilities: ['application', 'schema_authoring', 'catalog', 'acl', 'flow_authoring'],
+    /* business_rule, notification and scripting sit here so disabling the builder
+       disables them too — they are authoring powers, not always-on reads. */
+    capabilities: ['application', 'schema_authoring', 'catalog', 'acl', 'flow_authoring', 'business_rule', 'notification', 'scripting'],
     tools: [],
     rules: [],
     knowledge: [],
     permissions: {
-      read: ['applications', 'tables', 'roles', 'catalog items', 'the dictionary'],
-      change: ['roles', 'catalog items and variables'],
+      read: ['applications', 'tables', 'roles', 'catalog items', 'the dictionary', 'business rules', 'notifications'],
+      change: ['applications', 'catalogs, catalog items, variables and variable sets', 'business rules', 'email notifications', 'server-side scripts (approved one at a time)'],
       note: 'One unbuildable component blocks the whole build. Nothing is written until every component validates.',
     },
   },

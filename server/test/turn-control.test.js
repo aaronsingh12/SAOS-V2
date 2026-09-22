@@ -841,7 +841,17 @@ test('the hard block\'s SURFACE is exactly the tools that take a caller-supplied
    * must come from an acl_report read, which is exactly what the provenance
    * check enforces.
    */
-  assert.deepEqual(fromInput, ['delete_acl', 'delete_record', 'update_acl', 'update_record'],
+  /*
+   * 2026-09-22 added update_business_rule, update_ui_policy and delete_ui_policy,
+   * and the same question gets the same answer: YES. An invented sys_id that
+   * happens to name a real business rule rewrites server-side code that runs on
+   * every matching write; one that names a real policy rewrites or removes it.
+   * Each must come from a read in the session (list_business_rules,
+   * list_ui_policies / get_catalog_item), which is what provenance enforces.
+   */
+  assert.deepEqual(fromInput, [
+    'delete_acl', 'delete_record', 'delete_ui_policy', 'update_acl', 'update_business_rule', 'update_record', 'update_ui_policy',
+  ],
     'the set of tools inside the confabulation hard block changed — is a hard block right for the new one?');
 });
 

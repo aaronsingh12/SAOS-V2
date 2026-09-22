@@ -67,6 +67,15 @@ export const CAPABILITIES = Object.freeze([
   'sla',
   'acl',
   'application',
+  /*
+   * Business rules, email notifications and server-side scripts — the three
+   * authoring areas the agent used to report it could not reach. Each is its
+   * own domain so its tools come from its own requests, never leaking into an
+   * unrelated one (the rule this map follows, below).
+   */
+  'business_rule',
+  'notification',
+  'scripting',
   'update_set',
   'impersonation',
   'dba',
@@ -100,6 +109,9 @@ export const IMPLIES = Object.freeze({
   impact_analysis: ['dependency_analysis', 'schema_read', 'dba'],
   dependency_analysis: ['schema_read', 'dba'],
   application: ['build'],
+  business_rule: ['schema_read', 'reference_analysis'],
+  notification: ['schema_read', 'reference_analysis'],
+  scripting: ['schema_read'],
   incident: ['record_read', 'record_mutation', 'schema_read'],
   record_mutation: ['record_read', 'schema_read', 'reference_analysis'],
   impersonation: ['record_read'],
@@ -180,6 +192,10 @@ export const TOOL_CAPABILITIES = Object.freeze({
   get_record_slas: ['record_read', 'incident', 'sla'],
   get_ci_relationships: ['record_read', 'incident'],
 
+  /* The whole surface, in every profile — so "can you do X" is answered from the
+     registry rather than from the slice a request was classified into. */
+  list_agent_capabilities: ['core'],
+
   recall_memory: ['core', 'memory'],
   list_instance_facts: ['core', 'memory'],
   remember_fact: ['core', 'memory'],
@@ -210,6 +226,17 @@ export const TOOL_CAPABILITIES = Object.freeze({
   update_catalog_variable: ['catalog'],
   list_ui_policies: ['catalog'],
   create_ui_policy: ['catalog'],
+  update_ui_policy: ['catalog'],
+  delete_ui_policy: ['catalog'],
+  list_catalogs: ['catalog'],
+  create_catalog: ['catalog'],
+  list_catalog_categories: ['catalog'],
+  create_catalog_category: ['catalog'],
+  list_variable_sets: ['catalog'],
+  create_variable_set: ['catalog'],
+  add_variable_set_variable: ['catalog'],
+  attach_variable_set: ['catalog'],
+  detach_variable_set: ['catalog'],
 
   // --- flows and subflows ----------------------------------------------------
   // Subflows are authored through the same tools with `artifact_type`, so they
@@ -255,8 +282,17 @@ export const TOOL_CAPABILITIES = Object.freeze({
   // --- applications and transport -------------------------------------------
   list_applications: ['application'],
   create_application: ['application'],
+  create_custom_application: ['application'],
   check_scope_name: ['application'],
   list_captured_sets: ['update_set'],
+
+  // --- business rules, notifications, server scripts -----------------------
+  list_business_rules: ['business_rule'],
+  create_business_rule: ['business_rule'],
+  update_business_rule: ['business_rule'],
+  list_notifications: ['notification'],
+  create_notification: ['notification'],
+  run_server_script: ['scripting'],
 
   // --- impersonation ---------------------------------------------------------
   impersonation_start: ['impersonation'],
