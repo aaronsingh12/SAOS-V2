@@ -362,6 +362,11 @@ declare global {
                         id: '977787f43fce4ef48324f7d305f07b61'
                         deleted: true
                     }
+                    cuip_169ff164_saos_selftest_and_policy: {
+                        table: 'catalog_ui_policy'
+                        id: '5db5711977904161be877c2564c4accd'
+                        deleted: true
+                    }
                     cuip_38239200_dept_read_only: {
                         table: 'catalog_ui_policy'
                         id: '544c63650f9e4b34a202c60c45d5759b'
@@ -3952,6 +3957,15 @@ declare global {
                             name: 'incident'
                             element: 'x_tepv_nwforge_triage_note'
                             language: 'en'
+                        }
+                    },
+                    {
+                        table: 'catalog_ui_policy_action'
+                        id: '4662433a5ce64d50a8474ce706ff64b8'
+                        deleted: true
+                        key: {
+                            ui_policy: '5db5711977904161be877c2564c4accd'
+                            catalog_variable: 'IO:8f9f3564ebef8f1078f8fbdffdc0cd60'
                         }
                     },
                     {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { table, SnowError } from './client.js';
 import { assertTiersAgree, readAppIdentity, buildWorkspace, installWorkspace } from './fluent.js';
 import { refreshWorkspaces } from './workspaces.js';
+import { boundInstance } from './instance-binding.js';
 import { log } from '../logging.js';
 
 /**
@@ -373,4 +374,86 @@ export function studioSteps(prefix = 'x_<vendor>_') {
     'Studio creates a sys_app record — that is what makes it a real application rather than a bare sys_scope row.',
     'Once it exists, artifacts can be developed inside it.',
   ];
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * A NEW, STANDALONE CUSTOM APPLICATION.
+ *
+ * Separate from `createApplication` above on purpose. That one establishes the
+ * NowForge workspace's OWN scope and refuses to mint a second — every artifact
+ * NowForge authors lives there. This one is what a person asks for on the
+ * Applications page: an empty application of their own, scoped under this
+ * instance's vendor prefix or in global, that they then build in Studio.
+ *
+ * A `sys_app` insert is the platform's own route for this (it is what Studio
+ * does); its business rules mint the scope. The scope is checked against the
+ * LIVE vendor prefix first, an existing scope is refused rather than shadowed,
+ * and the row is read back — a REST insert is a global-tier writer, so the
+ * stored scope is compared with the one asked for rather than assumed.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+const APP_FIELDS = 'sys_id,name,scope,version,short_description,active,sys_class_name,sys_created_by,sys_created_on';
+
+/** The scope a new application would get, and whether it is legal here. Reads only. */
+export async function planCustomApplication({ name = '', scope = '', kind = 'scoped' } = {}) {
+  const appName = String(name || '').trim();
+  if (kind === 'global') {
+    return { ok: Boolean(appName), kind, scope: 'global', prefix: null, errors: appName ? [] : ['an application name is required'] };
+  }
+  const prefix = await vendorPrefix();
+  const wanted = String(scope || '').trim().toLowerCase() || suggestScopeName(appName, prefix);
+  const check = validateScopeName(wanted, prefix);
+  const errors = [...(appName ? [] : ['an application name is required']), ...check.errors];
+  if (check.ok) {
+    const taken = await scopeRowFor(wanted);
+    if (taken) errors.push(`scope ${wanted} already exists on this instance (${taken.name || taken.sys_id}) — pick another`);
+  }
+  return { ok: errors.length === 0, kind, scope: wanted, prefix, budget: check.budget, errors };
+}
+
+export async function createCustomApplication({ name, scope = '', kind = 'scoped', shortDescription = '', version = '1.0.0' } = {}) {
+  if (!['scoped', 'global'].includes(kind)) throw new SnowError(`Unknown application kind "${kind}" — scoped or global.`, 400);
+  const plan = await planCustomApplication({ name, scope, kind });
+  if (!plan.ok) {
+    throw new SnowError(`The application was refused before anything was written:\n- ${plan.errors.join('\n- ')}`, 400, { errors: plan.errors });
+  }
+  const appName = String(name).trim();
+  if (kind === 'global') {
+    const same = await table.query('sys_app', { query: `scope=global^name=${appName.replace(/\^/g, '')}`, fields: 'sys_id', limit: 1, display: 'false' });
+    if (same.length) throw new SnowError(`A global application named "${appName}" already exists (${same[0].sys_id}).`, 409);
+  }
+
+  const created = await table.create('sys_app', {
+    name: appName,
+    scope: plan.scope,
+    version: String(version || '1.0.0'),
+    short_description: String(shortDescription || ''),
+    active: 'true',
+  }, 'false');
+  const sysId = created?.sys_id?.value ?? created?.sys_id;
+  if (!sysId) throw new SnowError('The instance accepted the insert but returned no sys_id.', 502);
+
+  const back = (await table.query('sys_app', { query: `sys_id=${sysId}`, fields: APP_FIELDS, limit: 1, display: 'false' }))[0] ?? null;
+  const scopeRow = back ? await scopeRowFor(back.scope) : null;
+  const problems = [];
+  if (!back) problems.push('the application could not be read back after the insert');
+  else {
+    if (back.scope !== plan.scope) problems.push(`the instance stored scope "${back.scope}", not the "${plan.scope}" that was asked for`);
+    if (back.name !== appName) problems.push(`the instance stored name "${back.name}"`);
+  }
+  if (back && !scopeRow) problems.push(`no sys_scope row exists for ${back.scope}`);
+  const base = (boundInstance().url || '').replace(/\/+$/, '');
+  return {
+    ok: problems.length === 0,
+    sys_id: sysId,
+    name: back?.name ?? appName,
+    scope: back?.scope ?? plan.scope,
+    kind,
+    version: back?.version ?? null,
+    problems,
+    link: base ? `${base}/sys_app.do?sys_id=${sysId}` : null,
+    message: problems.length
+      ? `Created application ${sysId}, but the read-back found: ${problems.join('; ')}.`
+      : `Created ${kind} application "${back.name}" (scope ${back.scope}, ${sysId}). Open it in Studio to add tables, forms and logic.`,
+  };
 }

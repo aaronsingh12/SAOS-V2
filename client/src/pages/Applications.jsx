@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import DataTable from '../components/DataTable.jsx';
+import RecordDrawer from '../components/RecordDrawer.jsx';
+import { toast } from '../components/toast.js';
 
 /**
  * Applications — every scope on the instance, and which ones we manage.
@@ -62,6 +64,64 @@ const APP_COLUMNS = [
     ) : <span style={{ color: 'var(--muted)' }}>—</span>) },
 ];
 
+/**
+ * A new, empty custom application — scoped under this instance's vendor prefix,
+ * or global. The scope it will get, and every reason it would be refused, is
+ * asked of the server as you type, so nothing is sent that the platform would
+ * reject or that would shadow an existing scope.
+ */
+function NewApplication({ open, onClose, onCreated }) {
+  const [draft, setDraft] = useState({ name: '', kind: 'scoped', scope: '', shortDescription: '' });
+  const [plan, setPlan] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open || !draft.name.trim()) { setPlan(null); return undefined; }
+    const t = setTimeout(() => {
+      const q = new URLSearchParams({ name: draft.name, kind: draft.kind, ...(draft.scope ? { scope: draft.scope } : {}) });
+      api.get(`/applications/plan?${q}`).then(setPlan).catch((e) => setPlan({ ok: false, errors: [e.message] }));
+    }, 350);
+    return () => clearTimeout(t);
+  }, [open, draft.name, draft.kind, draft.scope]);
+
+  const create = async () => {
+    setBusy(true); setError('');
+    try {
+      const r = await api.post('/applications', { ...draft, scope: draft.kind === 'global' ? '' : (draft.scope || plan?.scope || '') });
+      if (r.ok) toast.success(r.message); else toast.error(r.message);
+      setDraft({ name: '', kind: 'scoped', scope: '', shortDescription: '' });
+      onCreated?.(r);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <RecordDrawer open={open} onClose={onClose} title="New application" width={540}>
+      <div className="field"><label className="label">Name</label>
+        <input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
+      <div className="field"><label className="label">Type</label>
+        <div className="row" style={{ gap: 6 }}>
+          {[['scoped', 'Scoped'], ['global', 'Global']].map(([k, label]) => (
+            <button key={k} type="button" className={`btn sm${draft.kind === k ? ' primary' : ''}`} onClick={() => setDraft({ ...draft, kind: k })}>{label}</button>
+          ))}
+        </div></div>
+      {draft.kind === 'scoped' && (
+        <div className="field"><label className="label">Scope {plan?.prefix && <span className="mono" style={{ opacity: 0.7 }}>— must start with {plan.prefix}, 18 characters max</span>}</label>
+          <input className="input mono" placeholder={plan?.scope || 'derived from the name'} value={draft.scope}
+            onChange={(e) => setDraft({ ...draft, scope: e.target.value.toLowerCase() })} /></div>
+      )}
+      <div className="field"><label className="label">Short description</label>
+        <input className="input" value={draft.shortDescription} onChange={(e) => setDraft({ ...draft, shortDescription: e.target.value })} /></div>
+      {plan && (plan.ok
+        ? <p className="ok-text">Will be created as <span className="mono">{plan.scope}</span>.</p>
+        : plan.errors?.map((m, i) => <div key={i} className="note warn">{m}</div>))}
+      {error && <p className="error-text">{error}</p>}
+      <button className="btn primary" onClick={create} aria-busy={busy} disabled={busy || !plan?.ok}>Create application</button>
+    </RecordDrawer>
+  );
+}
+
 export default function Applications() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -69,6 +129,8 @@ export default function Applications() {
   const [kind, setKind] = useState('custom');
   const [search, setSearch] = useState('');
   const [managedOnly, setManagedOnly] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -78,7 +140,7 @@ export default function Applications() {
       .catch((e) => { if (live) setError(e.message); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, []);
+  }, [reloadKey]);
 
   // Filtering is local: the whole list is one read, and 743 rows filter faster
   // in the browser than they round-trip.
@@ -117,6 +179,7 @@ export default function Applications() {
       <div className="page-full">
         <DataTable
           title="Applications"
+          action={<button className="btn primary sm" onClick={() => setCreating(true)}>New application</button>}
           rows={rows}
           loading={loading}
           getRowId={(a) => a.sys_id}
@@ -147,6 +210,9 @@ export default function Applications() {
           )}
         />
       </div>
+
+      <NewApplication open={creating} onClose={() => setCreating(false)}
+        onCreated={() => { setCreating(false); setReloadKey((k) => k + 1); }} />
 
       {data?.visibility && (
         <div className="note">
