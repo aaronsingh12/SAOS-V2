@@ -8,6 +8,28 @@ Connect a ServiceNow PDI and build on it two ways: through clean module UIs, or 
 
 ## Quickstart
 
+### On a new Mac — one command
+
+Download `setup-mac.sh` from this repository (or clone it), then in Terminal:
+
+```bash
+bash setup-mac.sh
+```
+
+It installs Homebrew, git, the GitHub CLI and Node 24 if they are missing, clones
+this repository to `~/SAOS-V2` (you sign in to GitHub once, in the browser — the
+repository is private), installs the server, client and ServiceNow SDK workspace
+dependencies, checks the client builds and the server loads, and starts the app
+at http://localhost:5173. Re-running it is safe and updates an existing clone.
+Afterwards, double-click `start-mac.command` to start the app again.
+
+Options: `--with-python` (the SAOS Python service, with a local SQLite `.env`),
+`--with-ollama` (local models), `--test` (run the offline test suite),
+`--no-start`, `--dir PATH`. `bash setup-mac.sh --help` lists them all.
+`meeting-agent/` is not set up on macOS: it captures audio through Windows-only APIs.
+
+### Manually
+
 Requirements: **Node 22.5+** (tested on 24.18), a ServiceNow PDI (free at
 developer.servicenow.com), and an LLM — an Anthropic/OpenAI API key or local
 Ollama.
