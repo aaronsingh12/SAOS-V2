@@ -3268,6 +3268,14 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_dictionary'
+                        id: '13b80c271d4543b29aed1d71b79e7875'
+                        key: {
+                            name: 'x_tepv_nwforge_u_accessories'
+                            element: 'name'
+                        }
+                    },
+                    {
                         table: 'sys_choice'
                         id: '14efe4cf74f74e2cadbbd49d2485d93a'
                         key: {
@@ -4488,6 +4496,14 @@ declare global {
                     },
                     {
                         table: 'sys_dictionary'
+                        id: '62b36dba198549978c117a94ea275c03'
+                        key: {
+                            name: 'x_tepv_nwforge_u_accessories'
+                            element: 'NULL'
+                        }
+                    },
+                    {
+                        table: 'sys_dictionary'
                         id: '62c72a236c094b1aab9e767e8166d7c9'
                         key: {
                             name: 'x_tepv_nwforge_u_lap_req'
@@ -5450,6 +5466,15 @@ declare global {
                         }
                     },
                     {
+                        table: 'sys_documentation'
+                        id: 'a56dc25b6a564d1bb5cccdaa937a567f'
+                        key: {
+                            name: 'x_tepv_nwforge_u_accessories'
+                            element: 'name'
+                            language: 'en'
+                        }
+                    },
+                    {
                         table: 'sys_choice'
                         id: 'a57e5de533c94aafa5d8c60cac3c4fc5'
                         key: {
@@ -5946,6 +5971,13 @@ declare global {
                     },
                     {
                         table: 'sys_db_object'
+                        id: 'bd435e06d68e41668d2a772cffd0cd55'
+                        key: {
+                            name: 'x_tepv_nwforge_u_accessories'
+                        }
+                    },
+                    {
+                        table: 'sys_db_object'
                         id: 'bd7013ed10d640418d07c333fbc5f4bf'
                         key: {
                             name: 'x_tepv_nwforge_asset'
@@ -5966,6 +5998,13 @@ declare global {
                         key: {
                             name: 'x_tepv_nwforge_x_2196302_sn'
                             element: 'description'
+                        }
+                    },
+                    {
+                        table: 'ua_table_licensing_config'
+                        id: 'bed5cf5728a144e39de6e27b19cda389'
+                        key: {
+                            name: 'x_tepv_nwforge_u_accessories'
                         }
                     },
                     {
@@ -6185,6 +6224,15 @@ declare global {
                         key: {
                             name: 'var__m_sys_hub_flow_output_6edc7084d1844f73a322641cef70925a'
                             element: 'isValid'
+                            language: 'en'
+                        }
+                    },
+                    {
+                        table: 'sys_documentation'
+                        id: 'cde02a98831a4a299f8a9a9608fd9d82'
+                        key: {
+                            name: 'x_tepv_nwforge_u_accessories'
+                            element: 'NULL'
                             language: 'en'
                         }
                     },
