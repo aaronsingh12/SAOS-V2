@@ -159,7 +159,8 @@ test('ITSM excludes a table it could not read completely, and says which', () =>
     f({ domain: 'CHANGE', table: 'change_request', target_ids: ['c1'] }), // from an unreadable table: not counted
   ];
   const itsm = summariseScopes(coverage, findings).itsm;
-  assert.equal(itsm.score, 95, '1 affected of 20 scanned');
+  /* ITSM Quality: one Moderate charge (5) over 20 records — 99.8, not the pass rate's 95. */
+  assert.equal(itsm.score, 99.8, '1 Moderate charge over 20 scanned');
   assert.match(itsm.score_basis, /change_request excluded/);
   assert.match(itsm.score_basis, /active, or updated in the last 90 days/, 'the slice the score covers is not stated');
 });

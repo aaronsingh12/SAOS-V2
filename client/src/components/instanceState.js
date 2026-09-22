@@ -38,7 +38,7 @@ export function describeInstanceState(h, what = 'This page') {
     return {
       kind: 'server',
       icon: '!',
-      title: 'The NowHelpAssist server is not responding.',
+      title: 'The SAOS server is not responding.',
       hint: `${h.error} — start it with \`npm run dev\` in server/, then reload. This is the local API on :4000, not your instance.`,
     };
   }

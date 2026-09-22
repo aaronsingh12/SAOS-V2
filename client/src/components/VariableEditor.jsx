@@ -16,7 +16,8 @@ import { SkeletonLines, LoadingRegion, EmptyState } from './states.jsx';
  * stops matching.
  */
 
-const CHOICE_TYPES = new Set([3, 5, 18, 22]);
+// 18/22 are lookup types: their values come from a table, not question_choice.
+const CHOICE_TYPES = new Set([3, 5]);
 
 function ChoiceEditor({ variableId, onChanged }) {
   const [choices, setChoices] = useState(null);

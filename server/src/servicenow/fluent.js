@@ -177,13 +177,56 @@ function localSdkEntry() {
   return path.join(WORKSPACE, 'node_modules/@servicenow/sdk/bin/index.js');
 }
 
-function npmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+/**
+ * Is the managed workspace's install COMPLETE — not merely "does the CLI's
+ * entry file exist". MEASURED 2026-09-20: a torn install (two `npm install`s
+ * racing in the same node_modules) left `bin/index.js` on disk with no
+ * `package.json` beside it and a lodash missing 800 of its files. The entry
+ * check said "installed", the CLI started, and died inside sdk-build-core with
+ * `Cannot find module 'lodash/noop'`. npm writes `.package-lock.json` last, so
+ * its presence is the signal that an install ran to the end.
+ */
+export function sdkWorkspaceInstalled() {
+  return [
+    localSdkEntry(),
+    path.join(WORKSPACE, 'node_modules/@servicenow/sdk/package.json'),
+    path.join(WORKSPACE, 'node_modules/.package-lock.json'),
+  ].every((p) => fs.existsSync(p));
 }
 
-async function autoBootstrapSdkWorkspace() {
+/**
+ * How npm is invoked. NOT `npm.cmd`: on Windows that is a batch shim, and since
+ * the CVE-2024-27980 fix (Node 18.20.2 / 20.12.2 / 22+) `execFile` refuses it
+ * with `spawn EINVAL` unless `shell: true` — the same trap `resolveSdkEntry`
+ * avoids for `now-sdk`. So npm is run the way the SDK is: its JS entry under
+ * the Node binary that is running us. `npm_execpath` is set whenever this
+ * process was started through `npm run`, and is the exact npm the user has.
+ * Falls back to the bare command (with a shell on Windows) only when no entry
+ * can be found, so an unusual layout degrades to the old behaviour, not worse.
+ */
+export function npmInvocation() {
+  const nodeDir = path.dirname(process.execPath);
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(nodeDir, 'node_modules/npm/bin/npm-cli.js'),          // Windows layout
+    path.join(nodeDir, '../lib/node_modules/npm/bin/npm-cli.js'),   // Unix layout
+  ].filter(Boolean);
+  const entry = candidates.find((c) => /npm-cli\.js$/.test(c) && fs.existsSync(c));
+  if (entry) return { file: process.execPath, prefixArgs: [entry], shell: false };
+  return { file: 'npm', prefixArgs: [], shell: process.platform === 'win32' };
+}
+
+/**
+ * The ONE place `npm install` runs for the managed workspace. Concurrent callers
+ * share the in-flight promise: the capability probe and the Dashboard's Auto
+ * setup used to each spawn their own install, and two npm processes writing
+ * the same node_modules produced the torn tree described on
+ * `sdkWorkspaceInstalled`. Anything that needs the workspace installed calls
+ * this; nothing else spawns npm.
+ */
+export async function autoBootstrapSdkWorkspace() {
   const entry = localSdkEntry();
-  if (fs.existsSync(entry)) {
+  if (sdkWorkspaceInstalled()) {
     return { attempted: false, ok: true, reason: 'local SDK already installed', entry };
   }
   if (!fs.existsSync(path.join(WORKSPACE, 'package.json'))) {
@@ -192,16 +235,18 @@ async function autoBootstrapSdkWorkspace() {
   if (sdkBootstrap) return sdkBootstrap;
 
   log.info('fluent', 'ServiceNow SDK is not installed in server/fluent-workspace; running npm install for the managed workspace.');
-  sdkBootstrap = pexec(npmCommand(), ['install', '--prefix', WORKSPACE], {
+  const npm = npmInvocation();
+  sdkBootstrap = pexec(npm.file, [...npm.prefixArgs, 'install', '--prefix', WORKSPACE], {
     cwd: SERVER_ROOT,
     timeout: SDK_BOOTSTRAP_TIMEOUT_MS,
     maxBuffer: 8 * 1024 * 1024,
     windowsHide: true,
+    shell: npm.shell,
     env: process.env,
   })
     .then(({ stdout, stderr }) => {
       sdkEntryCache = undefined;
-      const ok = fs.existsSync(entry);
+      const ok = sdkWorkspaceInstalled();
       const result = {
         attempted: true,
         ok,
@@ -429,7 +474,7 @@ export async function assertAppBinding() {
       const p = await table.query('sys_properties', { query: 'name=glide.appcreator.company.code', fields: 'value', display: 'false', limit: 1 });
       localPrefix = p[0]?.value ?? null;
     } catch { /* the advice is better with it, still correct without */ }
-    const pinned = /^x_(\d+)_/.exec(cfg.scope || '')?.[1] ?? null;
+    const pinned = /^x_([a-z0-9]+)_/.exec(cfg.scope || '')?.[1] ?? null;
     const prefixNote = localPrefix && pinned && localPrefix !== pinned
       ? ` This instance issues vendor prefix "${localPrefix}", but the scope name carries "${pinned}" — vendor `
         + `prefixes are issued by the instance, so this scope name cannot be created here. An application created `
@@ -696,6 +741,16 @@ export function writeInstanceState(host, patch) {
   const byInstance = { ...(raw.byInstance || {}) };
   byInstance[host] = { ...(byInstance[host] || {}), ...patch };
   return writeRawState({ ...raw, byInstance });
+}
+
+/** Log out: drop everything filed under `host`. Other instances' entries are untouched. */
+export function forgetInstanceState(host) {
+  if (!host) return false;
+  const raw = migrateLegacyState(readRawState());
+  if (!raw.byInstance?.[host]) return false;
+  const { [host]: _gone, ...rest } = raw.byInstance;
+  writeRawState({ ...raw, byInstance: rest });
+  return true;
 }
 
 /* ------------------------------------------------------------------ *

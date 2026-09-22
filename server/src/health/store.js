@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { getDb } from '../memory/db.js';
 import { boundInstance } from '../servicenow/instance-binding.js';
 import { stateMap, QUIET_STATES } from './finding-state.js';
-import { scopeFilter, summariseScopes, SCOPE_KEYS, MODULE_KEYS, SCOPES, moduleTables, scopeOfRule } from './scopes.js';
+import { scopeFilter, summariseScopes, overallScope, itomScoringOf, SCOPE_KEYS, MODULE_KEYS, SCOPES, moduleTables, scopeOfRule } from './scopes.js';
 import { TABLES } from './tables.js';
 import { cmdbHistoryFromRuns, cmdbSnapshotEligibility } from './cmdb-history.js';
 
@@ -187,11 +187,13 @@ export function completeRun(runId, { status, manifest, findings }) {
 /**
  * How many runs keep their FINDINGS. Every run keeps its manifest for ever.
  *
- * Storing every finding instead of the first 1,000 (see MAX_FINDINGS) means a
- * large instance writes ~12,000 rows per check, and the database grew without
- * bound on a schedule of daily runs. The manifest — coverage, counts, every
- * scope's score — is small and is what the trend reads, so it stays; the
- * per-finding rows of older runs are what goes.
+ * Storing every finding instead of the first 1,000 means a large instance
+ * writes ~12,000 rows per check — ~29,000 on the largest seen — and the
+ * database grew without bound on a schedule of daily runs. This, not a cap on
+ * one run's rows, is what bounds it (see the note above runHealthCheck in
+ * index.js: a run stores everything it counts). The manifest — coverage,
+ * counts, every scope's score — is small and is what the trend reads, so it
+ * stays; the per-finding rows of older runs are what goes.
  *
  * Nothing that carries a DECISION is touched: lifecycle states are keyed on
  * the fingerprint in their own table, and proposals keep their own copy of what
@@ -263,7 +265,7 @@ export function trend({ limit = 30 } = {}) {
      ORDER BY started_at DESC LIMIT ?
   `).all(bound.key || 'unbound', limit);
 
-  return rows.filter((r) => r.modules_json !== '[]').map((r) => {
+  const points = rows.filter((r) => r.modules_json !== '[]').map((r) => {
     let m = null;
     try { m = r.manifest_json ? JSON.parse(r.manifest_json) : null; } catch { m = null; }
     let modules = null;
@@ -272,8 +274,17 @@ export function trend({ limit = 30 } = {}) {
        CMDB score, so the other scopes read as `null` — a gap in their line —
        rather than being back-filled with a number nobody measured. */
     const scopes = {};
+    const models = {};
     for (const k of SCOPE_KEYS) {
       scopes[k] = m?.scopes?.[k]?.score ?? (k === 'cmdb' ? (m?.metrics?.cmdb_quality_score ?? null) : null);
+      /* The scoring model that produced the point. A summary recorded before it
+         carried `scoring` is recognised where the identity was stored elsewhere:
+         the CMDB model by the run's comparability key, the ITOM model by its
+         stored check set. ITSM's pass-rate era stored neither and reads as
+         another model — a gap, by design. */
+      models[k] = m?.scopes?.[k]?.scoring?.key
+        ?? (k === 'cmdb' && m?.scopes?.[k]?.cmdb_quality ? (m?.comparability?.key ?? null) : null)
+        ?? (k === 'itom' ? itomScoringOf(m?.scopes?.[k]) : null);
     }
     return {
       runId: r.id,
@@ -285,11 +296,32 @@ export function trend({ limit = 30 } = {}) {
       score: m?.metrics?.cmdb_quality_score ?? null,
       scoreWithheld: m?.metrics?.cmdb_quality_score == null,
       scopes,
+      models,
       findings: m?.findings_detected ?? m?.findings_stored ?? null,
       severity: m?.severity_counts ?? {},
       visibleCis: m?.metrics?.visible_cis ?? null,
     };
   }).reverse();
+
+  /*
+   * A LINE RUNS ONLY WITHIN ONE SCORING MODEL. A scope whose newest point
+   * declares a model key keeps only the points made under that key; a point
+   * under another model — or under none, the pass rate ITSM used before
+   * itsm-quality/1 — reads as a gap. Joining 0.7 to 89 across a model change
+   * would draw a recovery that never happened. The older points stay in the
+   * store untouched; only the line refuses them.
+   */
+  for (const k of SCOPE_KEYS) {
+    const newest = [...points].reverse().find((p) => p.scopes[k] != null && p.models[k]);
+    if (!newest) continue;
+    for (const p of points) {
+      if (p.scopes[k] != null && p.models[k] !== newest.models[k]) {
+        p.scopes[k] = null;
+        (p.model_breaks ||= []).push(k);
+      }
+    }
+  }
+  return points;
 }
 
 /**
@@ -708,9 +740,16 @@ export function composedView() {
   }
   const cmdbRun = runs.cmdb?.manifest ? runs.cmdb : null;
   const allScope = SCOPES.find((x) => x.key === 'all');
+  /*
+   * THE OVERALL (overall-health.js), over each area's LATEST result — the
+   * Full System Scan the page shows. The same function a full scan's manifest
+   * uses, so the composed number and a stored run's number agree whenever the
+   * module results are the same. An area with no result is absent from the
+   * mean and named in the assessment; it is never 0 and never 100.
+   */
+  const overall = overallScope(Object.fromEntries(MODULE_KEYS.map((m) => [m, scopes[m] ?? null])), coverage);
   scopes.all = {
     key: 'all', label: allScope.label, description: allScope.description,
-    score_kind: null, score: null, score_basis: null, score_definition: null, score_withheld_because: null,
     checks: null, score_drivers: null,
     findings,
     severity_counts: severity,
@@ -718,6 +757,7 @@ export function composedView() {
     cmdb_quality: null,
     domains: [...domains.values()],
     tables: null,
+    ...overall,
   };
   const newest = present.map((m) => results[m].checkedAt).sort().pop();
   return {
@@ -743,11 +783,39 @@ export function composedView() {
 }
 
 /**
+ * The findings search, as SQL.
+ *
+ * Measured: a duplicate-CI set (CMDB-033/034/035/036, SYSTEMIC) ranked #560 of
+ * 22,782 in a CMDB view, and the page's search covered only the 200 rows it had
+ * loaded — so "Serial number duplicate", the CI's name, its serial and its
+ * sys_id all returned nothing, which reads as "not detected". The search
+ * therefore runs HERE, over every stored row of the run, not over the page.
+ *
+ * Every whitespace-separated term must appear somewhere in the finding: the
+ * title, description, rule id, domain, table, the target sys_ids, or the
+ * evidence (which carries the CI names, serials and addresses a rule quoted).
+ * `%` and `_` in a term are literal, so a sys_id or an IP is matched as typed.
+ */
+const SEARCH_COLUMNS = ['title', 'description', 'rule_id', 'domain', 'source_table', 'target_ids', 'evidence_json'];
+function searchClause(q) {
+  const terms = String(q ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return null;
+  const clauses = [];
+  const args = [];
+  for (const term of terms) {
+    const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    clauses.push(`(${SEARCH_COLUMNS.map((c) => `LOWER(COALESCE(${c}, '')) LIKE ? ESCAPE '\\'`).join(' OR ')})`);
+    for (let i = 0; i < SEARCH_COLUMNS.length; i++) args.push(like);
+  }
+  return { clause: clauses.join(' AND '), args };
+}
+
+/**
  * Findings across the modules' own runs — each module's findings from its own
  * current result. Every row carries `run_id`, so opening one reads it from the
  * run it belongs to.
  */
-export function listModuleFindings({ scope = 'all', domain, severity, priority, rule, limit = 100, offset = 0 } = {}) {
+export function listModuleFindings({ scope = 'all', domain, severity, priority, rule, q, limit = 100, offset = 0 } = {}) {
   const results = moduleResults();
   const modules = scope && scope !== 'all' ? [scope] : MODULE_KEYS;
   const pairs = modules.filter((m) => results[m]?.runId).map((m) => ({ runId: results[m].runId, module: m }));
@@ -764,6 +832,8 @@ export function listModuleFindings({ scope = 'all', domain, severity, priority, 
   if (severity) { where.push('severity = ?'); args.push(severity); }
   if (priority) { where.push('priority = ?'); args.push(priority); }
   if (rule) { where.push('rule_id = ?'); args.push(rule); }
+  const search = searchClause(q);
+  if (search) { where.push(search.clause); args.push(...search.args); }
   const db = getDb();
   const rows = db.prepare(`
     SELECT * FROM health_findings WHERE ${where.join(' AND ')}
@@ -782,7 +852,7 @@ export function listModuleFindings({ scope = 'all', domain, severity, priority, 
  * findings each carrying its evidence rows is megabytes of JSON the list view
  * never renders.
  */
-export function listFindings(runId, { scope, domain, severity, priority, rule, fingerprint, limit = 100, offset = 0, withEvidence = false } = {}) {
+export function listFindings(runId, { scope, domain, severity, priority, rule, q, fingerprint, limit = 100, offset = 0, withEvidence = false } = {}) {
   const where = ['run_id = ?'];
   const args = [runId];
   const sf = scopeFilter(scope);
@@ -792,6 +862,8 @@ export function listFindings(runId, { scope, domain, severity, priority, rule, f
   if (priority) { where.push('priority = ?'); args.push(priority); }
   if (rule) { where.push('rule_id = ?'); args.push(rule); }
   if (fingerprint) { where.push('fingerprint = ?'); args.push(fingerprint); }
+  const search = searchClause(q);
+  if (search) { where.push(search.clause); args.push(...search.args); }
 
   const rows = getDb().prepare(`
     SELECT * FROM health_findings WHERE ${where.join(' AND ')}

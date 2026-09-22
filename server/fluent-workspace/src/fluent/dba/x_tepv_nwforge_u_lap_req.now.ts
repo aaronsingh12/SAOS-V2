@@ -1,11 +1,11 @@
-// nowhelpassist-dba: x_2225382_nwforge_u_lap_req
+// nowhelpassist-dba: x_tepv_nwforge_u_lap_req
 // Generated from a validated table spec by dba-authoring.js. Deterministic —
 // no model output reaches this file. Edit the spec, not this source.
 import { Table, BooleanColumn, ReferenceColumn, StringColumn } from '@servicenow/sdk/core'
 
-export const x_2225382_nwforge_u_lap_req = Table({
-    $id: Now.ID["x_2225382_nwforge_u_lap_req_table"],
-    name: "x_2225382_nwforge_u_lap_req",
+export const x_tepv_nwforge_u_lap_req = Table({
+    $id: Now.ID["x_tepv_nwforge_u_lap_req_table"],
+    name: "x_tepv_nwforge_u_lap_req",
     label: "Laptop Request",
     display: "u_number",
     extensible: false,

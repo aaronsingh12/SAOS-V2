@@ -25,6 +25,7 @@ import { notifyDesktop } from './notify.js';
 const IDLE = { status: 'idle', runId: null, startedAt: null, progress: null, message: null, finishedSeq: 0 };
 let state = IDLE;
 let watching = null;          // the runId a stream is currently open for
+let generation = 0;           // bumped on log out; a stream from an older generation is ignored
 const listeners = new Set();
 
 function set(patch) {
@@ -81,8 +82,11 @@ async function follow(runId, open) {
   let terminal = null;
   let gotFrame = false;
   let seenRunId = runId;
+  const myGeneration = generation;
+  const stale = () => myGeneration !== generation;
   try {
     await open((evt) => {
+      if (stale()) return;
       gotFrame = true;
       if (evt.type === 'run_started') {
         seenRunId = evt.runId;
@@ -95,9 +99,11 @@ async function follow(runId, open) {
       }
     });
   } catch (err) {
+    if (stale()) return undefined;
     if (!gotFrame) throw err;
     if (!terminal) return recover(seenRunId, err);
   }
+  if (stale()) return undefined;
   if (!terminal) return recover(seenRunId, null);
   if (terminal.type === 'done') return finish(seenRunId, 'completed');
   if (terminal.type === 'cancelled') return finish(seenRunId, 'cancelled', terminal.note);
@@ -115,9 +121,11 @@ async function recover(runId, err) {
   if (recovering) return undefined;
   recovering = true;
   watching = null;
+  const myGeneration = generation;
   try {
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await new Promise((r) => { setTimeout(r, Math.min(1000 * 2 ** attempt, 15000)); });
+      if (myGeneration !== generation) return undefined;   // logged out while waiting
       let active;
       try { ({ run: active } = await api.get('/health/runs/active')); } catch { continue; /* not back yet */ }
       if (active) { recovering = false; return attachHealthRun(active.id, active); }
@@ -133,7 +141,7 @@ async function recover(runId, err) {
         return undefined;
       }
     }
-    return finish(runId, 'failed', `Lost contact with the NowHelpAssist server while watching the check${err?.message ? ` (${err.message})` : ''}. `
+    return finish(runId, 'failed', `Lost contact with the SAOS server while watching the check${err?.message ? ` (${err.message})` : ''}. `
       + 'If the server was restarted, the check was interrupted — run it again.');
   } finally {
     recovering = false;
@@ -181,6 +189,18 @@ export async function startHealthRun(body = {}) {
     }
     return undefined;
   }
+}
+
+/**
+ * Log out: forget the run entirely. The server stops a check against an
+ * instance that is no longer bound, and its data is purged; any frame still
+ * arriving from that stream belongs to an older generation and is ignored, so
+ * nothing about the old instance is shown or announced after this.
+ */
+export function resetHealthRun() {
+  generation += 1;
+  watching = null;
+  set({ ...IDLE, finishedSeq: state.finishedSeq });
 }
 
 /** Stop the running check. The stream's `cancelled` frame is what ends it. */

@@ -1970,15 +1970,16 @@
 .nav-item:hover > [data-ic='applications'] > :nth-child(3),
 .nav-item:focus-visible > [data-ic='applications'] > :nth-child(3) { animation: ic-tile 1.8s ease-in-out infinite 0.45s; }
 
-/* Transport — the truck keeps rolling and its wheels keep turning under it. */
+/* Update Sets — the layers settle: the top layer lifts once and the bottom
+   one gives once, staggered, then rest. ONE run per hover, not a loop: a set
+   moving is a single act, and a stack that never stops shifting reads as
+   unstable. The global prefers-reduced-motion rule in styles.css turns it off. */
 .nav-item:hover > [data-ic='transport'] > :nth-child(1),
-.nav-item:hover > [data-ic='transport'] > :nth-child(2),
 .nav-item:focus-visible > [data-ic='transport'] > :nth-child(1),
-.nav-item:focus-visible > [data-ic='transport'] > :nth-child(2) { animation: ic-nudge 1.2s ease-in-out infinite; }
+.nav-item.active:hover > [data-ic='transport'] > :nth-child(1) { animation: ic-riseA 0.7s ease-in-out 1; }
 .nav-item:hover > [data-ic='transport'] > :nth-child(3),
-.nav-item:focus-visible > [data-ic='transport'] > :nth-child(3) { animation: ic-nudge 1.2s ease-in-out infinite 0.08s; }
-.nav-item:hover > [data-ic='transport'] > :nth-child(4),
-.nav-item:focus-visible > [data-ic='transport'] > :nth-child(4) { animation: ic-nudge 1.2s ease-in-out infinite 0.08s; }
+.nav-item:focus-visible > [data-ic='transport'] > :nth-child(3),
+.nav-item.active:hover > [data-ic='transport'] > :nth-child(3) { animation: ic-riseB 0.7s ease-in-out 1 0.1s; }
 
 /* Audit — the written lines keep shifting, as if the log kept gaining one. */
 .nav-item:hover > [data-ic='audit'] > :nth-child(2),
@@ -2189,3 +2190,57 @@ a.src-item { cursor: pointer; }
   .src-item.is-previewable:hover,
   .src-item.is-previewable:focus-visible { transform: none; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ICON TONES
+
+   Each destination's glyph carries one of the product's supporting colours,
+   the same ones Health Assist spends on severity and state: red for what has
+   gone wrong (Incidents), amber for what needs a decision (Catalog, ACL),
+   purple for the structural (Flows, Skills), cyan for the informational
+   (Agent, SLA, Transport), grey-blue for data (Tables), green for health.
+   The colour sits on the ICON ONLY. Labels, rows, rails and the active wash
+   stay on the base palette, so the column reads as one list with a coloured
+   key beside each entry rather than a rainbow of buttons.
+
+   The values are the same tokens the dashboard uses (--hs-*), so a tone can
+   never mean one thing in the nav and another on a chart.
+   ══════════════════════════════════════════════════════════════════════════ */
+.nav-item > [data-ic='agent']        { color: var(--hs-scan, #4cc3e0); }
+.nav-item > [data-ic='chats']        { color: var(--verdigris); }
+.nav-item > [data-ic='incidents']    { color: var(--hs-critical, var(--red)); }
+.nav-item > [data-ic='catalog']      { color: var(--hs-major, var(--amber)); }
+.nav-item > [data-ic='flows']        { color: var(--hs-systemic, #a77bd8); }
+.nav-item > [data-ic='sla']          { color: var(--hs-moderate, var(--blue)); }
+.nav-item > [data-ic='acl']          { color: var(--hs-major, var(--amber)); }
+.nav-item > [data-ic='health']       { color: var(--verdigris); }
+.nav-item > [data-ic='tables']       { color: var(--hs-low, var(--muted)); }
+.nav-item > [data-ic='meetings']     { color: var(--hs-systemic, #a77bd8); }
+.nav-item > [data-ic='applications'] { color: var(--hs-moderate, var(--blue)); }
+.nav-item > [data-ic='transport']    { color: var(--hs-scan, #4cc3e0); }
+.nav-item > [data-ic='dashboard']    { color: var(--verdigris); }
+.nav-item > [data-ic='skills']       { color: var(--hs-systemic, #a77bd8); }
+.nav-item > [data-ic='audit']        { color: var(--hs-low, var(--muted)); }
+.nav-item > [data-ic='settings']     { color: var(--hs-low, var(--muted)); }
+.nav-item > [data-ic='trash']        { color: var(--hs-critical, var(--red)); }
+/* At rest the tone is slightly held back so the column stays quiet; hover,
+   focus and the active route bring it to full strength. */
+.nav-item > .nav-ic[data-ic]:not([data-ic='chevron']):not([data-ic='panel']) { opacity: .82; transition: opacity 120ms, transform 260ms cubic-bezier(0.32, 0.72, 0, 1); }
+.nav-item:hover > .nav-ic[data-ic],
+.nav-item:focus-visible > .nav-ic[data-ic],
+.nav-item.active > .nav-ic[data-ic] { opacity: 1; }
+/* The active row keeps its green rail and wash; its icon keeps its own tone. */
+.nav-item.active > [data-ic='agent']        { color: var(--hs-scan, #4cc3e0); }
+.nav-item.active > [data-ic='incidents']    { color: var(--hs-critical, var(--red)); }
+.nav-item.active > [data-ic='catalog']      { color: var(--hs-major, var(--amber)); }
+.nav-item.active > [data-ic='flows']        { color: var(--hs-systemic, #a77bd8); }
+.nav-item.active > [data-ic='sla']          { color: var(--hs-moderate, var(--blue)); }
+.nav-item.active > [data-ic='acl']          { color: var(--hs-major, var(--amber)); }
+.nav-item.active > [data-ic='health']       { color: var(--verdigris); }
+.nav-item.active > [data-ic='tables']       { color: var(--hs-low, var(--muted)); }
+.nav-item.active > [data-ic='meetings']     { color: var(--hs-systemic, #a77bd8); }
+.nav-item.active > [data-ic='applications'] { color: var(--hs-moderate, var(--blue)); }
+.nav-item.active > [data-ic='transport']    { color: var(--hs-scan, #4cc3e0); }
+.nav-item.active > [data-ic='dashboard']    { color: var(--verdigris); }
+.nav-item.active > [data-ic='audit']        { color: var(--text); }
+.nav-item.active > [data-ic='settings']     { color: var(--text); }

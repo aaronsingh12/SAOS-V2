@@ -80,9 +80,76 @@ export async function variableTypes() {
   }
 }
 
-const CHOICE_TYPE_CODES = new Set([3, 5, 18, 22]);
+/* Multiple Choice and Select Box: values are `question_choice` rows. */
+const CHOICE_TYPE_CODES = new Set([3, 5]);
+/* Lookup Select Box and Lookup Multiple Choice read their values from a TABLE
+   (`lookup_table` / `lookup_value` / `lookup_label`), not from question_choice.
+   Treating them as choice types wrote choice rows the form never shows and left
+   the lookup table unset, so the variable rendered empty. */
+const LOOKUP_TYPE_CODES = new Set([18, 22]);
 const REFERENCE_TYPE_CODES = new Set([8]);
 const LIST_TYPE_CODES = new Set([21]);
+
+/**
+ * Refuse a variable spec that would create a broken variable, BEFORE anything
+ * is written. A composite item build validates every variable first, so one bad
+ * spec can no longer leave an item behind with half its variables.
+ */
+export function variableSpecProblems(v = {}) {
+  const label = v.name || v.question_text || '(unnamed)';
+  const typeCode = Number(v.type);
+  const problems = [];
+  if (!v.name) problems.push(`a variable needs an internal name (question "${v.question_text || '?'}")`);
+  if (!Number.isFinite(typeCode)) {
+    problems.push(`"${label}" needs an explicit ServiceNow variable type code`);
+    return problems;
+  }
+  if ((REFERENCE_TYPE_CODES.has(typeCode) || LIST_TYPE_CODES.has(typeCode)) && !v.reference_table) {
+    problems.push(`"${label}" is a ${typeCode === 8 ? 'Reference' : 'List Collector'} variable and needs reference_table`);
+  }
+  if (LOOKUP_TYPE_CODES.has(typeCode) && !v.lookup_table) {
+    problems.push(`"${label}" is a lookup variable (type ${typeCode}) and needs lookup_table — its values come from that table, not from choices`);
+  }
+  return problems;
+}
+
+function assertVariableSpec(v) {
+  const problems = variableSpecProblems(v);
+  if (problems.length) {
+    throw Object.assign(new Error(`The variable was refused before anything was written: ${problems.join('; ')}.`), { status: 400, detail: { problems } });
+  }
+}
+
+/**
+ * Exactly the `item_option_new` row a variable spec becomes.
+ *
+ * Shared by `createVariable` and the agent tool's write descriptor, so the
+ * read-back compares the fields that were actually SENT. Diffing the raw spec
+ * instead — `choices`, `reference_table`, a boolean `mandatory` — reported
+ * every successful insert as a no-op.
+ */
+export function variablePayload(target, v) {
+  const typeCode = Number(v.type);
+  const payload = {
+    ...target,
+    type: String(typeCode),
+    name: v.name,
+    question_text: v.question_text || v.name,
+    order: v.order != null ? String(v.order) : '100',
+    mandatory: v.mandatory ? 'true' : 'false',
+    help_text: v.help_text || '',
+    default_value: v.default_value || '',
+  };
+  if (REFERENCE_TYPE_CODES.has(typeCode) && v.reference_table) payload.reference = v.reference_table;
+  if (LIST_TYPE_CODES.has(typeCode) && v.reference_table) payload.list_table = v.reference_table;
+  if (LOOKUP_TYPE_CODES.has(typeCode) && v.lookup_table) {
+    payload.lookup_table = v.lookup_table;
+    // The field whose value is stored — sys_id unless the caller says otherwise.
+    payload.lookup_value = v.lookup_value || 'sys_id';
+    if (v.lookup_label) payload.lookup_label = v.lookup_label;
+  }
+  return payload;
+}
 
 function choiceValue(text) {
   return String(text).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -108,22 +175,53 @@ function normalizeChoice(choice) {
 // the schema explorer (Settings → Table lookup) if adds fail — it can vary.
 export const GUIDE_RULE_TABLE = 'sc_cat_item_guide_items';
 
+/** What sc_catalog's platform rule accepts as a title (see createCatalog). */
+export const CATALOG_TITLE = /^[A-Za-z0-9_ ]+$/;
+
+/* A `^` in a search term would split the encoded query into a second condition. */
+const likeTerm = (s) => String(s || '').replace(/\^/g, '').trim();
+
 export const catalog = {
   listCatalogs: () =>
-    table.query('sc_catalog', { fields: 'sys_id,title,active', orderBy: 'title', limit: 50, display: 'false' }),
+    table.query('sc_catalog', { fields: 'sys_id,title,description,active,sys_scope', orderBy: 'title', limit: 200, display: 'false' }),
 
-  listCategories: () =>
-    table.query('sc_category', { fields: 'sys_id,title,sc_catalog', orderBy: 'title', limit: 200 }),
+  /* ---- Catalogs (sc_catalog) ---- */
+  createCatalog: ({ title, description, active = true } = {}) => {
+    if (!String(title || '').trim()) throw Object.assign(new Error('A catalog needs a title.'), { status: 400 });
+    /* The platform's own before-insert rule ("Restrict charset of catalog names")
+       aborts any other title, because a view name is generated from it — and
+       its explanation does not cross the REST boundary, only its name does. */
+    if (!CATALOG_TITLE.test(String(title).trim())) {
+      throw Object.assign(new Error(
+        `"${String(title).trim()}" cannot be a catalog title: ServiceNow allows only letters, digits, spaces and underscores `
+        + 'in catalog titles, because it builds a view name from the title.',
+      ), { status: 400 });
+    }
+    return table.create('sc_catalog', {
+      title: String(title).trim(),
+      description: description || '',
+      active: active === false || active === 'false' ? 'false' : 'true',
+    });
+  },
 
-  listItems: ({ search = '', klass = '' } = {}) => {
+  updateCatalog: (sysId, data) => table.update('sc_catalog', sysId, data),
+
+  listCategories: ({ catalog: catalogId = '' } = {}) =>
+    table.query('sc_category', {
+      query: catalogId ? `sc_catalog=${catalogId}` : '',
+      fields: 'sys_id,title,sc_catalog,active', orderBy: 'title', limit: 500,
+    }),
+
+  listItems: ({ search = '', klass = '', limit = 200 } = {}) => {
     let q = '';
     if (klass) q += `sys_class_name=${klass}`;
-    if (search) q += `${q ? '^' : ''}nameLIKE${search}`;
+    const term = likeTerm(search);
+    if (term) q += `${q ? '^' : ''}nameLIKE${term}^ORshort_descriptionLIKE${term}`;
     return table.query('sc_cat_item', {
       query: q,
       fields: 'sys_id,name,short_description,active,category,sys_class_name,price,sys_updated_on,sys_scope',
       orderByDesc: 'sys_updated_on',
-      limit: 100,
+      limit: Math.min(Math.max(Number(limit) || 200, 1), 1000),
     });
   },
 
@@ -165,7 +263,14 @@ export const catalog = {
     for (const l of links) {
       const setId = l.variable_set?.value ?? l.variable_set;
       if (!setId) continue;
-      const set = await table.get('item_option_new_set', setId);
+      /* A link to a set that was deleted, or that this user cannot read, must
+         not stop the whole item from opening — it is shown as what it is. */
+      const set = await table.get('item_option_new_set', setId).catch(() => null);
+      if (!set) {
+        sets.push({ sys_id: { value: setId, display_value: setId }, title: { value: '', display_value: `(unreadable variable set ${setId})` },
+          _variables: [], _linkSysId: l.sys_id?.value ?? l.sys_id, _unreadable: true });
+        continue;
+      }
       set._variables = await table.query('item_option_new', {
         query: `variable_set=${setId}`,
         orderBy: 'order',
@@ -182,22 +287,9 @@ export const catalog = {
    * target: { cat_item } or { variable_set }
    */
   async createVariable(target, v) {
+    assertVariableSpec(v);
     const typeCode = Number(v.type);
-    if (!Number.isFinite(typeCode)) {
-      throw Object.assign(new Error(`Catalog variable "${v.name || v.question_text || '(unnamed)'}" needs an explicit ServiceNow variable type code.`), { status: 400 });
-    }
-    const payload = {
-      ...target,
-      type: String(typeCode),
-      name: v.name,
-      question_text: v.question_text || v.name,
-      order: v.order != null ? String(v.order) : '100',
-      mandatory: v.mandatory ? 'true' : 'false',
-      help_text: v.help_text || '',
-      default_value: v.default_value || '',
-    };
-    if (REFERENCE_TYPE_CODES.has(typeCode) && v.reference_table) payload.reference = v.reference_table;
-    if (LIST_TYPE_CODES.has(typeCode) && v.reference_table) payload.list_table = v.reference_table;
+    const payload = variablePayload(target, v);
     const created = await table.create('item_option_new', payload);
     const createdId = created.sys_id?.value ?? created.sys_id;
     const choices = [];
@@ -286,8 +378,13 @@ export const catalog = {
     }),
 
   // ---- Variable sets ----
-  listVariableSets: () =>
-    table.query('item_option_new_set', { orderByDesc: 'sys_updated_on', limit: 100 }),
+  listVariableSets: ({ search = '' } = {}) => {
+    const term = likeTerm(search);
+    return table.query('item_option_new_set', {
+      query: term ? `titleLIKE${term}^ORinternal_nameLIKE${term}` : '',
+      orderByDesc: 'sys_updated_on', limit: 500,
+    });
+  },
 
   createVariableSet: ({ title, internal_name, description, order }) =>
     table.create('item_option_new_set', {
@@ -358,6 +455,13 @@ export const catalog = {
    * spec: { name, short_description, description?, category?, catalog?, variables: [...] }
    */
   async createCatalogItemComposite(spec) {
+    /* Every variable is checked BEFORE the item exists. Checking inside the loop
+       left an item with some of its variables behind whenever one spec was bad,
+       and a retry then duplicated the item. */
+    const problems = (Array.isArray(spec.variables) ? spec.variables : []).flatMap((v) => variableSpecProblems(v));
+    if (problems.length) {
+      throw Object.assign(new Error(`The catalog item was refused before anything was written: ${problems.join('; ')}.`), { status: 400, detail: { problems } });
+    }
     const item = await this.createItem({
       name: spec.name,
       short_description: spec.short_description || '',
@@ -370,10 +474,21 @@ export const catalog = {
     if (Array.isArray(spec.variables)) {
       let order = 0;
       for (const v of spec.variables) {
-        const res = await this.createVariable(
-          { cat_item: itemId },
-          { ...v, order: v.order ?? (order += 100) },
-        );
+        let res;
+        try {
+          res = await this.createVariable(
+            { cat_item: itemId },
+            { ...v, order: v.order ?? (order += 100) },
+          );
+        } catch (err) {
+          /* The item EXISTS at this point. Say so, with its sys_id, so the next
+             step is "finish this item" — not a retry that builds a second one. */
+          throw Object.assign(new Error(
+            `Catalog item "${spec.name}" was created (${itemId}), but variable "${v.name}" failed: ${err.message} `
+            + `${createdVars.length} variable(s) were created before it. Do not rebuild the item — add the remaining `
+            + `variables to ${itemId}.`,
+          ), { status: err.status || 502, detail: { item_sys_id: itemId, created: createdVars, failed: v.name } });
+        }
         createdVars.push({
           name: v.name,
           sys_id: res.variable.sys_id?.value ?? res.variable.sys_id,

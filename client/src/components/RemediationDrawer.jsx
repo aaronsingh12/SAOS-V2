@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, sse } from '../api.js';
 import RecordDrawer from './RecordDrawer.jsx';
-import ReferenceField from './ReferenceField.jsx';
+import { ProposalChangeList, WriteGateCard, isExecutable, statusFor } from './RemediationParts.jsx';
 import { SkeletonLines } from './states.jsx';
 import { toast } from './toast.js';
 import { notifyDesktop } from './notify.js';
@@ -107,29 +107,17 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
       || userNote !== (proposal?.userNote ?? '');
   }, [changes, userNote, proposal]);
 
-  const executable = changes.filter(
-    (c) => c.status !== 'removed' && (c.fieldKind === 'delete' || String(c.proposedValue ?? '').trim()),
-  );
+  const executable = changes.filter(isExecutable);
 
   const setValue = (id, value, display) => {
     setChanges((cur) => cur.map((c) => (c.id === id
-      ? {
-        ...c,
-        proposedValue: value,
-        proposedDisplay: display ?? value,
-        status: c.fieldKind === 'delete' || String(value).trim() ? 'ready' : 'needs_value',
-      }
+      ? { ...c, proposedValue: value, proposedDisplay: display ?? value, status: statusFor(c, value) }
       : c)));
   };
 
   const toggleRemoved = (id) => {
     setChanges((cur) => cur.map((c) => (c.id === id
-      ? {
-        ...c,
-        status: c.status === 'removed'
-          ? (c.fieldKind === 'delete' || String(c.proposedValue ?? '').trim() ? 'ready' : 'needs_value')
-          : 'removed',
-      }
+      ? { ...c, status: c.status === 'removed' ? statusFor(c, c.proposedValue) : 'removed' }
       : c)));
   };
 
@@ -286,41 +274,7 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
 
           {/* THE EXECUTOR'S OWN CARD, one per write. What it shows is what will
               be sent — the table, the record and the exact data. */}
-          {gate && (
-            <div className="approval-card rm-gate">
-              <div className="title">Confirm this write — it changes your instance</div>
-              <p className="rm-lead">
-                {gateChange ? (
-                  <>
-                    {gateChange.field ? 'Set ' : 'Delete '}
-                    {gateChange.field && <b className="mono">{gateChange.field}</b>}
-                    {gateChange.field ? ' on ' : ''}
-                    <b>{gateChange.table} / {gateChange.label}</b>
-                    {gateChange.field && <> to <b>{gateChange.proposedDisplay || gateChange.proposedValue}</b></>}
-                  </>
-                ) : (gate.operation || gate.name)}
-              </p>
-              <pre className="mono">{JSON.stringify(gate.input ?? {}, null, 2)}</pre>
-              {gate.warning && <p className="note">{gate.warning}</p>}
-              <div className="row">
-                <button
-                  type="button" className="btn primary sm" onClick={() => decide(true)}
-                  disabled={gate.sending !== undefined} aria-busy={gate.sending === true}
-                >
-                  {gate.sending === true ? 'Sending…' : 'Apply this change'}
-                </button>
-                <button
-                  type="button" className="btn sm" onClick={() => decide(false)}
-                  disabled={gate.sending !== undefined} aria-busy={gate.sending === false}
-                >
-                  {gate.sending === false ? 'Sending…' : 'Skip this record'}
-                </button>
-                <button type="button" className="btn ghost sm" onClick={() => stopRef.current?.abort()}>
-                  Stop
-                </button>
-              </div>
-            </div>
-          )}
+          <WriteGateCard gate={gate} change={gateChange} onDecide={decide} onStop={() => stopRef.current?.abort()} />
 
           {/* ── SUMMARY ─────────────────────────────────────────────── */}
           <div className="rm-sec">What the AI recommends</div>
@@ -343,119 +297,13 @@ export default function RemediationDrawer({ open, runId, finding, onClose }) {
             {settled ? '' : ' (editable)'}
           </div>
 
-          {changes.length === 0 && (
-            <p className="note">
-              This rule has no single-field fix, so there is nothing to apply automatically. The manual steps on the
-              finding are the remedy.
-            </p>
-          )}
-
-          <ul className="rm-changes">
-            {changes.map((c) => {
-              const removed = c.status === 'removed';
-              const result = row.execution?.results?.find((r) => r.sys_id === c.sys_id);
-              return (
-                <li key={c.id} className={`rm-change${removed ? ' is-removed' : ''}`}>
-                  <div className="rm-change-head">
-                    <span className="mono rm-target">{c.table} / {c.label}</span>
-                    {!settled && (
-                      <button type="button" className="btn ghost sm" onClick={() => toggleRemoved(c.id)}>
-                        {removed ? 'Put back' : 'Remove'}
-                      </button>
-                    )}
-                  </div>
-
-                  {c.field && (
-                    <div className="rm-field">
-                      <span className="rm-field-name mono">{c.field}</span>
-                      <div className="rm-vals">
-                        <div>
-                          <span className="rm-val-cap">Current</span>
-                          <span className="rm-val mono">
-                            {c.currentDisplay || c.currentValue || <em>(empty)</em>}
-                          </span>
-                        </div>
-                        <span className="rm-arrow" aria-hidden="true">→</span>
-                        <div>
-                          <span className="rm-val-cap">Proposed</span>
-                          {settled || removed ? (
-                            <span className="rm-val mono">
-                              {c.proposedDisplay || c.proposedValue || <em>(none)</em>}
-                            </span>
-                          ) : c.fieldKind === 'boolean' ? (
-                            /* A boolean is two states, so it gets two states.
-                               A free-text box here is how "True" ends up stored
-                               where `true` was meant. */
-                            <select
-                              className="input"
-                              value={c.proposedValue}
-                              onChange={(e) => setValue(c.id, e.target.value)}
-                            >
-                              <option value="true">true</option>
-                              <option value="false">false</option>
-                            </select>
-                          ) : c.fieldKind === 'datetime' ? (
-                            /* ServiceNow stores UTC. The control says so rather
-                               than letting a reader assume their own zone — an
-                               outage closed at the wrong hour is a wrong
-                               availability figure, not a cosmetic slip. */
-                            <input
-                              className="input"
-                              value={c.proposedValue}
-                              onChange={(e) => setValue(c.id, e.target.value)}
-                              placeholder="YYYY-MM-DD HH:MM:SS (UTC)"
-                            />
-                          ) : c.fieldKind === 'reference' && c.references ? (
-                            /* The app's own reference picker — a sys_id is
-                               never typed by hand here, for the same reason
-                               the agent is told to resolve rather than invent. */
-                            <ReferenceField
-                              table={c.references}
-                              value={c.proposedValue ? { id: c.proposedValue, label: c.proposedDisplay || c.proposedValue } : null}
-                              onChange={(v) => setValue(c.id, v?.id || '', v?.label || '')}
-                              placeholder={`Search ${c.references}…`}
-                            />
-                          ) : (
-                            <input
-                              className="input"
-                              value={c.proposedValue}
-                              onChange={(e) => setValue(c.id, e.target.value)}
-                              placeholder="Value to set"
-                            />
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {c.fieldKind === 'delete' && (
-                    <p className="rm-note"><b>This record would be deleted.</b> Deletion cannot be undone.</p>
-                  )}
-
-                  {c.assumption && (
-                    <p className="rm-assume">
-                      <b>Assumed:</b> {c.assumption}
-                      {c.confidence != null && <span className="rm-conf"> · confidence {c.confidence}</span>}
-                      {c.resolvedFrom && <span className="rm-conf"> · matched “{c.resolvedFrom}”</span>}
-                    </p>
-                  )}
-                  {c.resolutionNote && <p className="rm-note">{c.resolutionNote}</p>}
-                  {c.status === 'needs_value' && !removed && !settled && (
-                    <p className="rm-note">No value proposed — supply one, or remove this change.</p>
-                  )}
-
-                  {/* After execution: what actually happened to THIS record. */}
-                  {result && (
-                    <p className={`rm-result tone-${result.ok ? 'ok' : 'bad'}`}>
-                      {result.ok ? '✓ applied' : '✗ not applied'}
-                      {result.verdict ? ` · read-back ${result.verdict}` : ''}
-                      {result.note ? ` · ${result.note}` : ''}
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <ProposalChangeList
+            changes={changes}
+            settled={settled}
+            results={row.execution?.results ?? null}
+            onSetValue={setValue}
+            onToggleRemoved={toggleRemoved}
+          />
 
           {/* ── REASONING / IMPACT / VALIDATION ──────────────────────── */}
           <div className="rm-sec">Why</div>

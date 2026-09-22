@@ -187,13 +187,20 @@ test('an empty element parses as empty, not as null', () => {
  * The workspace registry — filesystem only, no instance
  * ------------------------------------------------------------------ */
 
+/* The scope is minted per instance (the vendor prefix is read live), so the
+   expected name is the one the tracked template carries — never a constant
+   from whichever instance last ran setup. */
+const TEMPLATE_SCOPE = JSON.parse(fs.readFileSync(
+  new URL('../fluent-workspace/now.config.template.json', import.meta.url), 'utf8',
+)).scope;
+
 test('the registry discovers the fluent workspace and reads its claimed scope', async () => {
   refreshWorkspaces();
   const ws = await listWorkspaces();
   assert.ok(ws.length >= 1, 'no workspace discovered');
   const fluent = ws.find((w) => w.id === 'fluent-workspace');
   assert.ok(fluent, 'fluent-workspace was not discovered');
-  assert.equal(fluent.scope, 'x_2002152_nwforge');
+  assert.equal(fluent.scope, TEMPLATE_SCOPE);
   assert.equal(fluent.error, null);
   assert.ok(fluent.sourceCount > 0, 'no managed sources counted');
   /*
@@ -222,7 +229,7 @@ test('a scope resolves by NAME, and a sys_id is no longer an address', async () 
    * unanswerable without naming an instance, and answering it anyway is how the
    * wrong host gets a confident reply.
    */
-  const byName = await workspaceForScope('x_2002152_nwforge');
+  const byName = await workspaceForScope(TEMPLATE_SCOPE);
   assert.ok(byName, 'scope name did not resolve');
   assert.equal(byName.scopeId, null, 'the registry must not carry an instance-local sys_id');
   assert.equal(await workspaceForScope('c44f3c6c37c24793be9f8b759c7818e4'), null);
@@ -236,7 +243,7 @@ test('an unmanaged scope resolves to nothing rather than to the only workspace w
 
 test('the managed scope list is what the Applications page flags against', async () => {
   const names = await managedScopeNames();
-  assert.ok(names.includes('x_2002152_nwforge'));
+  assert.ok(names.includes(TEMPLATE_SCOPE));
   assert.ok(!names.includes('global'));
 });
 
@@ -371,7 +378,7 @@ test('the error says the record EXISTS and names it — the guard reports, it ca
   // be a destructive default; naming the sys_id leaves the decision with the
   // caller, and hiding it would strand an artifact nobody can find.
   assert.throws(
-    () => assertScopeIntentHeld('sys_script', { sys_scope: 'x_2002152_nwforge' }, { sys_scope: 'global', sys_id: '55b9401e8336c750b939cc65eeaad393' }),
+    () => assertScopeIntentHeld('sys_script', { sys_scope: TEMPLATE_SCOPE }, { sys_scope: 'global', sys_id: '55b9401e8336c750b939cc65eeaad393' }),
     (err) => {
       assert.match(err.message, /The record was still created, as 55b9401e8336c750b939cc65eeaad393 in "global"/);
       assert.match(err.message, /delete it if a global one is not wanted/);
@@ -401,7 +408,7 @@ test('a create that expressed no scope intent is not second-guessed', () => {
 
 test('the check reads display="all" cells too, not just raw values', () => {
   assert.throws(
-    () => assertScopeIntentHeld('sys_script', { sys_scope: 'x_2002152_nwforge' }, { sys_scope: { value: 'global', display_value: 'Global' } }),
+    () => assertScopeIntentHeld('sys_script', { sys_scope: TEMPLATE_SCOPE }, { sys_scope: { value: 'global', display_value: 'Global' } }),
     /but the instance stored "global"/
   );
 });

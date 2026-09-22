@@ -28,7 +28,7 @@ function CapabilityBanner({ cap }) {
         {' '}· scope <span className="mono">{cap.workspace?.scope}</span>
         {cap.auth?.matchesNowHelpAssistInstance === false && (
           <div style={{ marginTop: 6, color: 'var(--amber, #b8860b)' }}>
-            Warning: the SDK credential points at a different instance than NowHelpAssist is connected to.
+            Warning: the SDK credential points at a different instance than SAOS is connected to.
             Flows would deploy to <span className="mono">{cap.auth.host}</span>.
           </div>
         )}
@@ -503,7 +503,7 @@ function ManagedArtifacts({ reloadKey, onChanged }) {
   if (!data) {
     return (
       <div className="card">
-        <div className="card-title">NowHelpAssist-managed artifacts</div>
+        <div className="card-title">SAOS-managed artifacts</div>
         <SkeletonLines lines={3} />
         <LoadingRegion label="Loading managed artifacts" />
       </div>
@@ -511,11 +511,11 @@ function ManagedArtifacts({ reloadKey, onChanged }) {
   }
   return (
     <div className="card">
-      <div className="card-title">NowHelpAssist-managed artifacts</div>
+      <div className="card-title">SAOS-managed artifacts</div>
       {data.managed.length === 0 && (
         <EmptyState
           title="Nothing is managed yet."
-          hint="Describe an automation in the box above and NowHelpAssist will generate Fluent source, compile it offline, install it, and read it back. Only what it authored appears here."
+          hint="Describe an automation in the box above and SAOS will generate Fluent source, compile it offline, install it, and read it back. Only what it authored appears here."
         />
       )}
       {data.managed.length > 0 && (
@@ -786,9 +786,9 @@ export default function Flows() {
   return (
     <div className="stack">
       <div className="note">
-        Flows are authored through ServiceNow's own SDK (Fluent): NowHelpAssist generates TypeScript, compiles it
+        Flows are authored through ServiceNow's own SDK (Fluent): SAOS generates TypeScript, compiles it
         offline — so nothing reaches the instance unless it compiles — then installs it and reads the result back.
-        There is still no REST API for writing <span className="mono">sys_hub_*</span> directly, and NowHelpAssist refuses
+        There is still no REST API for writing <span className="mono">sys_hub_*</span> directly, and SAOS refuses
         to attempt it. Where the SDK cannot run, flow authoring is unavailable and the banner says what to fix — nothing
         is substituted for a flow.
       </div>

@@ -76,18 +76,33 @@ function classify(row) {
  * install out of date is exactly the sort of quietly-wrong answer the rest of
  * this repo spends its time avoiding.
  */
-export async function listApplications({ search = '', kind = '', managedOnly = false, limit = 1000 } = {}) {
+export async function listApplications({ search = '', kind = '', managedOnly = false, limit = 10000 } = {}) {
   const clauses = [];
   if (search) {
     const s = String(search).replace(/\^/g, ' ');
     clauses.push(`nameLIKE${s}^ORscopeLIKE${s}`);
   }
-  const rows = await table.query('sys_scope', {
-    query: clauses.join('^') + (clauses.length ? '^' : '') + 'ORDERBYscope',
-    fields: WANTED.join(','),
-    limit,
-    display: 'false',
-  });
+  /*
+   * PAGED, and the result says whether it is whole. One page of 1000 sorted by
+   * scope put every `x_…` scope — ours included — last, so on a large instance
+   * the managed application could fall off the page and read as "built but
+   * never installed here", with every count wrong and nothing saying so.
+   */
+  const PAGE = 1000;
+  const cap = Math.max(1, Number(limit) || 10000);
+  const rows = [];
+  for (let offset = 0; offset < cap; offset += PAGE) {
+    const page = await table.query('sys_scope', {
+      query: clauses.join('^') + (clauses.length ? '^' : '') + 'ORDERBYscope',
+      fields: WANTED.join(','),
+      limit: Math.min(PAGE, cap - offset),
+      offset,
+      display: 'false',
+    });
+    rows.push(...page);
+    if (page.length < Math.min(PAGE, cap - offset)) break;
+  }
+  const complete = rows.length < cap;
 
   // trap #4 — say which requested fields the instance did not return, rather
   // than letting a missing column read as an empty value.
@@ -139,6 +154,7 @@ export async function listApplications({ search = '', kind = '', managedOnly = f
     applications: apps,
     counts,
     total: apps.length,
+    complete,
     managedCount: apps.filter((a) => a.managed).length,
     /**
      * Where the store apps came from, stated rather than implied. The ACL
@@ -153,10 +169,27 @@ export async function listApplications({ search = '', kind = '', managedOnly = f
       droppedFields,
     },
     /** Workspaces that exist on disk but match no scope on this instance. */
-    orphanWorkspaces: workspaces
-      .filter((w) => w.scope && !apps.some((a) => a.scope === w.scope))
-      .map((w) => ({ id: w.id, scope: w.scope, dir: w.dir, error: w.error })),
+    orphanWorkspaces: await orphanWorkspaces(workspaces, apps, { complete, filtered: Boolean(search) }),
   };
+}
+
+/**
+ * A workspace is an orphan only if its scope is ABSENT from the instance — not
+ * merely absent from a list that was searched or cut short. When the list is
+ * not the whole instance, the workspace scopes are asked for directly.
+ */
+async function orphanWorkspaces(workspaces, apps, { complete, filtered }) {
+  const unseen = workspaces.filter((w) => w.scope && !apps.some((a) => a.scope === w.scope));
+  if (!unseen.length) return [];
+  let present = new Set();
+  if (!complete || filtered) {
+    const rows = await table.query('sys_scope', {
+      query: `scopeIN${unseen.map((w) => w.scope).join(',')}`, fields: 'scope', limit: unseen.length, display: 'false',
+    }).catch(() => []);
+    present = new Set(rows.map((r) => raw(r.scope)));
+  }
+  return unseen.filter((w) => !present.has(w.scope))
+    .map((w) => ({ id: w.id, scope: w.scope, dir: w.dir, error: w.error }));
 }
 
 /** One application, by sys_id or by scope name. Both are addresses callers hold. */
@@ -170,7 +203,8 @@ export async function getApplication(idOrScope) {
     display: 'false',
   });
   if (!rows.length) throw new SnowError(`No application or scope matches "${key}" on this instance.`, 404);
-  const one = (await listApplications({ limit: 1000 })).applications.find(
+  // Narrowed to this scope, so the answer never depends on where it sorts.
+  const one = (await listApplications({ search: raw(rows[0].scope) || key })).applications.find(
     (a) => a.sys_id === raw(rows[0].sys_id)
   );
   return one || null;

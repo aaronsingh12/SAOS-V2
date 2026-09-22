@@ -5,13 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- The tab title is replaced per route by App.jsx ("Agent — NowHelpAssist").
          This is what shows before React mounts, and if it ever fails to. -->
-    <title>NowHelpAssist — Agentic ServiceNow Studio</title>
+    <title>SAOS — Agentic ServiceNow Studio</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="theme-color" content="#0e1116" />
     <meta name="description" content="Connect a ServiceNow PDI and build on it through module UIs or an approval-gated AI agent." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- The app's stylesheet arrives with the bundle. Until it does the page
+         would paint white for a frame before the startup screen; this is the
+         same --ink the sheet sets, so there is nothing to flash. -->
+    <style>body { margin: 0; background: #0e1116; }</style>
   </head>
   <body>
     <div id="root"></div>

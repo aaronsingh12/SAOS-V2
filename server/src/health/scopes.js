@@ -1,5 +1,8 @@
 import { isComplete, AGENTS } from './rules.js';
 import { REMEDIATION } from './remediation.js';
+import { scoreItsmQuality } from './itsm-quality.js';
+import { moduleContract, scoreOverall, SCORABLE_MODULES, DEFAULT_WEIGHTS } from './overall-health.js';
+import crypto from 'node:crypto';
 
 /**
  * Scopes — CMDB, ITOM, ITSM and Platform, and what "score" honestly means for each.
@@ -20,8 +23,13 @@ import { REMEDIATION } from './remediation.js';
  *           actually measured. It is not a pass rate: the first version was the
  *           share of CIs no rule objected to, where one Low finding failed a
  *           whole record — which is how an estate scored 0.3%.
- *   ITSM  — a RECORD score: the share of the open-or-recent incident, change
- *           and problem slice that was actually read with no rule objecting.
+ *   ITSM  — ITSM QUALITY (itsm-quality.js, 21 Sep 2026): the same two-part
+ *           shape as CMDB. A record in the open-or-recent incident, change and
+ *           problem slice starts at 100 and loses the weight of each distinct
+ *           charge on it, floored at 0; that mean is blended 60/40 with the
+ *           share of estate-level catalogue rules that pass. It replaced a
+ *           record pass rate in which one Moderate finding failed a whole
+ *           record — the shape that scored an estate 0.7.
  *   ITOM  — a CHECK score. ITOM's important findings are about ABSENCE — no MID
  *           server, Discovery never ran — and name no records at all. "No MID
  *           server" cannot be a percentage of rows, so ITOM is scored as the
@@ -46,12 +54,10 @@ const ITOM_DOMAINS = ['DISCOVERY', 'CREDENTIALS', 'MID_SERVER', 'SERVICE_MAPPING
    other three are the eleven hard-coded rules'. All four ROUTE to the ITSM scope. */
 const ITSM_DOMAINS = ['INCIDENT', 'CHANGE', 'PROBLEM', 'ITSM'];
 /*
- * THE DOMAINS THE ITSM SCORE COUNTS — frozen at the legacy three (ITSM Phase 5,
- * 17 Sep 2026). The ITSM score is the eleven hard-coded rules' record pass rate,
- * and it stays exactly that until a 139-rule scoring model is approved
- * (DECISIONS.md §6; rules/itsm/SCORING-OPTIONS.md). Catalogue findings are routed
- * into the scope and counted in its findings and severities, but they never move
- * the score: a number must not change for a reason nobody designed.
+ * THE LEGACY ITSM DOMAINS — the eleven hard-coded rules'. Until 21 Sep 2026
+ * these three domains were the whole ITSM score (a record pass rate); under
+ * ITSM Quality (itsm-quality.js) their findings charge records beside the
+ * catalogue's, and the constant remains as the name of that family.
  */
 export const ITSM_SCORED_DOMAINS = Object.freeze(['INCIDENT', 'CHANGE', 'PROBLEM']);
 const PLATFORM_DOMAINS = ['CUSTOMIZATION', 'INTEGRATION', 'PERFORMANCE', 'UPGRADE', 'SECURITY'];
@@ -310,12 +316,13 @@ const fmt = (n) => Number(n).toLocaleString('en-US');
  * dimensions. Provisional while a trust-gate blocker is live; withheld, with
  * the reason, while no dimension is measured.
  */
-function cmdbQualityScore(q, coverage, findings) {
+function cmdbQualityScore(q, coverage, findings, comparability = null) {
   const legacyDrivers = cmdbScore(coverage, findings).drivers ?? null;
   const c = q.composite;
   const measured = q.dimensions.filter((d) => d.measured);
   return {
     score: c.score,
+    scoring: { model: 'cmdb-quality/1', key: comparability?.key ?? null },
     basis: c.score == null ? null
       : `${measured.length} of ${q.dimensions.length} dimensions measured (${c.measured_weight} of 100 weight) over ${q.in_scope.records.toLocaleString()} in-scope CIs — ${q.in_scope.basis}`,
     definition: c.definition,
@@ -356,37 +363,22 @@ function cmdbScore(coverage, findings) {
   };
 }
 
-/** ITSM: over whichever of the three tables were read completely. */
-function itsmScore(coverage, findings) {
-  const tables = ['incident', 'change_request', 'problem'];
-  const usable = tables.filter((t) => isComplete(coverage, t));
-  const excluded = tables.filter((t) => coverage?.[t] && !isComplete(coverage, t));
-  if (!usable.length) {
-    return {
-      score: null,
-      withheld: excluded.length
-        ? `None of ${tables.join(', ')} were read completely, so there is no record set to score.`
-        : 'No incident, change or problem records were read on this run.',
-    };
-  }
-  const scanned = usable.reduce((n, t) => n + (coverage[t].records || 0), 0);
-  if (!scanned) return { score: null, withheld: 'The ITSM slice was empty — nothing open or recent to score.' };
-
-  const affected = new Set();
-  for (const f of findings) {
-    if (ITSM_SCORED_DOMAINS.includes(f.domain) && usable.includes(f.table)) {
-      for (const id of f.target_ids || []) affected.add(`${f.table}:${id}`);
-    }
-  }
-  const slice = coverage[usable[0]]?.filter;
-  return {
-    score: pct(100 * (1 - affected.size / scanned)),
-    basis: `${fmt(scanned - affected.size)} of ${fmt(scanned)} records have no ITSM finding`
-      + (slice ? ` (${slice})` : '')
-      + (excluded.length ? `; ${excluded.join(', ')} excluded — not read completely` : ''),
-    definition: 'Share of open or recent incidents, changes and problems no ITSM rule objected to.',
-    drivers: drivers(findings, { domains: ITSM_SCORED_DOMAINS, tables: usable, scanned }),
-  };
+/**
+ * ITSM under ITSM Quality (itsm-quality.js). `itsm` carries the catalogue's
+ * rule rows and the extracted record slice when the scan read ITSM; a stored
+ * run recorded before the model has neither, and scores its legacy findings
+ * alone under the same arithmetic.
+ */
+function itsmScore(coverage, findings, itsm = null) {
+  const q = scoreItsmQuality({
+    coverage,
+    findings,
+    rules: itsm?.rules ?? null,
+    population: itsm?.population ?? null,
+    isComplete: (t) => isComplete(coverage, t),
+    headline: (rule) => REMEDIATION[rule]?.headline ?? null,
+  });
+  return { score: q.score, basis: q.basis, definition: q.definition, withheld: q.withheld, drivers: q.drivers, quality: q.quality };
 }
 
 /* ── The ITOM checks ───────────────────────────────────────────────────────── */
@@ -424,19 +416,22 @@ function itomChecks(coverage, findings) {
   const rules = new Set(findings.map((f) => f.rule_id));
   return ITOM_CHECKS.map((c) => {
     const cov = coverage?.[c.table];
+    /* `gap` names the kind of inapplicability for the coverage definition
+       (overall-health.js): only a failed read is a gap the instance can close. */
     if (!cov || cov.status === 'not_requested') {
-      return { key: c.key, label: c.label, result: 'not_applicable', reason: `${c.table} was not requested` };
+      return { key: c.key, label: c.label, result: 'not_applicable', gap: 'not_requested', reason: `${c.table} was not requested` };
     }
     if (!isComplete(coverage, c.table)) {
       return {
         key: c.key, label: c.label, result: 'not_applicable',
+        gap: cov.status === 'unavailable' ? 'unavailable' : 'read_failed',
         reason: cov.status === 'unavailable'
           ? `${c.table} is not on this instance`
           : `${c.table} could not be read completely (${cov.status})`,
       };
     }
     if (c.needsRows && !(cov.records > 0)) {
-      return { key: c.key, label: c.label, result: 'not_applicable', reason: `nothing in ${c.table} to check` };
+      return { key: c.key, label: c.label, result: 'not_applicable', gap: 'empty', reason: `nothing in ${c.table} to check` };
     }
     const failing = c.fails.filter((r) => rules.has(r));
     return failing.length
@@ -445,19 +440,37 @@ function itomChecks(coverage, findings) {
   });
 }
 
+/** What makes two ITOM scores comparable: the check definitions themselves. */
+const ITOM_SCORING = Object.freeze({
+  model: 'itom-checks/1',
+  key: crypto.createHash('sha256').update(JSON.stringify(ITOM_CHECKS.map((c) => [c.key, c.table, Boolean(c.needsRows), c.fails]))).digest('hex').slice(0, 16),
+});
+
+/**
+ * The model identity of a STORED ITOM summary. A run recorded before the
+ * summary carried `scoring` still stored its checks; when they are exactly the
+ * checks this build defines, it is this model — the trend may join it.
+ */
+export function itomScoringOf(summary) {
+  if (summary?.scoring?.key) return summary.scoring.key;
+  const stored = (summary?.checks || []).map((c) => c.key).join('|');
+  return stored && stored === ITOM_CHECKS.map((c) => c.key).join('|') ? ITOM_SCORING.key : null;
+}
+
 function itomScore(coverage, findings) {
   const checks = itomChecks(coverage, findings);
   const applicable = checks.filter((c) => c.result !== 'not_applicable');
   const passed = applicable.filter((c) => c.result === 'pass').length;
   if (!applicable.length) {
     return {
-      score: null, checks,
+      score: null, checks, scoring: ITOM_SCORING,
       withheld: 'None of the ITOM checks could be evaluated — every table they need was unreadable or absent on this instance.',
     };
   }
   return {
     score: pct((100 * passed) / applicable.length),
     checks,
+    scoring: ITOM_SCORING,
     basis: `${passed} of ${applicable.length} applicable checks pass`
       + (checks.length > applicable.length ? `; ${checks.length - applicable.length} not applicable here` : ''),
     definition: 'Share of applicable ITOM capability checks that pass. A check whose table could not be read is not counted either way.',
@@ -475,7 +488,14 @@ function itomScore(coverage, findings) {
  * truncated set exists — an older run — `truncated` withholds the scores rather
  * than computing them from a fraction.
  */
-export function summariseScopes(coverage, findings, { truncated = false, cmdbQuality = null } = {}) {
+/**
+ * @param {object} [opts.comparability]  the run's CMDB comparability ({ key }) — the CMDB score's model identity
+ * @param {object} [opts.overall]        { modules: [...] } — the modules THIS run scanned. When every scorable
+ *                                       module is among them the All scope carries the overall (overall-health.js);
+ *                                       a module-limited scan carries none, so the trend never joins a partial
+ *                                       scan's number to a full one.
+ */
+export function summariseScopes(coverage, findings, { truncated = false, cmdbQuality = null, itsm = null, comparability = null, overall = null } = {}) {
   const out = {};
   for (const scope of SCOPES) {
     const own = findings.filter((f) => inScope(f, scope.key));
@@ -491,8 +511,8 @@ export function summariseScopes(coverage, findings, { truncated = false, cmdbQua
       }));
 
     let scored = { score: null, withheld: null };
-    if (scope.key === 'cmdb' && cmdbQuality) scored = cmdbQualityScore(cmdbQuality, coverage, findings);
-    else if (scope.scoreKind === 'records') scored = scope.key === 'cmdb' ? cmdbScore(coverage, findings) : itsmScore(coverage, findings);
+    if (scope.key === 'cmdb' && cmdbQuality) scored = cmdbQualityScore(cmdbQuality, coverage, findings, comparability);
+    else if (scope.scoreKind === 'records') scored = scope.key === 'cmdb' ? cmdbScore(coverage, findings) : itsmScore(coverage, own, itsm);
     else if (scope.scoreKind === 'checks') scored = itomScore(coverage, findings);
     else if (scope.scoreKind === 'none') {
       scored = {
@@ -505,6 +525,8 @@ export function summariseScopes(coverage, findings, { truncated = false, cmdbQua
       scored = {
         ...scored,
         score: null,
+        /* The model's parts were computed from the same fraction: withheld with the number. */
+        quality: null,
         withheld: 'This run stored only part of its findings, so a score computed from them would be wrong. Run a new check.',
       };
     }
@@ -528,11 +550,59 @@ export function summariseScopes(coverage, findings, { truncated = false, cmdbQua
          the CMDB base is a caveat on everything that reads the CMDB. */
       gate: ['cmdb', 'all'].includes(scope.key) && cmdbQuality ? cmdbQuality.gate : null,
       cmdb_quality: scope.key === 'cmdb' ? cmdbQuality : null,
+      /* The ITSM model's parts, coverage and posture — the CMDB precedent, for ITSM. */
+      itsm_quality: scope.key === 'itsm' ? (scored.quality ?? null) : null,
+      /* What makes this score comparable with another run's. Only a scope whose
+         model declares one carries it; the trend breaks its line across a change. */
+      scoring: scored.scoring ?? scored.quality?.scoring ?? null,
       domains,
       tables: scope.tables,
     };
   }
+  /*
+   * THE MODULE CONTRACT, on every area (overall-health.js): assessment state,
+   * coverage under the one definition, and the Systemic counts — derived from
+   * the summary above, stored beside it so the page and the overall read the
+   * same thing. Nothing here changes a score.
+   */
+  for (const m of MODULE_KEYS) {
+    const c = moduleContract(m, out[m], { coverage });
+    out[m].assessment = c.assessment;
+    out[m].coverage_share = c.coverage;
+    out[m].coverage_detail = c.coverage_detail ?? null;
+    out[m].systemic = c.systemic;
+  }
+  /* The overall, only for a scan that covered every scorable area. */
+  const scanned = overall?.modules ?? null;
+  if (scanned && SCORABLE_MODULES.every((m) => scanned.includes(m))) {
+    Object.assign(out.all, overallScope(Object.fromEntries(MODULE_KEYS.map((m) => [m, scanned.includes(m) ? out[m] : null])), coverage));
+  }
   return out;
+}
+
+/**
+ * The All scope's overall (overall-health.js), from the areas' summaries.
+ * `summaries[m]` is null for an area with no result. Shared by a full scan's
+ * manifest and by the composed view, so both compute the same thing.
+ */
+export function overallScope(summaries, coverage = {}, weights = DEFAULT_WEIGHTS) {
+  const modules = Object.fromEntries(MODULE_KEYS.map((m) => [m, moduleContract(m, summaries[m] ?? null, { coverage })]));
+  const o = scoreOverall({ modules, weights });
+  return {
+    score: o.score,
+    score_exact: o.score_exact,
+    score_kind: o.score_kind,
+    score_basis: o.score_basis,
+    score_definition: o.score_definition,
+    score_withheld_because: o.score_withheld_because,
+    status: o.status,
+    health_band: o.health_band,
+    attribution: o.attribution,
+    coverage_share: o.coverage,
+    systemic: o.systemic,
+    module_breakdown: o.module_breakdown,
+    scoring: o.scoring,
+  };
 }
 
 /** The vocabulary the UI renders — served, never coined in the browser. */

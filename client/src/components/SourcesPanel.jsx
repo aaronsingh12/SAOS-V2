@@ -191,7 +191,14 @@ export function SourcesPanel({ taskId, embedded = false }) {
     }
   }, [taskId]);
 
-  useEffect(() => { load(); }, [load]);
+  /*
+   * ONE TURN AT A TIME. The task id changes the moment the next turn starts
+   * (`task_started`), and the previous turn's evidence must not stay on
+   * screen until the new fetch lands — that overlap is exactly how a Catalog
+   * turn's documents appeared under a Flow answer. The state is emptied first,
+   * then loaded; a reader sees "loading", never a stale list.
+   */
+  useEffect(() => { setEv(null); setErr(null); load(); }, [load]);
 
   if (!taskId) return null;
 
@@ -210,7 +217,12 @@ export function SourcesPanel({ taskId, embedded = false }) {
             {cat.items.length > 0 && <span className="src-cat-count">{cat.items.length}</span>}
           </header>
           {cat.items.length === 0 ? (
-            <p className="src-cat-empty">Nothing from here.</p>
+            /* An honest empty: nothing is filled in from a default list. For
+               Online Docs that is a statement about THIS response — the
+               retrieval either returned documents for it or it did not. */
+            <p className="src-cat-empty">
+              {cat.key === 'docs' ? 'No online sources were used for this response.' : 'Nothing from here.'}
+            </p>
           ) : (
             <div className="src-list">
               {cat.items.map((item) => (

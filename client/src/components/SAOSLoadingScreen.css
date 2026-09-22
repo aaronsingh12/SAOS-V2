@@ -1,0 +1,297 @@
+/* ── SAOS startup screen ────────────────────────────────────────────────────
+   One sheet for one feature, like AnimatedList.css and BorderGlow.css.
+
+   PALETTE — the app's own tokens, read at the root: --ink for the ground,
+   --text and --muted for the type, the two verdigris tokens for the deep
+   greens. The one thing defined here is --saos-neon, a brighter reading of the
+   brand green for the bar and the emblem: the screen is looked at once, in the
+   dark, with nothing to read on top of it, which is the one place the neon the
+   rest of the app deliberately avoids is right. It is scoped to .saos-splash
+   and leaks nowhere.
+
+   MOTION — every decorative movement is a CSS animation, so the global
+   `prefers-reduced-motion` rule in styles.css (`* { animation: none }`) stops
+   all of it. The block at the bottom covers the two things that rule cannot:
+   a shimmer gradient that would otherwise sit still as a streak, and glows
+   that are set by animation and would otherwise vanish. */
+
+.saos-splash {
+  --saos-neon: #3ddc84;
+  --saos-neon-soft: rgba(61, 220, 132, 0.55);
+  --saos-neon-faint: rgba(61, 220, 132, 0.18);
+  --saos-green-deep: var(--verdigris-dim, #2c4e3b);
+
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #080c0a;
+  color: var(--text, #e7e3da);
+  font-family: var(--font-body, system-ui, sans-serif);
+  transition: opacity 520ms ease-out;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.saos-splash.is-leaving { opacity: 0; pointer-events: none; }
+
+/* Atmosphere: one green glow high and centred, a fainter one low, and a
+   vignette that pulls the corners back to black. Layered on ::before so the
+   content and the wave stay in normal flow above it. */
+.saos-splash::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 45% at 50% 30%, rgba(61, 220, 132, 0.11), transparent 70%),
+    radial-gradient(ellipse 80% 40% at 50% 100%, rgba(44, 78, 59, 0.28), transparent 70%),
+    radial-gradient(ellipse 120% 100% at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.55) 100%),
+    linear-gradient(180deg, #0a100d 0%, #080c0a 55%, #05080a 100%);
+}
+
+/* ── Particles ── */
+.saos-splash-particles { position: absolute; inset: 0; pointer-events: none; }
+.saos-splash-particles i {
+  position: absolute;
+  border-radius: 50%;
+  background: var(--saos-neon);
+  box-shadow: 0 0 6px var(--saos-neon-soft);
+  opacity: 0.45;
+  animation: saos-drift 12s ease-in-out infinite;
+}
+@keyframes saos-drift {
+  0%   { transform: translate(0, 0);        opacity: 0.15; }
+  25%  { transform: translate(6px, -10px);  opacity: 0.7; }
+  50%  { transform: translate(-4px, -18px); opacity: 0.35; }
+  75%  { transform: translate(8px, -26px);  opacity: 0.6; }
+  100% { transform: translate(0, -34px);    opacity: 0.1; }
+}
+
+/* ── Composition ── */
+.saos-splash-stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: 100%;
+  max-width: 860px;
+  padding: 0 24px;
+}
+
+/* ── Emblem, rings, orbit ── */
+.saos-splash-emblem {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  display: grid;
+  place-items: center;
+  margin-bottom: -28px;
+}
+.saos-splash-rings {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  color: var(--saos-neon);
+  opacity: 0.32;
+}
+.saos-splash-ring { transform-origin: 150px 150px; }
+.saos-splash-ring-a { animation: saos-turn 64s linear infinite; }
+.saos-splash-ring-b { animation: saos-turn 92s linear infinite reverse; }
+@keyframes saos-turn { to { transform: rotate(360deg); } }
+
+/* A dot travelling a ring is a wrapper turning about the centre with the dot
+   pinned at the radius. Cheaper than animating along a path, and it stops
+   under reduced motion like everything else. */
+.saos-splash-orbit {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  animation: saos-turn 22s linear infinite;
+}
+.saos-splash-orbit i {
+  position: absolute;
+  left: 50%;
+  border-radius: 50%;
+  background: var(--saos-neon);
+  transform: translateX(-50%);
+}
+.saos-splash-orbit-a i { top: calc(50% - 126px); width: 7px; height: 7px; box-shadow: 0 0 10px var(--saos-neon), 0 0 22px var(--saos-neon-soft); }
+.saos-splash-orbit-b { animation-duration: 34s; animation-direction: reverse; animation-delay: -11s; }
+.saos-splash-orbit-b i { top: calc(50% - 104px); width: 4px; height: 4px; opacity: 0.8; box-shadow: 0 0 8px var(--saos-neon-soft); }
+
+.saos-splash-logo {
+  position: relative;
+  color: var(--saos-neon);
+  filter: drop-shadow(0 0 10px var(--saos-neon-soft)) drop-shadow(0 0 28px var(--saos-neon-faint));
+  animation: saos-breathe 4.8s ease-in-out infinite;
+  transition: filter 480ms ease-out, transform 480ms ease-out;
+}
+@keyframes saos-breathe {
+  0%, 100% { transform: scale(1);    filter: drop-shadow(0 0 8px var(--saos-neon-soft))  drop-shadow(0 0 22px var(--saos-neon-faint)); }
+  50%      { transform: scale(1.02); filter: drop-shadow(0 0 14px var(--saos-neon-soft)) drop-shadow(0 0 40px var(--saos-neon-faint)); }
+}
+
+/* ── Type ── */
+.saos-splash-title {
+  margin: 0;
+  font-family: var(--font-display, 'Sora', system-ui, sans-serif);
+  font-weight: 700;
+  font-size: 60px;
+  line-height: 1.05;
+  letter-spacing: 0.04em;
+  color: #fff;
+  animation: saos-rise 640ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.saos-splash-tagline {
+  margin: 14px 0 0;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--muted, #8b93a1);
+  animation: saos-rise 640ms cubic-bezier(0.2, 0.7, 0.2, 1) 220ms both;
+}
+@keyframes saos-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── The bar ── */
+.saos-splash-progress {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(100%, 740px);
+  margin-top: 60px;
+  animation: saos-rise 640ms cubic-bezier(0.2, 0.7, 0.2, 1) 380ms both;
+}
+.saos-splash-track {
+  position: relative;
+  flex: 1;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+.saos-splash-fill {
+  position: relative;
+  height: 100%;
+  min-width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #1f9a58 0%, var(--saos-neon) 62%, #b8ffd6 100%);
+  box-shadow: 0 0 12px var(--saos-neon-soft), 0 0 30px var(--saos-neon-faint);
+  transition: width 320ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  animation: saos-glow 3.2s ease-in-out infinite;
+}
+@keyframes saos-glow {
+  0%, 100% { box-shadow: 0 0 10px var(--saos-neon-soft), 0 0 24px var(--saos-neon-faint); }
+  50%      { box-shadow: 0 0 16px var(--saos-neon-soft), 0 0 40px var(--saos-neon-faint); }
+}
+/* The highlight travelling the filled part. White at a third, never a second
+   colour. */
+.saos-splash-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(100deg, transparent 25%, rgba(255, 255, 255, 0.32) 50%, transparent 75%);
+  background-size: 220% 100%;
+  animation: saos-shimmer 2.8s linear infinite;
+}
+@keyframes saos-shimmer {
+  from { background-position: 180% 0; }
+  to   { background-position: -80% 0; }
+}
+.saos-splash-pct {
+  flex: none;
+  min-width: 3.4ch;
+  font-size: 16px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #e7e3da);
+}
+.saos-splash-status {
+  margin: 20px 0 0;
+  font-size: 15px;
+  color: var(--muted, #8b93a1);
+  min-height: 1.5em;
+}
+.saos-splash-status span { display: inline-block; animation: saos-fade 360ms ease-out both; }
+@keyframes saos-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Completion ── */
+.saos-splash.is-complete .saos-splash-logo {
+  animation: none;
+  transform: scale(1.04);
+  filter: drop-shadow(0 0 16px var(--saos-neon)) drop-shadow(0 0 48px var(--saos-neon-soft));
+}
+.saos-splash.is-complete .saos-splash-fill {
+  animation: none;
+  background: linear-gradient(90deg, var(--saos-neon) 0%, #b8ffd6 100%);
+  box-shadow: 0 0 18px var(--saos-neon), 0 0 44px var(--saos-neon-soft);
+}
+.saos-splash.is-complete .saos-splash-fill::after { animation: none; opacity: 0; }
+.saos-splash.is-complete .saos-splash-title { text-shadow: 0 0 24px var(--saos-neon-faint); }
+.saos-splash.is-complete .saos-splash-status { color: var(--saos-neon); }
+
+/* ── Bottom wave ── */
+.saos-splash-wave {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: min(36vh, 360px);
+  color: var(--saos-neon);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.saos-splash-wave-back  { opacity: 0.45; animation: saos-sway 18s ease-in-out infinite alternate; }
+.saos-splash-wave-front { opacity: 0.9;  animation: saos-sway 14s ease-in-out infinite alternate-reverse; }
+@keyframes saos-sway {
+  from { transform: translateX(-24px); }
+  to   { transform: translateX(24px); }
+}
+
+/* ── Smaller viewports ── */
+@media (max-width: 720px) {
+  .saos-splash-emblem { width: 220px; height: 220px; margin-bottom: -18px; }
+  .saos-splash-logo { width: 72px; height: 72px; }
+  .saos-splash-orbit-a i { top: calc(50% - 92px); }
+  .saos-splash-orbit-b i { top: calc(50% - 76px); }
+  .saos-splash-title { font-size: 42px; }
+  .saos-splash-tagline { font-size: 11px; letter-spacing: 0.22em; margin-top: 10px; }
+  .saos-splash-progress { margin-top: 40px; gap: 12px; }
+  .saos-splash-track { height: 14px; }
+  .saos-splash-pct { font-size: 14px; }
+  .saos-splash-status { font-size: 13px; margin-top: 14px; }
+}
+@media (max-height: 600px) {
+  .saos-splash-emblem { width: 180px; height: 180px; margin-bottom: -12px; }
+  .saos-splash-logo { width: 64px; height: 64px; }
+  .saos-splash-orbit-a i { top: calc(50% - 76px); }
+  .saos-splash-orbit-b i { top: calc(50% - 62px); }
+  .saos-splash-title { font-size: 40px; }
+  .saos-splash-progress { margin-top: 28px; }
+  .saos-splash-wave { height: 24vh; opacity: 0.35; }
+}
+
+/* ── Reduced motion ──
+   The global rule already stops every animation and transition above. What
+   it leaves behind is fixed here: the shimmer becomes a static streak, so it
+   goes; the particles would sit at their base opacity, which is right; and
+   the completion fade has no transition, so the screen simply disappears when
+   the timer unmounts it — which is what the timed unmount is for. */
+@media (prefers-reduced-motion: reduce) {
+  .saos-splash-fill::after { display: none; }
+  .saos-splash-particles i { opacity: 0.35; }
+  .saos-splash-orbit i { display: none; }
+  .saos-splash-logo { filter: drop-shadow(0 0 10px var(--saos-neon-soft)); }
+}

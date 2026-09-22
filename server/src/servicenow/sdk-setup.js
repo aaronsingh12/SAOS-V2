@@ -1,8 +1,6 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { table } from './client.js';
 import { establishApplication, MAX_SCOPE_LENGTH, vendorPrefix } from './app-create.js';
 import { jsLiteral, runServerScript } from './execution-harness.js';
@@ -13,59 +11,75 @@ import {
   buildWorkspace,
   capability,
   installWorkspace,
+  autoBootstrapSdkWorkspace,
+  sdkWorkspaceInstalled,
   parseInstall,
   readAppIdentity,
   resetSdkEntryCache,
   resolveSdkEntry,
 } from './fluent.js';
 
-const pexec = promisify(execFile);
-const DEP_TIMEOUT_MS = 10 * 60 * 1000;
 const DIAGNOSTIC_PATTERNS = /ERROR|Error:|error TS|Build failed|diagnostic|timed out|Command failed|Unable to|Cannot|refused|denied|not found|failed/i;
 const APP_CONFIG = path.join(WORKSPACE, 'now.config.json');
 const APP_CONFIG_TEMPLATE = path.join(WORKSPACE, 'now.config.template.json');
 const FLUENT_SRC = path.join(WORKSPACE, 'src', 'fluent');
 
-function npmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
-}
-
-function sdkPackagePresent() {
-  return fs.existsSync(path.join(WORKSPACE, 'node_modules', '@servicenow', 'sdk', 'bin', 'index.js'));
-}
-
+/*
+ * Does NOT spawn npm itself. The capability probe (which the Dashboard polls
+ * while this runs) also installs the workspace when it is missing, and two
+ * `npm install`s in one node_modules tear it — see `sdkWorkspaceInstalled` in
+ * fluent.js. Both paths now share the one in-flight install.
+ */
 async function installWorkspaceDependencies(emit = () => {}) {
-  if (sdkPackagePresent() && resolveSdkEntry()) {
+  if (sdkWorkspaceInstalled() && resolveSdkEntry()) {
     return { ok: true, skipped: true, message: 'SDK dependencies are already installed.' };
   }
   emit({ type: 'dependencies_installing', message: 'Installing ServiceNow SDK workspace dependencies.' });
-  try {
-    const { stdout, stderr } = await pexec(npmCommand(), ['install'], {
-      cwd: WORKSPACE,
-      timeout: DEP_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024,
-      windowsHide: true,
-    });
-    resetSdkEntryCache();
-    return { ok: true, skipped: false, stdout: String(stdout || '').slice(-2000), stderr: String(stderr || '').slice(-2000) };
-  } catch (err) {
-    resetSdkEntryCache();
-    return {
-      ok: false,
-      skipped: false,
-      message: err.message,
-      stdout: String(err.stdout || '').slice(-2000),
-      stderr: String(err.stderr || '').slice(-2000),
-    };
+  const result = await autoBootstrapSdkWorkspace();
+  resetSdkEntryCache();
+  if (result.ok) {
+    return { ok: true, skipped: !result.attempted, stdout: result.stdout || '', stderr: result.stderr || '' };
   }
+  return {
+    ok: false,
+    skipped: false,
+    message: result.error || result.reason || 'npm install finished, but the ServiceNow SDK is still not fully installed.',
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
 }
 
-function companyKeyFromScope(scope) {
-  return /^x_(\d+)_/.exec(String(scope || ''))?.[1] || null;
+/*
+ * A vendor code is whatever the issuing instance's glide.appcreator.company.code
+ * holds: digits on a PDI (x_2225382_…), letters on a company instance
+ * (x_tepv_…). Matching digits only made every lettered scope look like it had
+ * no vendor code at all — so its trust was reported "not required" whoever
+ * issued it, and a re-adoption fell back to a name-derived suffix instead of
+ * the workspace's own.
+ */
+function vendorCodeFromScope(scope) {
+  return /^x_([a-z0-9]+)_/.exec(String(scope || '').trim())?.[1] || null;
 }
 
 function suffixFromScope(scope) {
-  return /^x_\d+_(.+)$/.exec(String(scope || '').trim())?.[1] || null;
+  return /^x_[a-z0-9]+_(.+)$/.exec(String(scope || '').trim())?.[1] || null;
+}
+
+/**
+ * The company key a scope needs TRUSTED on the bound instance, or null.
+ *
+ * A scope under this instance's own vendor prefix needs no trust entry; one
+ * minted elsewhere does. When the local prefix cannot be read, the old rule
+ * stands — numeric codes (PDI company keys) need trust, lettered ones are
+ * assumed local — rather than demanding an entry that may not be needed.
+ */
+async function companyKeyFromScope(scope) {
+  const code = vendorCodeFromScope(scope);
+  if (!code) return null;
+  let own = null;
+  try { own = (await vendorPrefix()).replace(/^x_|_$/g, ''); } catch { /* unreadable: fall back */ }
+  if (own) return own === code ? null : code;
+  return /^\d+$/.test(code) ? code : null;
 }
 
 function localScopeForIdentity(identity, prefix) {
@@ -286,7 +300,10 @@ async function ensureWorkspaceApplication(identity, emit = () => {}) {
 }
 
 async function companyKeyStatus(companyKey) {
-  if (!companyKey) return { required: null, readable: false, trusted: false, value: null, sys_id: null };
+  /* A scope minted under this instance's own vendor prefix needs no entry in
+   * sn_appauthor.all_company_keys; `companyKeyFromScope` passes null for it.
+   * Only a scope minted under another instance's prefix needs trust. */
+  if (!companyKey) return { required: null, readable: false, trusted: true, notRequired: true, value: null, sys_id: null };
   try {
     const rows = await table.query('sys_properties', {
       query: 'name=sn_appauthor.all_company_keys',
@@ -414,7 +431,7 @@ async function ensureCompanyKeyWithServerScript(companyKey, before, emit = () =>
 
 export async function sdkSetupStatus({ deep = false, force = false } = {}) {
   const identity = await readAppIdentity().catch((err) => ({ error: err.message, scope: null, name: null }));
-  const companyKey = companyKeyFromScope(identity.scope);
+  const companyKey = await companyKeyFromScope(identity.scope);
   const bound = boundInstance();
   const [cap, trust, app] = await Promise.all([
     capability({ deep, force }),
@@ -458,7 +475,7 @@ export async function autoSetupSdk({ emit = () => {}, ensureTrust = true } = {})
   } catch (err) {
     emit({ type: 'application_scope_probe_failed', message: err.message });
   }
-  const companyKey = companyKeyFromScope(identity.scope);
+  const companyKey = await companyKeyFromScope(identity.scope);
   let trust = await companyKeyStatus(companyKey);
   if (ensureTrust && !trust.trusted) trust = await ensureCompanyKey(companyKey, emit);
   if (!trust.trusted) {

@@ -48,9 +48,16 @@ confirmation. An object that cannot be confidently identified is
 ## 6. Severity
 
 `Systemic→SYSTEMIC`, `Critical→CRITICAL`, `High→HIGH`, **`Moderate→MEDIUM`**
-(the engine stores MEDIUM and displays "Moderate"), `Low→LOW`. No new severity
-weights in this phase; severity does not modify the overall ITSM score until the
-scoring model is explicitly designed.
+(the engine stores MEDIUM and displays "Moderate"), `Low→LOW`.
+
+**Scoring (superseded 21 Sep 2026 — see SCORING-OPTIONS.md §5).** The ITSM
+score is ITSM Quality (`health/itsm-quality.js`, model `itsm-quality/1`).
+Severity moves it through the Schema tab's weights — Critical 40 · High 15 ·
+Moderate 5 · Low 1, the same `BAND_WEIGHT` the CMDB model charges — as a
+capped deduction per record, never as a deduction per finding. A base-Systemic
+finding charges nothing: it is posture beside the score. Until that date the
+number was the eleven legacy rules' record pass rate and severity did not
+modify it; a run stored under that model is a different series in the trend.
 
 ## 7. Composite confidence
 

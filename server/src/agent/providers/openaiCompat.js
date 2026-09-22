@@ -66,6 +66,9 @@ export const LLM_REQUEST_TIMEOUT_MS = 120_000;
  * a slower retry, not a failed one — and a warm-up that hangs would add its own
  * wait to every attempt it was supposed to make cheaper.
  */
+export const REASONING_RETRY_MAX_TOKENS = 16_384;
+const REASONING_RETRY_TIMEOUT_MS = 4 * LLM_REQUEST_TIMEOUT_MS;
+ 
 export const WARMUP_TIMEOUT_MS = 15_000;
 
 /**
@@ -85,8 +88,8 @@ const isTimeout = (err) => err?.name === 'TimeoutError' || err?.cause?.name === 
  * stay distinguishable afterwards — `isTimeout` still recognises one and
  * `isAbort` the other.
  */
-function requestSignal(callerSignal) {
-  const timeout = AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS);
+function requestSignal(callerSignal, timeoutMs = LLM_REQUEST_TIMEOUT_MS) {
+  const timeout = AbortSignal.timeout(timeoutMs);
   return callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
 }
 
@@ -411,7 +414,7 @@ export async function chat({ provider, apiKey, baseUrl, model, system, history, 
         shapes: outbound.shapes,
         options: {
           model: resolvedModel,
-          max_tokens: maxTokens,
+          max_tokens: body.max_tokens,
           temperature: body.temperature,
           seed: body.seed,
           tools: body.tools?.length || 0,
@@ -449,7 +452,7 @@ export async function chat({ provider, apiKey, baseUrl, model, system, history, 
           blankMessages: outbound.blanks,
           estRequestTokens: outbound.estTokens + estimateTextTokens(JSON.stringify(body.tools || [])),
           model: resolvedModel,
-          maxTokens,
+          maxTokens: body.max_tokens,
           // Bounded: a raw body is unbounded and this row is written on a
           // failure path, where a runaway write would be a second incident.
           rawResponse: JSON.stringify(parsed ?? null).slice(0, 16_384),
@@ -461,14 +464,36 @@ export async function chat({ provider, apiKey, baseUrl, model, system, history, 
       // content, and the API still answers 200 with an empty string. Retrying
       // burns three attempts to arrive at the same place, so this one is final
       // and carries the remedy.
+      // if (finish === 'length') {
+      //   const reasoned = typeof msg.reasoning === 'string' && msg.reasoning.length > 0;
+      //   throw err(new Error(
+      //     `${provider} returned no content: the max_tokens budget (${maxTokens}) was exhausted before any output was produced` +
+      //     (reasoned ? ' — the model spent it on reasoning tokens.' : '.') +
+      //     ' Raise max_tokens, or pick a non-reasoning model in Settings.'
+      //   ));
+      // }
       if (finish === 'length') {
         const reasoned = typeof msg.reasoning === 'string' && msg.reasoning.length > 0;
+        // When the reasoning is visible, the cause is known and so is the remedy:
+        // not the same request again, but one with room to think. Once only —
+        // the raised budget is not raised again (REASONING_RETRY_MAX_TOKENS).
+        if (reasoned && body.max_tokens < REASONING_RETRY_MAX_TOKENS) {
+          const spent = body.max_tokens;
+          const e = err(new Error(
+            `${provider} returned no content: the max_tokens budget (${spent}) was exhausted by reasoning — ` +
+            `retrying with max_tokens ${REASONING_RETRY_MAX_TOKENS}.`
+          ));
+          body.max_tokens = REASONING_RETRY_MAX_TOKENS;
+          log.warn('llm', `${provider} spent its ${spent}-token budget reasoning before answering — retrying once with max_tokens ${body.max_tokens}`);
+          throw retryable(e);
+        }
         throw err(new Error(
-          `${provider} returned no content: the max_tokens budget (${maxTokens}) was exhausted before any output was produced` +
+          `${provider} returned no content: the max_tokens budget (${body.max_tokens}) was exhausted before any output was produced` +
           (reasoned ? ' — the model spent it on reasoning tokens.' : '.') +
           ' Raise max_tokens, or pick a non-reasoning model in Settings.'
         ));
       }
+ 
 
       // Everything else is transient. `load` is Ollama's own: the request loaded
       // the model and generated nothing — a cold start, reported to the user as

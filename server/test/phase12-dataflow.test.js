@@ -1019,11 +1019,13 @@ test('A5 — prompts.js was NOT modified by Phase 12 (the one later change is re
    * of a flow. phase10-freeze.test.js F1 carries the full record; this pin
    * follows it so the two freezes cannot disagree.
    * Previous values: 99585f7ee9a9f43011ba867c80765cdb, then
-   * 0eb69ba7c29ba50deae1f27cf5f7210d (the WI-4 follow-up sentence).
+   * 0eb69ba7c29ba50deae1f27cf5f7210d (the WI-4 follow-up sentence), then
+   * d62979a640564eb3f27b7a1191b9a013 (before the NowHelpAssist → SAOS rename
+   * of the agent name in the preamble, 2026-09-22).
    */
   const { createHash } = await import('node:crypto');
   const sha = createHash('sha256').update(read('agent/prompts.js')).digest('hex').slice(0, 32);
-  assert.equal(sha, 'd62979a640564eb3f27b7a1191b9a013',
+  assert.equal(sha, '1435a0e065eeaeb06e6c89101acbaf00',
     'prompts.js changed — Phase 12 must teach the reference contract through planner.js');
   assert.doesNotMatch(read('agent/prompts.js'), /\$ref/, 'the reference contract leaked into prompts.js');
 });

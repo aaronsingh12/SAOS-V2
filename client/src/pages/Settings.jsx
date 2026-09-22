@@ -60,7 +60,7 @@ function NotificationsCard() {
 
   const test = () => {
     const shown = notifyDesktop({
-      title: 'NowHelpAssist notifications work',
+      title: 'SAOS notifications work',
       body: 'You will see this when long-running work finishes while you are in another window.',
       tag: 'nha-test',
       force: true,

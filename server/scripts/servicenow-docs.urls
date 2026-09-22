@@ -1,0 +1,105 @@
+# Official ServiceNow documentation the SAOS knowledge corpus is built from.
+# Rebuild the corpus on any machine with:
+#   node scripts/ingest-servicenow-docs.mjs --file scripts/servicenow-docs.urls
+# Every URL is rendered through the fetcher (src/knowledge/fetch-docs.js), never reconstructed;
+# a page that does not render is refused and named. The corpus directory (data/knowledge) is not
+# in git, so this list is the record of what the corpus contains. Three URLs in the original set
+# did not render on 2026-09-21 and are listed at the bottom, commented out, so the gap is visible.
+
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/service-catalog.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_IntroductionToCatalogItems.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/t_DefineACatalogItem.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/catalog-item-form.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_RecordProducer.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/t_DefRecProdInSCat.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/t_CreatingRecordProducersFromTables.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_PopulatingRecordData.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/record-producer-form.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_ServiceCatalogVariables.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/t_CreateAVariableForACatalogItem.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/r_VariableTypes.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/variable-attributes.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_ServiceCatalogVariableSets.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/define-question-choice-var.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_ServiceCatalogUIPolicy.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/t_CreatUIPolicyForSvcCalgIt.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_ServiceCatalogDataLookup.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_ServiceCatalogOrderGuides.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/c_ServiceCatalogCategories.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/p_ServiceCatalogs.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/request-fulfillment.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/catalog-builder.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/create-item-cat-builder.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/create-question-cat-builder.html
+https://www.servicenow.com/docs/r/servicenow-platform/service-catalog/transfer-catalog-items-using-update-sets.html
+https://www.servicenow.com/docs/r/api-reference/scripts/c_CatalogClientScriptCreation.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/workflow-studio.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/flows.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/create-flow.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/create-sc-flow.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/create-flow-catalog-variables.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/create-sla-task-flow.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/flow-variables.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/subflows.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/actions.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/building-triggers.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/flow-test.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/flow-activate.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/flow-error-handler.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/flow-designer-stages.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/inline-scripts.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/copy-flow.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/duplicate-action-subflow.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/flow-designer-reference.html
+https://www.servicenow.com/docs/r/build-workflows/workflow-studio/spoke-builder.html
+https://www.servicenow.com/docs/r/build-workflows/approvals/r_Approvals.html
+https://www.servicenow.com/docs/r/build-workflows/intelligent-approvals.html
+https://www.servicenow.com/docs/r/build-workflows/business-rules-classic/c_BusinessRules.html
+https://www.servicenow.com/docs/r/platform-security/access-control/access-control-rules.html
+https://www.servicenow.com/docs/r/platform-security/access-control/t_CreateAnACLRule.html
+https://www.servicenow.com/docs/r/platform-security/access-control/exploring-access-control-list.html
+https://www.servicenow.com/docs/r/platform-security/access-control/r_ContextualSecurity.html
+https://www.servicenow.com/docs/r/platform-security/access-control/acl-advanced-config.html
+https://www.servicenow.com/docs/r/platform-security/access-control/field-query-roles-restrictions.html
+https://www.servicenow.com/docs/r/platform-security/access-control/access-analyzer.html
+https://www.servicenow.com/docs/r/platform-security/security-roles.html
+https://www.servicenow.com/docs/r/platform-security/c_SNCAccessControl.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/system-update-sets.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/exploring-system-update-sets.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/using-system-update-sets.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/create-select-update-set.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/t_CompareLocalUpdateSets.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/t_PreviewARemoteUpdateSet.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/t_CommitAnUpdateSet.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/t_RetrieveAnUpdateSet.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/t_BackOutUpdateSet.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/t_CompleteUpdateSets.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/us-hier-overview.html
+https://www.servicenow.com/docs/r/application-development/system-update-sets/update-sets-reference.html
+https://www.servicenow.com/docs/r/application-development/c_ApplicationScope.html
+https://www.servicenow.com/docs/r/application-development/r_ManagingApplications.html
+https://www.servicenow.com/docs/r/application-development/c_SharingApplications.html
+https://www.servicenow.com/docs/r/application-development/getting-started-with-building-applications.html
+https://www.servicenow.com/docs/r/application-development/deploying-applications.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/c_TableAdministration.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/t_CreateATable.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/r_GlobalDefaultFields.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/c_DeleteATable.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/t_ModifyADictionaryEntryFromAForm.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/c_DictionaryAttributes.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/c_DictionaryOverrides.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/c_TaskTable.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/t_CreateAManyToManyRelationship.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/c_DatabaseViews.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/c_SchemaMapForTables.html
+https://www.servicenow.com/docs/r/platform-administration/table-administration-and-data-management/t_CreateCustomIndex.html
+https://www.servicenow.com/docs/r/it-service-management/service-level-management/sla-breakdown-definition.html
+https://www.servicenow.com/docs/r/it-service-management/incident-management/create-an-incident.html
+https://www.servicenow.com/docs/r/it-service-management/incident-management/incident-management-process.html
+https://www.servicenow.com/docs/r/it-service-management/incident-management/create-incident-task.html
+https://www.servicenow.com/docs/r/it-service-management/incident-management/t_CreateAnIncidentTemplate.html
+
+# Did not render a topic within the fetcher's timeout on 2026-09-21 (refused, nothing stored):
+# https://www.servicenow.com/docs/r/application-development/scripts/c_ScriptableServiceCatalogVariables.html
+# https://www.servicenow.com/docs/r/platform-security/access-control/scripting-governance.html
+# https://www.servicenow.com/docs/r/it-service-management/service-level-management/c_SLADefinitions.html

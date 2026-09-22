@@ -1,11 +1,11 @@
-// nowhelpassist-dba: x_2225382_nwforge_x_2196302_sn
+// nowhelpassist-dba: x_tepv_nwforge_x_2196302_sn
 // Generated from a validated table spec by dba-authoring.js. Deterministic —
 // no model output reaches this file. Edit the spec, not this source.
 import { Table, BooleanColumn, ReferenceColumn, StringColumn } from '@servicenow/sdk/core'
 
-export const x_2225382_nwforge_x_2196302_sn = Table({
-    $id: Now.ID["x_2225382_nwforge_x_2196302_sn_table"],
-    name: "x_2225382_nwforge_x_2196302_sn",
+export const x_tepv_nwforge_x_2196302_sn = Table({
+    $id: Now.ID["x_tepv_nwforge_x_2196302_sn_table"],
+    name: "x_tepv_nwforge_x_2196302_sn",
     label: "Demo Table",
     extensible: false,
     audit: false,

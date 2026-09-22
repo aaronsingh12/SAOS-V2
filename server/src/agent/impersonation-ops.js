@@ -222,7 +222,7 @@ export async function startImpersonation({ sessionId, user, task, elevatedApprov
   if (!String(task ?? '').trim()) {
     return {
       status: 'refused', reason: 'no_task',
-      message: 'Describe what this impersonation is for. The task descriptor is what lets NowHelpAssist notice '
+      message: 'Describe what this impersonation is for. The task descriptor is what lets SAOS notice '
         + 'later that a new request has wandered outside it, instead of silently carrying someone else\'s authority '
         + 'into unrelated work.',
     };

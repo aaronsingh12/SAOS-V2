@@ -41,7 +41,10 @@ const I = {
   tables: <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" /></>,
   meetings: <><rect x="3" y="4.5" width="18" height="17" rx="2" /><path d="M16 2.5v4M8 2.5v4M3 10h18" /></>,
   applications: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
-  transport: <><path d="M10 17h4V5H2v12h3" /><path d="M20 17h2v-3.3a2 2 0 0 0-.6-1.4L18.7 9.6a2 2 0 0 0-1.4-.6H14v8h1" /><circle cx="7.5" cy="17.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></>,
+  /* Update Sets: three stacked layers — a set is a layer of changes over the
+     instance, and moving one is moving a layer. The key stays `transport`
+     because it is the route and the icon id; only the label is the user's. */
+  transport: <><path d="m12 3 9 5-9 5-9-5 9-5z" /><path d="m3 12.5 9 5 9-5" /><path d="m3 17.5 9 5 9-5" /></>,
   audit: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M9 13h6M9 17h4" /></>,
   dashboard: <><path d="M3 13h8V3H3zM13 21h8V11h-8zM13 7h8V3h-8zM3 21h8v-4H3z" /></>,
   trash: <><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6" /></>,
@@ -81,7 +84,7 @@ const AUTOMATIONS = [
   ['/tables', 'Tables', 'tables'],
   ['/meetings', 'Meetings', 'meetings'],
   ['/applications', 'Applications', 'applications'],
-  ['/transport', 'Transport', 'transport'],
+  ['/transport', 'Update Sets', 'transport'],
 ];
 
 const COLLAPSE_KEY = 'nowhelpassist.sidebarCollapsed';
@@ -308,7 +311,7 @@ export default function Sidebar() {
               <img className="logomark" src="/favicon.svg" alt="" width="26" height="26" aria-hidden="true" />
             )}
             <span className="nav-brand-text">
-              <span className="nav-brand-name">Now<span className="assist">HelpAssist</span></span>
+              <span className="nav-brand-name">SA<span className="assist">OS</span></span>
               <span className="nav-brand-sub">agentic servicenow studio</span>
             </span>
             <button
@@ -394,7 +397,7 @@ export default function Sidebar() {
               {/* The SAME /audit route and the same Audit page — only the label
                   and the grouping changed. It is a record of what NHA did,
                   which is a settings concern rather than a ServiceNow surface. */}
-              <NavItem to="/audit" label="NHA Logs" icon="audit"
+              <NavItem to="/audit" label="SAOS Logs" icon="audit"
                 collapsed={collapsed} onNavigate={closeDrawer} />
               <NavItem to="/settings" label="Preferences" icon="settings"
                 collapsed={collapsed} onNavigate={closeDrawer} />

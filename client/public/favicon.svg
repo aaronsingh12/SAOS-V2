@@ -1,40 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="NowHelpAssist">
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="SAOS">
   <!--
-    The NowHelpAssist wordmark compressed to a mark: "NH" in verdigris on ink,
-    rounded square, hairline in verdigris-dim. It splits where the wordmark
-    splits — Now | HelpAssist — and uses the same three token values the
-    sidebar logo does (ink #0e1116, verdigris #57b57c, verdigris-dim #2c4e3b),
-    so the tab and the app are recognisably one thing.
+    The SAOS wordmark compressed to a mark: an "S" in verdigris on ink, rounded
+    square, hairline in verdigris-dim — the same three token values the sidebar
+    logo uses (ink #0e1116, verdigris #57b57c, verdigris-dim #2c4e3b), so the
+    tab and the app are recognisably one thing.
 
-    The letters are PATHS, not <text>. A favicon renders outside the page, so
-    it cannot see the Sora webfont, and a text-based mark would silently fall
-    back to whatever the OS picked and look different on every machine.
-
-    The geometry was set by rendering it at 16px rather than by looking at it
-    large: an early pass left so much padding that the letters closed into a
-    smudge in the tab strip. Glyphs occupy 72% of the square, with 9px margins
-    either side and a matching 8px counter inside each letter.
+    The letter is a stroked PATH, not <text>. A favicon renders outside the
+    page, so it cannot see the Sora webfont, and a text-based mark would
+    silently fall back to whatever the OS picked and look different on every
+    machine. The stroke is heavy (7 units of 64) so the glyph still reads at
+    16px in a tab strip.
 
     width and height are present as well as viewBox, and are load-bearing: an
     SVG with only a viewBox has no intrinsic size, so an img reports
     naturalWidth 0.
-
-    And this comment is written without CSS custom-property syntax on purpose.
-    A double hyphen is illegal inside an XML comment. Naming the tokens the
-    usual way put "- -ink" in here, which the HTML parser forgives when the
-    SVG is inlined and the XML parser does not when it is loaded through an
-    img or a link rel=icon. It failed silently in both places.
   -->
-  <rect width="64" height="64" rx="15" fill="#0e1116"/>
-  <rect x="1" y="1" width="62" height="62" rx="14" fill="none" stroke="#2c4e3b" stroke-width="2"/>
-  <g fill="#57b57c">
-    <!-- N -->
-    <rect x="9" y="14" width="6" height="36"/>
-    <rect x="23" y="14" width="6" height="36"/>
-    <polygon points="9,14 15,14 29,50 23,50"/>
-    <!-- H -->
-    <rect x="35" y="14" width="6" height="36"/>
-    <rect x="49" y="14" width="6" height="36"/>
-    <rect x="35" y="29" width="20" height="6"/>
-  </g>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="#0e1116" stroke="#2c4e3b" stroke-width="2" />
+  <path d="M43 21.5 C40.5 16.5 22 15 21 24.5 C20 34 44 30 44 40.5 C44 50 24 50 20.5 43"
+        fill="none" stroke="#57b57c" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
 </svg>

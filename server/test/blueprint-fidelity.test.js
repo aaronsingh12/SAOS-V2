@@ -105,7 +105,7 @@ test('B4 — THE MEASURED DEFECT: the real drifted source is rejected', () => {
    * and if it drifts again this test says so in the same words the guard will.
    */
   const drifted = fs.readFileSync(
-    path.join(SRC, '..', 'fluent-workspace', 'src', 'fluent', 'flows', 'add-priority-check-work-note.now.ts'),
+    path.join(HERE, 'fixtures', 'flow-corpus', 'add-priority-check-work-note.now.ts'),
     'utf8',
   );
   const p = blueprintPromises(ONBOARDING);

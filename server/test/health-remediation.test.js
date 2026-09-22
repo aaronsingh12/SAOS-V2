@@ -24,9 +24,13 @@ const RULES_SRC = fs.readFileSync(path.resolve(__dirname, '../src/health/rules.j
 /* Segments may carry digits — `ITSM-INC-P1-AGED` — which an uppercase-only
    pattern silently skipped, so that rule's guidance read as an orphan. A rule
    id still has to START with a letter, which keeps quoted dates out. */
+/* `ITOM-<n>` strings are NOT emitted rule ids. They are the workbook references in
+   ITOM_MEASUREMENTS, carried on a finding as `measurement_rule_id`; the finding's
+   `rule_id` — the key remediation is looked up by — stays the internal check
+   (`DISC-NEVER-RAN`, `MID-DOWN`, …), and those are what this coverage checks. */
 const EMITTED_RULES = [...new Set(
   [...RULES_SRC.matchAll(/'([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)'/g)].map((m) => m[1]),
-)].filter((id) => /^[A-Z][A-Z0-9]*-[A-Z0-9-]+$/.test(id));
+)].filter((id) => /^[A-Z][A-Z0-9]*-[A-Z0-9-]+$/.test(id) && !/^ITOM-\d+$/.test(id));
 
 const finding = (over = {}) => ({
   fingerprint: 'f1',

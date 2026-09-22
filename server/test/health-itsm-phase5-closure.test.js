@@ -163,13 +163,24 @@ test('FLOW: rule id, status, verdict, blocker, confidence, finding count, popula
   }
 });
 
-test('SCORE: the 11-rule ITSM score is computed from the legacy findings alone — the catalogue verdicts, populations and findings do not move it', async () => {
+test('SCORE: the ITSM Quality score is stored with its parts, its population and its comparability key, and a Systemic catalogue finding never charges a record', async () => {
   const r = await estate();
+  const itsm = r.manifest.scopes.itsm;
+  const q = itsm.itsm_quality;
+  assert.ok(q, 'the ITSM summary carries no itsm_quality');
+  assert.equal(q.model, 'itsm-quality/1');
+  assert.match(itsm.scoring.key, /^[0-9a-f]{16}$/);
+  assert.equal(q.population.records, ['incident', 'change_request', 'problem'].reduce((n, t) => n + (q.population.by_table[t] ?? 0), 0));
+  assert.ok(q.records.clean >= 0 && q.records.charged <= q.population.records);
+  const expected = q.record_part != null && q.rule_part != null
+    ? Number((0.6 * q.record_part + 0.4 * q.rule_part).toFixed(1))
+    : (q.record_part ?? q.rule_part);
+  assert.equal(itsm.score, expected, 'the stored score is not the blend of its stored parts');
+  assert.equal(q.systemic.findings, r.findings.filter((f) => f.domain === 'ITSM' && f.base_severity === 'SYSTEMIC').length);
+  /* The legacy findings alone, recomputed without the slice, score at least as high: they are a subset of the charges. */
   const legacyOnly = r.findings.filter((f) => f.domain !== 'ITSM');
   const recomputed = summariseScopes(r.manifest.coverage, legacyOnly).itsm;
-  assert.equal(r.manifest.scopes.itsm.score, recomputed.score);
-  assert.equal(r.manifest.scopes.itsm.score_basis, recomputed.score_basis);
-  assert.deepEqual(r.manifest.scopes.itsm.score_drivers, recomputed.score_drivers);
+  assert.ok(recomputed.score == null || recomputed.score >= itsm.score);
 });
 
 /* ════════════ repeat scan ════════════ */

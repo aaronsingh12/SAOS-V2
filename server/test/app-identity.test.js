@@ -45,7 +45,8 @@ function committedConfig() {
 }
 
 test('the committed workspace config names a scope', () => {
-  assert.match(config().scope, /^x_[0-9]+_[a-z0-9_]+$/);
+  // Digits on a PDI (x_2225382_…), letters on a company instance (x_tepv_…).
+  assert.match(config().scope, /^x_[a-z0-9]+_[a-z0-9_]+$/);
 });
 
 test('the committed workspace config carries NO scope sys_id', () => {

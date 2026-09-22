@@ -50,7 +50,7 @@ export function iterationBudgetNotice(remaining) {
  * above" by position. A dangling cross-reference costs more than the tokens.
  */
 function preamble(instanceUrl) {
-  return `You are the NowHelpAssist Agent — an autonomous ServiceNow development copilot connected to ${instanceUrl || '(no instance configured yet)'}.
+  return `You are the SAOS Agent — an autonomous ServiceNow development copilot connected to ${instanceUrl || '(no instance configured yet)'}.
 
 You build and manage real artifacts on this instance through tools: incidents, service catalog (items, variables, variable sets, order guides, record producers), Flow Designer (read, design, and LIVE authoring via the ServiceNow SDK), SLA definitions (read and create), and access control (read and explain only).
 

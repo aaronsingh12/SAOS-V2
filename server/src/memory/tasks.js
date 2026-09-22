@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { getDb } from './db.js';
 import { currentActor } from './audit.js';
+import { assertSessionUsableOnCurrentInstance } from './sessions.js';
 import { log } from '../logging.js';
 
 /**
@@ -136,13 +137,10 @@ export function createTask({ sessionId, goal = null, metadata = null } = {}) {
   try {
     if (!sessionId) throw new Error('a task needs a session');
     const { instance, actor } = currentActor();
-    const session = getDb().prepare('SELECT instance FROM sessions WHERE id = ?').get(sessionId);
-    if (session && session.instance !== instance) {
-      throw Object.assign(
-        new Error('This chat belongs to another instance. Start a new chat for the current instance.'),
-        { code: 'session_instance_mismatch' }
-      );
-    }
+    /* The same rule the chat and plan routes apply. Comparing against
+       currentActor().instance here was null while unbound, against sessions
+       stamped '(unbound)', so every task opened while disconnected was refused. */
+    assertSessionUsableOnCurrentInstance(sessionId);
     const id = crypto.randomUUID();
     const ts = now();
     getDb().prepare(
@@ -322,4 +320,32 @@ export function unfinishedTasks({ limit = 100 } = {}) {
     log.error('tasks', `could not read unfinished tasks: ${err.message}`);
     return [];
   }
+}
+
+/**
+ * Log out: delete every task, and its steps, filed under an instance.
+ *
+ * Here because this file is one of the named writers of the task tables; the
+ * instance purge calls it inside its own transaction rather than issuing the
+ * DELETEs itself. `urls` are the spellings the instance may have been saved
+ * under — matched case-insensitively, trailing slash ignored. Throws, so the
+ * caller's transaction rolls back rather than half-purging.
+ */
+export function deleteTasksForInstance(urls = []) {
+  const list = urls.map((u) => String(u).toLowerCase()).filter(Boolean);
+  if (!list.length) return { agent_task_steps: 0, agent_tasks: 0 };
+  const match = `lower(rtrim(instance, '/')) IN (${list.map(() => '?').join(', ')})`;
+  const db = getDb();
+  const steps = db.prepare(`DELETE FROM agent_task_steps WHERE task_id IN (SELECT id FROM agent_tasks WHERE ${match})`).run(...list);
+  const tasks = db.prepare(`DELETE FROM agent_tasks WHERE ${match}`).run(...list);
+  return { agent_task_steps: Number(steps.changes || 0), agent_tasks: Number(tasks.changes || 0) };
+}
+
+/** The sessions that own tasks filed under an instance — a read, for the log-out purge. */
+export function taskSessionsForInstance(urls = []) {
+  const list = urls.map((u) => String(u).toLowerCase()).filter(Boolean);
+  if (!list.length) return [];
+  return getDb().prepare(
+    `SELECT DISTINCT session_id AS id FROM agent_tasks WHERE lower(rtrim(instance, '/')) IN (${list.map(() => '?').join(', ')})`
+  ).all(...list).map((r) => r.id).filter(Boolean);
 }

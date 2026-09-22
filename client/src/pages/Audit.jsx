@@ -68,7 +68,7 @@ const KIND_LABEL = {
 
 function ApprovalBadge({ row }) {
   if (row.source === 'build' && row.approval === 'ui') {
-    return <span className="badge blue" title="Driven by hand from a NowHelpAssist module page.">by hand</span>;
+    return <span className="badge blue" title="Driven by hand from a SAOS module page.">by hand</span>;
   }
   if (!row.mutating) return <span style={{ color: 'var(--muted)' }}>—</span>;
   switch (row.approval) {
@@ -306,7 +306,7 @@ export default function Audit() {
         <div className="note">
           Every tool the agent ran and every build driven from a module page, against the bound instance. A row is a
           write only if it says <b>mutation</b>; <b>auto · ungated</b> means auto-approve was on and nobody saw the
-          amber gate. NowHelpAssist has no user accounts, so "who" is recorded as the decision that was made and the
+          amber gate. SAOS has no user accounts, so "who" is recorded as the decision that was made and the
           ServiceNow account the write landed under — it does not invent a person.
         </div>
 

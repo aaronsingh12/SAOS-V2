@@ -36,14 +36,24 @@ export function currentSessionInstance() {
   return currentInstance();
 }
 
+/*
+ * A session conflicts only when it is filed under a KNOWN instance other than
+ * the bound one. A row with no instance names no owner, so it cannot "belong to
+ * another instance". Every guard compares through `currentInstance()`, so an
+ * unbound session ('(unbound)') is judged in the same form it was stamped with.
+ */
+function filedElsewhere(row) {
+  return Boolean(row && row.instance && row.instance !== currentInstance());
+}
+
 export function sessionBelongsToCurrentInstance(id) {
   const row = getSession(id);
-  return Boolean(row && row.instance === currentInstance());
+  return Boolean(row) && !filedElsewhere(row);
 }
 
 export function assertSessionUsableOnCurrentInstance(id) {
   const row = getSession(id);
-  if (row && row.instance !== currentInstance()) {
+  if (filedElsewhere(row)) {
     throw Object.assign(
       new Error('This chat belongs to another instance. Start a new chat for the current instance.'),
       { status: 409, code: 'session_instance_mismatch' }

@@ -22,6 +22,7 @@ import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { RequiresInstance } from './components/states.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import PlaygroundBackground from './components/PlaygroundBackground.jsx';
+import SAOSLoadingScreen from './components/SAOSLoadingScreen.jsx';
 import { discoverHealthRun } from './components/healthRun.js';
 
 const TITLES = {
@@ -35,7 +36,7 @@ const TITLES = {
   '/tables': 'Database Administration',
   '/meetings': 'Meeting Intelligence',
   '/applications': 'Applications',
-  '/transport': 'Transport',
+  '/transport': 'Update Sets',
   '/audit': 'Audit',
   '/settings': 'Settings',
 };
@@ -64,7 +65,7 @@ function PageTitle({ title }) {
  */
 function Shell() {
   const { pathname } = useLocation();
-  const title = TITLES[pathname] || 'NowHelpAssist';
+  const title = TITLES[pathname] || 'SAOS';
   /*
    * The Agent page is the one immersive route: no page title, no content
    * padding, so the playground background reaches every edge of the area
@@ -94,7 +95,7 @@ function Shell() {
   // D-4 — the tab says which page you left open. With eight routes behind one
   // title, a pinned NowHelpAssist tab was unidentifiable among its own siblings.
   useEffect(() => {
-    document.title = pathname === '/' ? 'NowHelpAssist — Agentic ServiceNow Studio' : `${title} — NowHelpAssist`;
+    document.title = pathname === '/' ? 'SAOS — Agentic ServiceNow Studio' : `${title} — SAOS`;
     // Navigation in the terminal, so a later error has somewhere to belong.
     logToServer('info', `page ${title}`);
   }, [pathname, title]);
@@ -154,7 +155,7 @@ function Shell() {
                   last night's meeting on a plane. */}
               <Route path="/meetings" element={<Meetings />} />
               <Route path="/applications" element={<RequiresInstance what="Applications"><Applications /></RequiresInstance>} />
-              <Route path="/transport" element={<RequiresInstance what="Transport"><Transport /></RequiresInstance>} />
+              <Route path="/transport" element={<RequiresInstance what="Update Sets"><Transport /></RequiresInstance>} />
               <Route path="/audit" element={<Audit />} />
               <Route path="/settings" element={<Settings />} />
             </Routes>
@@ -210,6 +211,12 @@ export default function App() {
           be unmounted by the boundary catching a page. It renders nothing at
           all when this build does not ship the capture agent. */}
       <MeetingDock />
+      {/* The startup screen. An overlay above the shell, not a gate around
+          it: everything above mounts and loads from the first frame exactly
+          as before, and this only reports that happening. It unmounts itself
+          once the real startup signals land, and App never remounts, so no
+          navigation can bring it back. */}
+      <SAOSLoadingScreen />
     </BrowserRouter>
   );
 }

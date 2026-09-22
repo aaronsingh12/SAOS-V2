@@ -10,8 +10,9 @@ import { toast } from './toast.js';
  * parameters and dependencies), `manifest.links` (the cross-domain links) and
  * `/health/itsm/parameters`. Nothing is re-decided in the browser: a rule that
  * could not run says why, a rule that ran but established nothing says so, and
- * none of it is shown as a pass. The ITSM score on the card above stays the
- * eleven original rules' number — the catalogue reports verdicts, not a score.
+ * none of it is shown as a pass. The ITSM score on the card above is ITSM
+ * Quality (server: itsm-quality.js): the catalogue's estate-level verdicts are
+ * its rule part; its record findings charge the records they name.
  */
 
 const OUTCOMES = [
@@ -120,8 +121,8 @@ export function ItsmCatalogue({ itsm, activeRule, onPickRule }) {
       <div className="card-title">ITSM catalogue · {rules.length} rules</div>
       <p className="hs-lead">
         Every rule in the ITSM workbook, as this scan ran it. A rule that could not run says why; a rule that ran but had
-        nothing to judge is inconclusive, never a pass. These verdicts are reported, not scored — the ITSM score above is
-        still the eleven original rules.
+        nothing to judge is inconclusive, never a pass. Estate-level verdicts — rates, configuration, composites — form the
+        rule part of the ITSM score; a record-level rule reaches it only through the records its findings charge.
       </p>
       <div className="hs-facts">
         <div><b>{rules.length}</b><span>in the catalogue</span></div>

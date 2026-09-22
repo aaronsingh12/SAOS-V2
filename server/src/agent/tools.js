@@ -5,7 +5,7 @@ import {
   flowExecutionsFor, flowExecution, auditFor, journalFor, slasFor, ciRelationshipsFor,
   waitForFlowExecution, WAIT_LIMITS,
 } from '../servicenow/diagnostics.js';
-import { catalog } from '../servicenow/catalog.js';
+import { catalog, variablePayload } from '../servicenow/catalog.js';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
 import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify, activateManagedFlow } from '../servicenow/fluent.js';
 import { recordIntendedState } from '../servicenow/post-install-state.js';
@@ -917,7 +917,7 @@ export const TOOLS = [
   {
     name: 'create_catalog_item',
     description:
-      'Composite builder: create a catalog item WITH only the variables the user explicitly requested (and their choices) in one shot. Do not invent extra questions, approvals, fulfillment, categories, variable sets, scripts, user criteria, or flows. Every variable needs an explicit type code from the request/context: 1 Yes/No, 2 Multi Line Text, 3 Multiple Choice, 5 Select Box, 6 Single Line Text, 7 Checkbox, 8 Reference (set reference_table), 9 Date, 10 Date/Time, 21 List Collector (set reference_table), 25 Masked, 26 Email. Requires user approval.',
+      'Composite builder: create a catalog item WITH only the variables the user explicitly requested (and their choices) in one shot. Do not invent extra questions, approvals, fulfillment, categories, variable sets, scripts, user criteria, or flows. Every variable needs an explicit type code from the request/context: 1 Yes/No, 2 Multi Line Text, 3 Multiple Choice, 5 Select Box, 6 Single Line Text, 7 Checkbox, 8 Reference (set reference_table), 9 Date, 10 Date/Time, 21 List Collector (set reference_table), 18 Lookup Select Box / 22 Lookup Multiple Choice (set lookup_table — values come from that table, not from choices), 25 Masked, 26 Email. Requires user approval.',
     mutating: true,
     inputSchema: {
       type: 'object',
@@ -926,6 +926,7 @@ export const TOOLS = [
         short_description: { type: 'string' },
         description: { type: 'string' },
         category: { type: 'string', description: 'sys_id of sc_category (optional; resolve via lookup_reference on sc_category)' },
+        catalog: { type: 'string', description: 'sys_id of the sc_catalog to publish in (optional; the instance default catalog when omitted)' },
         variables: {
           type: 'array',
           items: {
@@ -936,6 +937,9 @@ export const TOOLS = [
               type: { type: 'number', description: 'explicit ServiceNow variable type code; do not default when the request did not specify enough detail' },
               mandatory: { type: 'boolean' },
               reference_table: { type: 'string', description: 'for type 8 / 21' },
+              lookup_table: { type: 'string', description: 'for type 18 / 22 — the table the values come from' },
+              lookup_value: { type: 'string', description: 'for type 18 / 22 — the field stored as the value (default sys_id)' },
+              lookup_label: { type: 'string', description: 'for type 18 / 22 — the field(s) shown to the requester' },
               choices: {
                 type: 'array',
                 items: { type: 'object', properties: { text: { type: 'string' }, value: { type: 'string' } } },
@@ -1321,7 +1325,7 @@ ${description}` : description);
   {
     name: 'add_catalog_variable',
     description:
-      'Add one variable to an EXISTING catalog item. For a choice type (3 Multiple Choice, 5 Select Box, 18 Lookup Select Box, 22 Lookup Multiple Choice) pass choices — a choice with no value cannot be referenced by a UI policy condition. Call get_catalog_item first so the order does not collide. Requires user approval.',
+      'Add one variable to an EXISTING catalog item. For a choice type (3 Multiple Choice, 5 Select Box) pass choices — a choice with no value cannot be referenced by a UI policy condition. A lookup type (18 Lookup Select Box, 22 Lookup Multiple Choice) takes lookup_table (and optionally lookup_value, lookup_label) instead of choices. Call get_catalog_item first so the order does not collide. Requires user approval.',
     mutating: true,
     inputSchema: {
       type: 'object',
@@ -1335,6 +1339,9 @@ ${description}` : description);
         help_text: { type: 'string' },
         default_value: { type: 'string' },
         reference_table: { type: 'string', description: 'for type 8 (Reference) / 21 (List Collector)' },
+        lookup_table: { type: 'string', description: 'for type 18 / 22 — the table the values come from' },
+        lookup_value: { type: 'string', description: 'for type 18 / 22 — the field stored as the value (default sys_id)' },
+        lookup_label: { type: 'string', description: 'for type 18 / 22 — the field(s) shown to the requester' },
         choices: {
           type: 'array',
           items: { type: 'object', properties: { text: { type: 'string' }, value: { type: 'string' } } },
@@ -1343,11 +1350,18 @@ ${description}` : description);
       required: ['cat_item', 'name', 'type'],
     },
     execute: ({ cat_item, ...v }) => catalog.createVariable({ cat_item }, v),
-    describeWrite: ({ cat_item, ...v }, result) => ({
-      table: 'item_option_new', operation: 'insert',
-      // `cat_item` is the parent, not a field of the variable record.
-      requested: v || {}, sys_id: cellValue(result?.variable?.sys_id),
-    }),
+    describeWrite: ({ cat_item, ...v }, result) => {
+      /* The row that was SENT, minus the parent link — `choices` are child
+         question_choice rows, not fields, and `reference_table` is stored as
+         `reference` / `list_table`. The result is `{ variable, choices }`, so
+         the record is named for the verifier rather than diffed as a wrapper. */
+      const { cat_item: _parent, ...requested } = variablePayload({ cat_item }, v || {});
+      return {
+        table: 'item_option_new', operation: 'insert',
+        requested, sys_id: cellValue(result?.variable?.sys_id),
+        record: result?.variable ?? null,
+      };
+    },
   },
   {
     name: 'update_catalog_variable',
@@ -1449,6 +1463,20 @@ ${description}` : description);
       required: ['catalog_item', 'short_description', 'conditions', 'actions'],
     },
     execute: (input) => createPolicy(input),
+    /*
+     * An SDK install, so a descriptor with `mechanism: 'sdk'`: a refusal before
+     * the install (validate, build, binding) is recorded as not attempted, and a
+     * failure at or after it as unverified — never silently dropped from the
+     * ledger, which is what happened with no descriptor at all.
+     */
+    describeWrite: (input, result) => {
+      const requested = { short_description: String(input?.short_description ?? '').trim(), catalog_item: input?.catalog_item };
+      if (!result?.sys_id) return { table: 'catalog_ui_policy', mechanism: 'sdk', operation: 'insert', requested };
+      return {
+        table: 'catalog_ui_policy', mechanism: 'sdk', operation: 'insert', sys_id: result.sys_id, requested,
+        record: { short_description: result.policy?.short_description ?? '', catalog_item: result.policy?.catalog_item ?? '' },
+      };
+    },
   },
   {
     name: 'list_slas',

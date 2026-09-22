@@ -275,7 +275,8 @@ test('the rendered source carries the identity, the condition and the action', (
   const src = rendered();
   assert.match(src, /import \{ CatalogUiPolicy \} from '@servicenow\/sdk\/core'/);
   assert.match(src, new RegExp(`catalogItem: "${ITEM}"`));
-  assert.match(src, new RegExp(`catalogCondition: "IO:${CHECKBOX.sys_id}=false\\^EQ"`));
+  // Bare sys_ids: the SDK puts IO: back itself (see the AND test below).
+  assert.match(src, new RegExp(`catalogCondition: "${CHECKBOX.sys_id}=false\\^EQ"`));
   assert.match(src, new RegExp(`variableName: "${TEXT.sys_id}"`));
   assert.match(src, /variable: "justification"/);
   assert.match(src, /visible: false/);
@@ -285,6 +286,26 @@ test('the SDK adds the IO: prefix itself, so variableName is the bare sys_id', (
   // Measured: passing "IO:<sys_id>" produced catalog_variable "IO:IO:<sys_id>".
   const src = rendered();
   assert.ok(!src.includes(`variableName: "IO:`), 'variableName must not be IO-prefixed');
+});
+
+test('an AND-ed condition reaches the instance with ONE IO: per clause', () => {
+  /*
+   * The SDK's own rewrite (sdk-build-plugins service-catalog/utils.js),
+   * replayed: it adds IO: at the start and after every ^ that is not
+   * ^OR / ^NQ / ^EQ. Handed an already-prefixed `a^IO:b`, it produced
+   * `^IO:IO:b` — a clause that can never match, so every policy with two
+   * AND-ed conditions silently never fired.
+   */
+  const sdkRewrite = (c) => c
+    .replace(/^(?!IO:)/, 'IO:')
+    .replace(/\^OR(?!IO:)/g, '^ORIO:')
+    .replace(/\^NQ(?!IO:)/g, '^NQIO:')
+    .replace(/\^(?!(ORIO:|NQIO:|EQ))/g, '^IO:')
+    .replace(/(?<!\^EQ)$/, '^EQ');
+  const stored = `${IO_PREFIX}${CHECKBOX.sys_id}=false^${IO_PREFIX}${TEXT.sys_id}ISNOTEMPTY^OR${IO_PREFIX}${TEXT.sys_id}=x^EQ`;
+  const condition = /catalogCondition: "([^"]*)"/.exec(rendered({ catalog_conditions: stored }))[1];
+  assert.equal(sdkRewrite(condition), stored, 'the condition the SDK installs must be the condition that was stored');
+  assert.ok(!sdkRewrite(condition).includes('IO:IO:'));
 });
 
 test('states left on "ignore" are omitted rather than emitted as false', () => {

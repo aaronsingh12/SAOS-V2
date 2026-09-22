@@ -407,8 +407,14 @@ test('F1 — prompts.js is frozen: the sentinel and the operating rules are inta
    * one, but steering toward it. One sentence now says a Business Rule or a
    * script is never a native alternative to a flow. Previous value:
    * 0eb69ba7c29ba50deae1f27cf5f7210d.
+   *
+   * PRODUCT RENAME (2026-09-22) — established, not assumed: `git diff` shows
+   * one line, the preamble naming the agent "the SAOS Agent" instead of "the
+   * NowHelpAssist Agent", part of the app-wide NowHelpAssist → SAOS rename.
+   * No rule, tier or instruction changed. Previous value:
+   * d62979a640564eb3f27b7a1191b9a013.
    */
-  assert.equal(sha, 'd62979a640564eb3f27b7a1191b9a013',
+  assert.equal(sha, '1435a0e065eeaeb06e6c89101acbaf00',
     'prompts.js changed. The prompt is frozen: establish what edited it before touching this value.');
   assert.equal(src.split(String.fromCharCode(10)).filter((l) => l.includes('knowledgeNote')).length, 2,
     'the knowledgeNote parameter moved');

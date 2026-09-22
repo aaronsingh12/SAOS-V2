@@ -5,6 +5,25 @@ import { toast } from '../components/toast.js';
 import { EmptyState } from '../components/states.jsx';
 import { refreshHealth } from '../hooks/useHealth.js';
 import { refreshBinding } from '../hooks/useBinding.js';
+import { resetHealthRun, startHealthRun } from '../components/healthRun.js';
+
+/* Must match the key AgentChat files its current chat under. */
+const chatSessionKey = (instanceUrl) => `nowhelpassist.sessionId:${instanceUrl || 'unbound'}`;
+
+/**
+ * After a login, an instance with no stored scores gets a fresh, full health
+ * check — which is every login after a log out, since log out deletes them.
+ * An instance that already has results is left alone: this never re-scans
+ * behind someone's back.
+ */
+async function buildScoresIfNone() {
+  try {
+    const { runs } = await api.get('/health/runs?limit=1');
+    if (runs?.length) return;
+    toast.info('Building fresh health scores and metrics for this instance…');
+    startHealthRun({ modules: 'all', reuse: false });
+  } catch { /* Health Assist can still start one by hand */ }
+}
 
 export default function Dashboard() {
   const [conn, setConn] = useState({ instanceUrl: '', authType: 'basic', username: '', password: '', clientId: '', clientSecret: '' });
@@ -45,6 +64,9 @@ export default function Dashboard() {
       refreshHealth();   // the topbar pill and every RequiresInstance gate read this
       refreshBinding();  // scope + sync are per-binding; a new instance must not wear the old verdict
       loadSdkStatus(true);
+      /* Only once the credentials are proven: a scan against a bad login would
+         just fail and file a failed run. */
+      api.post('/system/connection/test').then((r) => { if (r?.ok) buildScoresIfNone(); }).catch(() => {});
     } catch (e) { setError(e.message); toast.error(e.message); }
     finally { setSaving(false); }
   };
@@ -65,6 +87,7 @@ export default function Dashboard() {
       setTest(r);
       loadStats();
       loadSdkStatus(true);
+      if (r?.ok) buildScoresIfNone();
     } catch (e) { setError(e.message); }
     finally { setTesting(false); }
   };
@@ -112,14 +135,23 @@ export default function Dashboard() {
     });
     if (!ok) return;
     setDisconnecting(true); setError(''); setTest(null);
+    const previousUrl = saved?.connection?.instanceUrl || '';
     try {
       const s = await api.post('/system/connection/disconnect');
+      /* Nothing about the old instance may keep showing: its check, its chat. */
+      resetHealthRun();
+      try { localStorage.removeItem(chatSessionKey(previousUrl)); } catch { /* private mode */ }
       setSaved(s);
       setConn({ instanceUrl: '', authType: 'basic', username: '', password: '', clientId: '', clientSecret: '' });
       setStats(null);
       setSdk(null);
       setSdkEvents([]);
-      toast.info('Disconnected. The stored credentials are cleared.');
+      if (s?.purged?.ok === false) {
+        toast.error('Logged out, but the stored data for that instance could not be deleted.', { detail: s.purged.reason });
+      } else {
+        toast.info(`Logged out. Credentials cleared and ${s?.purged?.total ?? 0} stored record(s) for this instance deleted — `
+          + 'the next login builds new scores and metrics.');
+      }
       refreshHealth();
       refreshBinding();
     } catch (e) { setError(e.message); toast.error(e.message); }

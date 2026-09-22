@@ -113,7 +113,7 @@ export default function Transport() {
         >
           {!selected ? null : !selected.present ? (
             <div className="note warn">
-              <b>{selected.setName}</b> was created by NowHelpAssist but no longer exists on this
+              <b>{selected.setName}</b> was created by SAOS but no longer exists on this
               instance. It was deleted there, not here — nothing was lost locally, and nothing can be exported.
             </div>
           ) : loadingContents ? (
@@ -134,7 +134,7 @@ export default function Transport() {
               {contents.duplicateNames.length > 0 && (
                 <div className="note warn">
                   <b>{contents.duplicateNames.length} record{contents.duplicateNames.length === 1 ? ' has' : 's have'} more than one update in this set.</b>{' '}
-                  Capture collapses these, so something wrote to the set outside NowHelpAssist:{' '}
+                  Capture collapses these, so something wrote to the set outside SAOS:{' '}
                   <span className="mono">{contents.duplicateNames.map((d) => `${d.name} ×${d.count}`).join(', ')}</span>
                 </div>
               )}

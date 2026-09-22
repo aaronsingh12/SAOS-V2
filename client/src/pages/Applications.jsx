@@ -48,10 +48,10 @@ const APP_COLUMNS = [
     cell: (a) => <span className="mono">{a.version || '—'}</span> },
   { key: 'vendor', header: 'Vendor', width: 170, text: (a) => a.vendor || '—' },
   { key: 'managed', header: 'Managed', width: 230,
-    text: (a) => (a.managed ? 'NowHelpAssist' : '—'),
+    text: (a) => (a.managed ? 'SAOS' : '—'),
     cell: (a) => (a.managed ? (
       <>
-        <span className="badge green">NowHelpAssist</span>
+        <span className="badge green">SAOS</span>
         {a.workspace && (
           <div className="mono" style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>
             {a.workspace.id} · {a.workspace.sourceCount} source{a.workspace.sourceCount === 1 ? '' : 's'}
@@ -100,7 +100,7 @@ export default function Applications() {
       <div className="grid3">
         <div className="card"><div className="stat"><b>{data?.counts?.custom ?? '—'}</b><span>custom applications</span></div></div>
         <div className="card"><div className="stat"><b>{data?.counts?.store ?? '—'}</b><span>store applications</span></div></div>
-        <div className="card"><div className="stat"><b>{data?.managedCount ?? '—'}</b><span>managed by NowHelpAssist</span></div></div>
+        <div className="card"><div className="stat"><b>{data?.managedCount ?? '—'}</b><span>managed by SAOS</span></div></div>
       </div>
 
       {data?.orphanWorkspaces?.length > 0 && (
@@ -155,7 +155,7 @@ export default function Applications() {
             <> This instance did not return: <span className="mono">{data.visibility.droppedFields.join(', ')}</span>.</>
           )}
           <div style={{ marginTop: 6, color: 'var(--muted)' }}>
-            Anything NowHelpAssist creates over the Table API is born in <span className="mono">global</span> —
+            Anything SAOS creates over the Table API is born in <span className="mono">global</span> —
             the platform accepts a scope on a REST insert and silently ignores it. Scoped artifacts come from an SDK workspace.
           </div>
         </div>

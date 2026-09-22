@@ -30,8 +30,16 @@ catalogRouter.get('/catalogs', async (_req, res, next) => {
   try { res.json(await catalog.listCatalogs()); } catch (err) { next(err); }
 });
 
-catalogRouter.get('/categories', async (_req, res, next) => {
-  try { res.json(await catalog.listCategories()); } catch (err) { next(err); }
+catalogRouter.post('/catalogs', async (req, res, next) => {
+  try { res.status(201).json(await catalog.createCatalog(req.body || {})); } catch (err) { next(err); }
+});
+
+catalogRouter.patch('/catalogs/:sysId', async (req, res, next) => {
+  try { res.json(await catalog.updateCatalog(req.params.sysId, req.body || {})); } catch (err) { next(err); }
+});
+
+catalogRouter.get('/categories', async (req, res, next) => {
+  try { res.json(await catalog.listCategories({ catalog: req.query.catalog })); } catch (err) { next(err); }
 });
 
 catalogRouter.post('/categories', async (req, res, next) => {
@@ -43,7 +51,7 @@ catalogRouter.post('/categories', async (req, res, next) => {
 
 // ---- Items ----
 catalogRouter.get('/items', async (req, res, next) => {
-  try { res.json(await catalog.listItems({ search: req.query.search, klass: req.query.class })); } catch (err) { next(err); }
+  try { res.json(await catalog.listItems({ search: req.query.search, klass: req.query.class, limit: req.query.limit })); } catch (err) { next(err); }
 });
 
 catalogRouter.post('/items', async (req, res, next) => {
@@ -81,7 +89,10 @@ catalogRouter.post('/items/:sysId/variables/reorder', async (req, res, next) => 
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : null;
     if (!ids?.length) return res.status(400).json({ message: 'ids (an ordered array of variable sys_ids) is required' });
     const result = await catalog.reorderVariables(ids);
-    res.status(result.ok ? 200 : 422).json(result);
+    /* 200 either way: the body carries the per-row verdict, and the editor
+       names each row that did not store. A 422 made the client throw a bare
+       "Request failed (422)" before it ever read that detail. */
+    res.json(result);
   } catch (err) { next(err); }
 });
 
@@ -208,8 +219,8 @@ catalogRouter.delete('/policies/:sysId', async (req, res) => {
 });
 
 // ---- Variable sets ----
-catalogRouter.get('/variable-sets', async (_req, res, next) => {
-  try { res.json(await catalog.listVariableSets()); } catch (err) { next(err); }
+catalogRouter.get('/variable-sets', async (req, res, next) => {
+  try { res.json(await catalog.listVariableSets({ search: req.query.search })); } catch (err) { next(err); }
 });
 
 catalogRouter.post('/variable-sets', async (req, res, next) => {
@@ -225,7 +236,15 @@ catalogRouter.post('/variable-sets/:sysId/variables', async (req, res, next) => 
 });
 
 catalogRouter.post('/variable-sets/:sysId/attach', async (req, res, next) => {
-  try { res.status(201).json(await catalog.attachSetToItem(req.params.sysId, req.body.cat_item)); } catch (err) { next(err); }
+  try {
+    if (!req.body?.cat_item) return res.status(400).json({ message: 'cat_item is required' });
+    res.status(201).json(await catalog.attachSetToItem(req.params.sysId, req.body.cat_item));
+  } catch (err) { next(err); }
+});
+
+/** Detach = delete the io_set_item LINK. The set and its variables are untouched. */
+catalogRouter.delete('/set-links/:linkSysId', async (req, res, next) => {
+  try { res.json(await catalog.detachSet(req.params.linkSysId)); } catch (err) { next(err); }
 });
 
 // ---- Order guides ----

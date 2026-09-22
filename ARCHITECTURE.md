@@ -871,6 +871,55 @@ and compares against the **approved** value, not merely "is it non-empty", and
 says in the payload that it is a targeted re-check rather than a fresh health
 run.
 
+#### Bulk Fix — the single flow, once per selected finding (22 Sep 2026)
+
+Findings can be ticked on either findings table and fixed together. What that
+means is deliberately narrow: **a batch is the sequence above, run once per
+finding, in order.** There is no batch-level approval, no batch mutation and
+no bulk path to the executor.
+
+```
+tick findings ─► POST /bulk/proposals ─► review each (edit · include · exclude)
+                 one buildProposal per finding,          │
+                 one proposal row each                   ▼
+              ◄─ per-finding status ◄─ POST /bulk/approve ─► applyProposal() × N, sequential
+                                        body: [{proposalId, fingerprint}]   (prepare → bind → run)
+```
+
+Three things make it the same flow and not a weaker copy:
+
+| property | how it holds |
+|---|---|
+| **one binder** | `applyProposal()` in `routes/health.js` is the prepare → `approvePlan` → execute sequence; the single route and the bulk route both call it, so the approval inventory still counts one `approvePlan` in the file. The bulk route cannot bind anything the single route could not |
+| **one fingerprint per version seen** | the approve body carries each proposal's own fingerprint. An item the reviewer edited is saved first and its new hash sent; one they unticked is not sent; one whose hash moved is refused for that item alone while the rest go on |
+| **every card, every read-back** | each proposal runs in its own session with its own provenance re-read, and the executor raises its per-record card as it always does. The drawer renders the card tagged with its item and answers it through `POST /api/agent/approve` — a batch of twenty findings is twenty runs of the gate, not one |
+
+**Sequential, on purpose.** A card is one question to one person; two batches of
+cards racing for the same reviewer would be a worse interface, not a faster
+one. The executor also cancels at a step boundary, so a stopped batch leaves
+each item either fully reported or `not_started` — never half-sent.
+
+**The status is per finding, from a closed vocabulary** (`health/bulk.js`):
+`proposed · needs_value · no_field_fix · stale · proposal_failed · excluded ·
+already_decided · applied · partial · failed · cancelled · not_started`. Each
+is decided from the proposal's own facts — its `llm.status`, its executable
+change count, the store's read-back verdict — never from the rule id, so a rule
+added to `FIX_FIELD` participates without anyone touching the bulk layer. The
+summary counts those statuses and is `ok` only when every included item
+applied in full; *"3 applied · 1 skipped · 1 failed of 5"* is what a mixed
+batch says, because *"done"* would hide the two that were not.
+
+Two smaller decisions. `fixable` on a list row is `hasFieldFix(rule_id)` over
+the same registry the proposal reads, so the checkbox and the proposal it leads
+to cannot disagree; a finding with no automated fix cannot be ticked and, if
+sent anyway, is skipped as `no_field_fix`. And a finding that already has an
+applied proposal in this run is **flagged and left out by default**, not
+hidden: re-proposing it reads the live value and would offer to write it again,
+which is the reviewer's call to make with the prior attempt in front of them.
+
+Bulk work still stops when its page goes away, exactly as a single fix does
+(B5): the routes tie their work to the request and touch no registry.
+
 ### 16.4 The charts
 
 Severity is a **status scale**, not a set of categories, so it wears reserved
@@ -1010,7 +1059,7 @@ four areas would produce four numbers that look comparable and are not:
 | scope | score | why that kind |
 |---|---|---|
 | **CMDB** | share of CIs no CMDB rule objected to | records are the unit of CMDB health. Unchanged from before, so the trend line stays continuous |
-| **ITSM** | share of open-or-recent incidents, changes and problems with no ITSM finding | the same kind, over the slice that was actually read — and the slice is named in the basis |
+| **ITSM** | ITSM Quality (`health/itsm-quality.js`, 21 Sep 2026): a record in the open-or-recent incident, change and problem slice starts at 100 and loses the weight of each distinct charge (Critical 40 · High 15 · Moderate 5 · Low 1), floored at 0; that mean is blended 60/40 with the share of estate-level catalogue rules that pass | the same two-part shape as CMDB Quality, so the two numbers mean the same kind of thing. It replaced a record pass rate in which one Moderate finding failed a whole record — an estate scored 0.7 where the capped deduction read 89. Systemic findings are posture beside the score; a base-Systemic rule never charges. `scopes.itsm.scoring.key` names the model, and the trend refuses to join points made under another. Decisions: `health/rules/itsm/SCORING-OPTIONS.md` §5 |
 | **ITOM** | share of *applicable* capability checks that pass | ITOM's important findings are about absence and name no records; "no MID server" cannot be a percentage of rows |
 | **Platform** | none, and it says why | 42,000 role assignments and fourteen integrations share no denominator; any percentage would be decided by table size |
 
@@ -1062,7 +1111,7 @@ Measured on techsnitchpvtltddemo2, where the page showed *"No score"* and
 | what the page showed | what was actually wrong |
 |---|---|
 | **No score** | `cmdb_ci` read 3,412 of 3,412 rows, but `business_criticality` is not a column there. Coverage conflated *every row* with *every field*, so a missing optional field withheld the score. `rows_complete` now answers the row question on its own; `isComplete(coverage, table, fields)` is the one place every gate asks it, naming only the fields that rule reads |
-| **1000 things found** | 12,194 were detected and 1,000 stored, and every count on the page — including "989 Moderate, 0 Low" — was taken from the stored slice. Counts and scores now come from the full detected set; the cap is 25,000 as a memory guard, and truncation is stated when it happens |
+| **1000 things found** | 12,194 were detected and 1,000 stored, and every count on the page — including "989 Moderate, 0 Low" — was taken from the stored slice. Counts and scores now come from the full detected set — and so do the stored rows: the 25,000 "memory guard" that replaced the 1,000 cap made the same defect the other way round (ITSM counted 56 Low from 29,177 detected while the stored top-25,000-by-priority held none, so selecting Low listed nothing). A run stores every finding it counts; database growth is bounded by keeping findings for the newest runs only |
 | (unseen) `sys_script` 998 of 14,059 | ServiceNow removes ACL-hidden rows from *inside* a page, so a page of 500 came back with 498 and the pager took the short page for the end. The first fix — paging on by offset — exposed a second defect live: `sys_script` and `sysauto` are written *while they are read* (14,059 → 14,250 in two days), an insert ahead of the offset shifts every later row, and both tables failed outright on a repeated sys_id. Extraction now uses the DBA module's own keyset walk (`sys_id > watermark`, only an empty page ends it), which cannot shift. Measured after: `sys_script` 14,362 rows, `sysauto` 1,652 |
 
 The fix to the second created a new obligation: storing every finding writes
@@ -1794,6 +1843,36 @@ lineage — the same run then took 690 s (from 1,184 s) with identical findings.
 
 Findings carry the catalogue fields in `health_findings.scoring_json`
 (migration 27, replay-safe). Runs recorded before it keep their pass-rate score.
+
+### 16.8b Overall Health — the Full System Scan's one number (21 Sep 2026)
+
+`health/overall-health.js`, model `overall-health/1`. It sits ABOVE the module
+scoring layer and consumes nothing below a module's summary:
+
+```
+overall = Σ w_i × S_i ÷ Σ w_i     over the scored areas (CMDB, ITOM, ITSM); equal weights; Platform weight 0
+```
+
+**What it is.** The mean share of attainable health across the scored areas,
+each area counting once in its own unit (a CI, a capability check, a work
+record). **What it is not:** a finding count, a record percentage, a rule pass
+rate, a risk score or a coverage score. A missing area is dropped and the rest
+renormalised — never 0, never 100.
+
+| beside the number | what it is | where it comes from |
+|---|---|---|
+| **status** | Not scanned → Score unavailable → **Assessment incomplete** → the band (Healthy / Mostly healthy / Needs attention / Needs work). *Assessment incomplete* — any scored area gated or withheld — REPLACES the health word, as it does on an area card | `scoreOverall` |
+| **attribution** | when assessed, the worst area in a worse band than the estate, named ("ITSM needs work"); informational, never a rule | `scoreOverall` |
+| **coverage** | assessed ÷ (assessed + instance-actionable gaps), per area under `instance-actionable/1` — CMDB measured dimension weight, ITOM checks lost to a read failure, ITSM rules the instance could have let run (`blocker.kind`), Platform tables read in full — rolled up with the same weights; never in the score | `moduleContract` |
+| **systemic** | blockers (CMDB gate) · posture (CMDB posture kinds + all ITSM Systemic) · escalated_inside_score (already in the CMDB number); nothing is counted twice | `moduleContract` |
+| **module_breakdown** | every area's score, declared and effective weight, band, assessment state, coverage, model key | `scoreOverall` |
+| **scoring** | `{ model, weights, coverage_definition, status_rules, participants, module_keys, key }`; the key hashes all of them, so a weight change, a module model change or a fourth participant starts a new series and `store.trend()` breaks the line | `scoreOverall` |
+
+Every area's summary now carries the module contract (`assessment`,
+`coverage_share`, `coverage_detail`, `systemic`, `scoring`); a full scan's
+manifest carries `scopes.all` with the overall, a module-limited scan's does
+not, and `composedView()` computes the same thing over each area's latest
+result. The page reads `scopes.all`; it never averages in React.
 
 ### 16.9 Module scans and the incremental change check
 

@@ -33,7 +33,8 @@ applicationsRouter.get('/', async (req, res, next) => {
       search: req.query.search || '',
       kind: req.query.kind || '',
       managedOnly: req.query.managed === 'true',
-      limit: Number(req.query.limit) || 1000,
+      // Unset = the whole instance (paged, capped at 10000); the result says whether it is complete.
+      limit: Number(req.query.limit) || undefined,
     }));
   } catch (err) { next(err); }
 });

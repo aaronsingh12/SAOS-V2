@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { table } from './client.js';
 import { splitQuery } from './conditions.js';
-import { buildWorkspace, installWorkspace, extractDiagnostics, WORKSPACE_DIRS } from './fluent.js';
+import { buildWorkspace, installWorkspace, extractDiagnostics, WORKSPACE_DIRS, assertTiersAgree } from './fluent.js';
 
 /**
  * Catalog UI policies — `catalog_ui_policy` + `catalog_ui_policy_action`.
@@ -64,8 +64,11 @@ const VARIABLE_TABLE = 'item_option_new';
 /** The prefix that turns a variable sys_id into a condition operand. */
 export const IO_PREFIX = 'IO:';
 
-/** Variable types whose value must come from `question_choice`. */
-export const CHOICE_TYPE_CODES = new Set([3, 5, 18, 22]);
+/** Variable types whose value must come from `question_choice`. Lookup types
+ *  (18, 22) are NOT among them: their values come from `lookup_table`, so a
+ *  condition on one cannot be checked against a choice list — doing so refused
+ *  every valued condition on a lookup variable. */
+export const CHOICE_TYPE_CODES = new Set([3, 5]);
 /** Variable types whose only sane values are true/false. */
 export const BOOLEAN_TYPE_CODES = new Set([1, 7]);
 
@@ -505,6 +508,18 @@ export function policySlug(catItemId, shortDescription) {
 const policySourcePath = (slug) => path.join(CATALOG_DIR, `${slug}.now.ts`);
 
 /**
+ * The stored condition in the form the SDK's `catalogCondition` takes: bare
+ * variable sys_ids. The SDK puts `IO:` back itself — after the start and after
+ * EVERY `^` that is not `^OR`/`^NQ`/`^EQ` (sdk-build-plugins service-catalog
+ * utils) — so handing it `a=x^IO:b=y` compiled to `^IO:IO:b=y`, and any policy
+ * with two AND-ed conditions could never match. Single and OR conditions were
+ * unaffected, which is why this went unseen.
+ */
+export function sdkCatalogCondition(stored) {
+  return String(stored || '').replace(/(^|\^OR|\^NQ|\^)IO:/g, '$1');
+}
+
+/**
  * Render the Fluent source for one policy.
  *
  * Deterministic template code, not a generation step. The whole §14/§20 failure
@@ -538,7 +553,7 @@ CatalogUiPolicy({
     shortDescription: ${esc(policy.short_description)},
     catalogItem: ${esc(policy.catalog_item)},
     appliesTo: 'item',
-    catalogCondition: ${esc(policy.catalog_conditions)},
+    catalogCondition: ${esc(sdkCatalogCondition(policy.catalog_conditions))},
     active: ${policy.active !== false},
     onLoad: ${policy.on_load !== false},
     reverseIfFalse: ${policy.reverse_if_false !== false},
@@ -552,6 +567,31 @@ ${actions}
     ],
 })
 `;
+}
+
+/**
+ * Managed policy sources whose catalog item is NOT on the bound instance.
+ *
+ * The workspace travels between instances, and an install ships every source
+ * in it — so a policy authored against another instance's item is installed
+ * here too, pointing at nothing. Deleting those sources is not safe (removing a
+ * source is how the SDK deletes the policy where it DID install), so they are
+ * named on every policy install instead of being carried silently.
+ */
+export async function foreignPolicySources() {
+  let files = [];
+  try { files = (await fsp.readdir(CATALOG_DIR)).filter((f) => f.endsWith('.now.ts')); } catch { return []; }
+  const byItem = new Map();
+  for (const f of files) {
+    const src = await fsp.readFile(path.join(CATALOG_DIR, f), 'utf8').catch(() => '');
+    const item = /catalogItem:\s*"([0-9a-f]{32})"/i.exec(src)?.[1];
+    if (item) byItem.set(item, [...(byItem.get(item) || []), f]);
+  }
+  if (!byItem.size) return [];
+  const present = new Set((await table.query('sc_cat_item', {
+    query: `sys_idIN${[...byItem.keys()].join(',')}`, fields: 'sys_id', limit: byItem.size, display: 'false',
+  }).catch(() => null))?.map((r) => r.sys_id) ?? [...byItem.keys()]);
+  return [...byItem].filter(([item]) => !present.has(item)).flatMap(([item, fs2]) => fs2.map((file) => ({ file, catalogItem: item })));
 }
 
 /** Sources NowHelpAssist manages, so an out-of-box policy is never offered for edit. */
@@ -568,19 +608,36 @@ export async function managedSlugs() {
  * workspace is left exactly as it was found.
  */
 async function buildAndInstall(sourcePath, { emit = () => {}, previous = null }) {
+  // Put the workspace back before reporting a refusal: a source that cannot
+  // compile, or was never installed, would otherwise ride along with the NEXT
+  // install of anything else in the app.
+  const restore = async () => {
+    if (previous === null) await fsp.rm(sourcePath, { force: true });
+    else await fsp.writeFile(sourcePath, previous, 'utf8');
+  };
   emit({ type: 'policy_building' });
   const built = await buildWorkspace();
   if (!built.ok) {
-    // Put the workspace back before reporting: a source that cannot compile
-    // would otherwise break the NEXT install of anything else in the app.
-    if (previous === null) await fsp.rm(sourcePath, { force: true });
-    else await fsp.writeFile(sourcePath, previous, 'utf8');
+    await restore();
     return { ok: false, stage: 'build', message: 'The policy source did not compile; nothing was installed.', diagnostics: extractDiagnostics(built) };
+  }
+  /* The same gate every other install path passes: the SDK must target the
+     instance the Table API reads back from, and the workspace's application
+     must exist there. Without it a policy install could land elsewhere, or
+     quietly try to create the application. */
+  emit({ type: 'policy_tier_check' });
+  try {
+    await assertTiersAgree();
+  } catch (err) {
+    await restore();
+    return { ok: false, stage: 'binding', bindingRefused: true, message: err.message };
   }
   emit({ type: 'policy_installing' });
   const installed = await installWorkspace();
   if (!installed.ok) {
-    return { ok: false, stage: 'install', message: 'The build succeeded but the install failed.', diagnostics: extractDiagnostics(installed) };
+    // 'deploy', not 'install': a red install can still have landed, so the
+    // ledger records it as unverified rather than as never attempted.
+    return { ok: false, stage: 'deploy', message: 'The build succeeded but the install failed.', diagnostics: extractDiagnostics(installed) };
   }
   return { ok: true };
 }
@@ -593,11 +650,13 @@ async function buildAndInstall(sourcePath, { emit = () => {}, previous = null })
  * a later run might render differently.
  */
 async function findInstalled(catItemId, shortDescription) {
+  // Matched here, not in the encoded query: a `^` in the name would split the
+  // query into a different condition and the read-back would find nothing.
   const rows = await table.query(POLICY_TABLE, {
-    query: `catalog_item=${catItemId}^short_description=${shortDescription}`,
-    fields: 'sys_id', limit: 5, display: 'false',
+    query: `catalog_item=${catItemId}`,
+    fields: 'sys_id,short_description', limit: 500, display: 'false',
   });
-  return rows.map((r) => r.sys_id);
+  return rows.filter((r) => String(r.short_description ?? '') === String(shortDescription)).map((r) => r.sys_id);
 }
 
 /**
@@ -640,15 +699,23 @@ export async function createPolicy(input, emit = () => {}) {
   const slug = policySlug(draft.catalog_item, draft.short_description);
   const file = policySourcePath(slug);
   const previous = fs.existsSync(file) ? await fsp.readFile(file, 'utf8') : null;
+  const foreign = await foreignPolicySources().catch(() => []);
+  if (foreign.length) {
+    check.warnings.push(
+      `${foreign.length} other policy source(s) in the workspace belong to catalog items that are not on this instance `
+      + `(${foreign.map((f) => f.file).join(', ')}). They are installed with every policy and create policies pointing at `
+      + 'nothing here. Remove them from the workspace if they belong to another instance.',
+    );
+  }
   await fsp.mkdir(CATALOG_DIR, { recursive: true });
   await fsp.writeFile(file, renderPolicySource(draft, slug), 'utf8');
 
   const shipped = await buildAndInstall(file, { emit, previous });
-  if (!shipped.ok) return { ...shipped, slug };
+  if (!shipped.ok) return { ...shipped, slug, warnings: check.warnings };
 
   const ids = await findInstalled(draft.catalog_item, draft.short_description);
   if (!ids.length) {
-    return { ok: false, stage: 'readback', slug, message: `The install reported success but no policy named "${draft.short_description}" is on ${draft.catalog_item}.` };
+    return { ok: false, stage: 'deploy', slug, message: `The install reported success but no policy named "${draft.short_description}" is on ${draft.catalog_item}.` };
   }
   const policy = await getPolicy(ids[0]);
 
@@ -663,8 +730,12 @@ export async function createPolicy(input, emit = () => {}) {
     query: `ui_policy=${policy.sys_id}^catalog_variableISEMPTY`, fields: 'sys_id', limit: 20, display: 'false',
   });
 
+  const attached = policy.actions.length === draft.actions.length && !inert.length && !detached.length;
+  const ok = attached && !policy.problems.length;
   return {
-    ok: policy.actions.length === draft.actions.length && !inert.length && !detached.length && !policy.problems.length,
+    ok,
+    // Past the install: something may have landed, so this is never "not attempted".
+    ...(ok ? {} : { stage: 'deploy' }),
     sys_id: policy.sys_id,
     slug,
     policy,
@@ -675,9 +746,11 @@ export async function createPolicy(input, emit = () => {}) {
       actionsWithoutVariable: inert.length + detached.length,
     },
     link: await recordLink(POLICY_TABLE, policy.sys_id),
-    message: policy.actions.length === draft.actions.length && !inert.length && !detached.length
-      ? `Installed UI policy "${draft.short_description}" (${policy.sys_id}) with ${policy.actions.length} action(s); every action reads back attached to the policy and to its variable.`
-      : `Installed, but the read-back found ${draft.actions.length - policy.actions.length + inert.length + detached.length} action(s) that are not properly attached — the policy will not behave as described.`,
+    message: !attached
+      ? `Installed, but the read-back found ${draft.actions.length - policy.actions.length + inert.length + detached.length} action(s) that are not properly attached — the policy will not behave as described.`
+      : policy.problems.length
+        ? `Installed UI policy "${draft.short_description}" (${policy.sys_id}), but the read-back found problems: ${policy.problems.join('; ')}`
+        : `Installed UI policy "${draft.short_description}" (${policy.sys_id}) with ${policy.actions.length} action(s); every action reads back attached to the policy and to its variable.`,
   };
 }
 

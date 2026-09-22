@@ -35,7 +35,7 @@ export function describeHeaderStatus(snap) {
       label: 'server down',
       tone: 'bad',
       dotClass: 'bad',
-      title: `The NowHelpAssist server is not responding: ${snap.error}`,
+      title: `The SAOS server is not responding: ${snap.error}`,
       detail: 'This is the local API on :4000, not your instance.',
     };
   }

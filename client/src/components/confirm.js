@@ -72,6 +72,8 @@ export const CONSEQUENCE = {
   policy:
     'This removes the Fluent source and reinstalls the application, so it takes about a minute.',
   item: 'Its variables, choices and UI policies go with it.',
+  setLink:
+    'Only the link to this item is removed. The variable set and its variables stay, and other items using the set keep it.',
   choice:
     'A UI policy condition comparing against this value can never be true again.',
   guide: 'The guide is removed; the catalog items it referenced are not.',
@@ -95,5 +97,7 @@ export const CONSEQUENCE = {
     + 'ledger, tool events and sys_id provenance survive, so what was changed on your ServiceNow instances '
     + 'remains on the Audit page. Instance settings and the knowledge ledger are untouched too.',
   connection:
-    'The stored username and password are cleared. Nothing on the ServiceNow instance is changed.',
+    'The stored username and password are cleared, and everything this app stored for the instance is permanently '
+    + 'deleted: health scores, metrics, findings and settings, chat history and the audit trail. The next login builds '
+    + 'new scores. Nothing on the ServiceNow instance itself is changed.',
 };

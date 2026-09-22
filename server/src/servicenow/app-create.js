@@ -116,8 +116,9 @@ export function validateScopeName(scopeName, prefix) {
   return { ok: errors.length === 0, errors, scopeName: name, prefix, budget };
 }
 
+/* Digits on a PDI, letters on a company instance — both are vendor codes. */
 function companyKeyFromScope(scopeName) {
-  return /^x_(\d+)_/.exec(String(scopeName || ''))?.[1] || null;
+  return /^x_([a-z0-9]+)_/.exec(String(scopeName || ''))?.[1] || null;
 }
 
 async function trustedCompanyKeys() {

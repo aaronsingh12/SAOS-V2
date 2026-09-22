@@ -11,8 +11,16 @@ import { SkeletonRows, LoadingRegion, EmptyState } from '../components/states.js
 import ScopeBadge from '../components/ScopeBadge.jsx';
 import { useScopeLabels } from '../hooks/useScopeLabels.js';
 
-const CHOICE_TYPES = [3, 5, 18, 22];
+/* Choices live in question_choice for 3/5 only. 18/22 are LOOKUP types: their
+   values come from a table, so they take a lookup table instead of choices. */
+const CHOICE_TYPES = [3, 5];
+const LOOKUP_TYPES = [18, 22];
 const REF_TYPES = [8, 21];
+
+/* The catalog a new category or item lands in when none is picked: the
+   instance's own Service Catalog if it has one, never just the first by title. */
+const defaultCatalogId = (catalogs) =>
+  (catalogs.find((c) => c.title === 'Service Catalog') || catalogs[0])?.sys_id || '';
 
 /* ── Shared variable builder ── */
 /* Columns for the three catalog lists. `text` sorts and filters; `cell`
@@ -41,7 +49,7 @@ const GUIDE_COLUMNS = [
 ];
 
 function VariableForm({ types, onSubmit, busy }) {
-  const [v, setV] = useState({ name: '', question_text: '', type: '6', mandatory: false, order: 100, refTable: null, choicesText: '' });
+  const [v, setV] = useState({ name: '', question_text: '', type: '6', mandatory: false, order: 100, refTable: null, choicesText: '', lookupTable: null, lookupValue: 'sys_id', lookupLabel: '' });
   const typeCode = Number(v.type);
   const submit = () => {
     const payload = {
@@ -51,7 +59,12 @@ function VariableForm({ types, onSubmit, busy }) {
       mandatory: v.mandatory,
       order: v.order,
       reference_table: v.refTable?.id || '',
-      choices: v.choicesText
+      ...(LOOKUP_TYPES.includes(typeCode) ? {
+        lookup_table: v.lookupTable?.id || '',
+        lookup_value: v.lookupValue || 'sys_id',
+        lookup_label: v.lookupLabel || '',
+      } : {}),
+      choices: !CHOICE_TYPES.includes(typeCode) ? [] : v.choicesText
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean)
@@ -60,7 +73,7 @@ function VariableForm({ types, onSubmit, busy }) {
           return { text, value: value || undefined };
         }),
     };
-    onSubmit(payload, () => setV({ name: '', question_text: '', type: '6', mandatory: false, order: 100, refTable: null, choicesText: '' }));
+    onSubmit(payload, () => setV({ name: '', question_text: '', type: '6', mandatory: false, order: 100, refTable: null, choicesText: '', lookupTable: null, lookupValue: 'sys_id', lookupLabel: '' }));
   };
   return (
     <div>
@@ -90,6 +103,22 @@ function VariableForm({ types, onSubmit, busy }) {
           <TableField value={v.refTable} onChange={(t) => setV({ ...v, refTable: t })} />
         </div>
       )}
+      {LOOKUP_TYPES.includes(typeCode) && (
+        <div className="grid2">
+          <div className="field">
+            <label className="label">Lookup from table</label>
+            <TableField value={v.lookupTable} onChange={(t) => setV({ ...v, lookupTable: t })} />
+          </div>
+          <div className="field">
+            <label className="label">Value field</label>
+            <input className="input mono" placeholder="sys_id" value={v.lookupValue} onChange={(e) => setV({ ...v, lookupValue: e.target.value })} />
+          </div>
+          <div className="field">
+            <label className="label">Label field(s)</label>
+            <input className="input mono" placeholder="name" value={v.lookupLabel} onChange={(e) => setV({ ...v, lookupLabel: e.target.value })} />
+          </div>
+        </div>
+      )}
       {CHOICE_TYPES.includes(typeCode) && (
         <div className="field">
           <label className="label">Choices — one per line, "Display text | value"</label>
@@ -100,7 +129,8 @@ function VariableForm({ types, onSubmit, busy }) {
         <label className="check">
           <input type="checkbox" checked={v.mandatory} onChange={(e) => setV({ ...v, mandatory: e.target.checked })} /> Mandatory
         </label>
-        <button className="btn primary sm" onClick={submit} aria-busy={busy} disabled={busy || !v.name}>Add variable</button>
+        <button className="btn primary sm" onClick={submit} aria-busy={busy}
+          disabled={busy || !v.name || (REF_TYPES.includes(typeCode) && !v.refTable) || (LOOKUP_TYPES.includes(typeCode) && !v.lookupTable)}>Add variable</button>
       </div>
     </div>
   );
@@ -133,28 +163,27 @@ function VariableTable({ variables, typeLabel, onDelete }) {
 function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened, onCategoriesChanged }) {
   const [items, setItems] = useState([]);
   const itemScopes = useScopeLabels(items.map((r) => val(r, 'sys_scope')));
-  /* Still read by load(), so the request shape is unchanged; nothing writes it
-     now that the search field is gone. */
-  const [search] = useState('');
+  /* Searched on the SERVER: the list holds the newest 200, and an instance
+     with more items than that could not reach the rest from a client filter. */
+  const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null); // deep view
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: '', short_description: '', description: '', category: '', catalog: '' });
-  const [sets, setSets] = useState([]);
-  const [attachSet, setAttachSet] = useState('');
+  const [attachSet, setAttachSet] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [itemTab, setItemTab] = useState('variables');
   const [loading, setLoading] = useState(true);
   const [newCategory, setNewCategory] = useState(null);
 
-  const load = () => {
+  const load = (term = search) => {
     setLoading(true);
-    return api.get(`/catalog/items?search=${encodeURIComponent(search)}`)
+    return api.get(`/catalog/items?search=${encodeURIComponent(term)}`)
       .then(setItems)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); api.get('/catalog/variable-sets').then(setSets).catch(() => {}); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   // The producers tab hands an item over rather than duplicating the editor —
   // a record producer IS a catalog item, so managing its variables should not
@@ -177,6 +206,12 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
       const payload = { name: draft.name, short_description: draft.short_description, description: draft.description };
       if (draft.category) payload.category = draft.category;
       if (draft.catalog) payload.sc_catalogs = draft.catalog;
+      else if (draft.category) {
+        /* A category belongs to one catalog; publish the item there too, so the
+           item and its category never disagree. */
+        const cat = categories.find((c) => val(c, 'sys_id') === draft.category);
+        if (val(cat, 'sc_catalog')) payload.sc_catalogs = val(cat, 'sc_catalog');
+      }
       const r = await api.post('/catalog/items', payload);
       setCreating(false);
       setDraft({ name: '', short_description: '', description: '', category: '', catalog: '' });
@@ -221,13 +256,28 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
   };
 
   const doAttach = async () => {
-    if (!attachSet) return;
+    if (!attachSet?.id) return;
     setBusy(true); setError('');
     try {
-      await api.post(`/catalog/variable-sets/${attachSet}/attach`, { cat_item: val(selected.item, 'sys_id') });
-      setAttachSet('');
+      await api.post(`/catalog/variable-sets/${attachSet.id}/attach`, { cat_item: val(selected.item, 'sys_id') });
+      setAttachSet(null);
       openItem(val(selected.item, 'sys_id'));
     } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  /** Detach removes the io_set_item link only; the set itself is untouched. */
+  const detachSet = async (s) => {
+    const ok = await confirmDestructive({
+      action: 'Detach variable set', subject: disp(s, 'title'), sysId: s._linkSysId, detail: CONSEQUENCE.setLink,
+    });
+    if (!ok) return;
+    setBusy(true); setError('');
+    try {
+      await api.del(`/catalog/set-links/${s._linkSysId}`);
+      toast.success(`Detached "${disp(s, 'title')}" from this item.`);
+      reload();
+    } catch (e) { setError(e.message); toast.error(e.message); }
     finally { setBusy(false); }
   };
 
@@ -252,6 +302,14 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
       <DataTable
         title="Catalog items"
         action={<button className="btn primary sm" onClick={() => setCreating(true)}>New item</button>}
+        toolbar={(
+          <form className="row" style={{ gap: 6 }} onSubmit={(e) => { e.preventDefault(); load(search); }}>
+            <input className="input" style={{ maxWidth: 260 }} placeholder="Search the instance by name…"
+              value={search} onChange={(e) => setSearch(e.target.value)} />
+            <button className="btn sm" type="submit" disabled={loading}>Search</button>
+            {search && <button className="btn ghost sm" type="button" onClick={() => { setSearch(''); load(''); }}>Clear</button>}
+          </form>
+        )}
         rows={items}
         loading={loading}
         error={error}
@@ -275,16 +333,23 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
               <div className="spread">
                 <label className="label">Category</label>
                 <button className="rail-btn" type="button"
-                  onClick={() => setNewCategory(newCategory ? null : { title: '', sc_catalog: catalogs[0]?.sys_id || '' })}>
+                  onClick={() => setNewCategory(newCategory ? null : { title: '', sc_catalog: draft.catalog || defaultCatalogId(catalogs) })}>
                   {newCategory ? 'cancel' : '+ new category'}
                 </button>
               </div>
               <select className="select" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })}>
                 <option value="">—</option>
-                {categories.map((c) => <option key={val(c, 'sys_id')} value={val(c, 'sys_id')}>{disp(c, 'title')}</option>)}
+                {categories.filter((c) => !draft.catalog || val(c, 'sc_catalog') === draft.catalog)
+                  .map((c) => <option key={val(c, 'sys_id')} value={val(c, 'sys_id')}>{disp(c, 'title')}</option>)}
               </select></div>
             <div className="field"><label className="label">Catalog</label>
-              <select className="select" value={draft.catalog} onChange={(e) => setDraft({ ...draft, catalog: e.target.value })}>
+              <select className="select" value={draft.catalog} onChange={(e) => {
+                const next = e.target.value;
+                const cat = categories.find((c) => val(c, 'sys_id') === draft.category);
+                /* A category from another catalog would contradict the new choice. */
+                const keep = !next || !cat || val(cat, 'sc_catalog') === next;
+                setDraft({ ...draft, catalog: next, category: keep ? draft.category : '' });
+              }}>
                 <option value="">—</option>
                 {catalogs.map((c) => <option key={c.sys_id} value={c.sys_id}>{c.title}</option>)}
               </select></div>
@@ -361,18 +426,20 @@ function ItemsTab({ meta, categories, catalogs, typeLabel, openItemId, onOpened,
               <>
                 {selected.variableSets.length === 0 && <div className="empty">No sets attached.</div>}
                 {selected.variableSets.map((s) => (
-                  <div key={val(s, 'sys_id')} style={{ marginBottom: 10 }}>
-                    <div className="row"><span className="badge blue">{disp(s, 'title')}</span>
-                      <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{disp(s, 'internal_name')}</span></div>
+                  <div key={s._linkSysId || val(s, 'sys_id')} style={{ marginBottom: 10 }}>
+                    <div className="spread">
+                      <div className="row"><span className={`badge ${s._unreadable ? 'amber' : 'blue'}`}>{disp(s, 'title')}</span>
+                        <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{disp(s, 'internal_name')}</span></div>
+                      {s._linkSysId && <button className="btn ghost sm" onClick={() => detachSet(s)} disabled={busy}>Detach</button>}
+                    </div>
                     <VariableTable variables={s._variables} typeLabel={typeLabel} />
                   </div>
                 ))}
                 <div className="row">
-                  <select className="select" style={{ maxWidth: 280 }} value={attachSet} onChange={(e) => setAttachSet(e.target.value)}>
-                    <option value="">Attach existing set…</option>
-                    {sets.map((s) => <option key={val(s, 'sys_id')} value={val(s, 'sys_id')}>{disp(s, 'title')}</option>)}
-                  </select>
-                  <button className="btn sm" onClick={doAttach} aria-busy={busy} disabled={!attachSet || busy}>Attach</button>
+                  <div style={{ minWidth: 280 }}>
+                    <ReferenceField table="item_option_new_set" value={attachSet} onChange={setAttachSet} placeholder="Find a variable set to attach…" />
+                  </div>
+                  <button className="btn sm" onClick={doAttach} aria-busy={busy} disabled={!attachSet?.id || busy}>Attach</button>
                 </div>
               </>
             )}
@@ -694,6 +761,94 @@ function ProducersTab({ onOpenItem }) {
   );
 }
 
+/* ── Catalogs tab ── */
+const CATALOG_COLUMNS = [
+  { key: 'title', header: 'Title', width: 300, text: (c) => c.title },
+  { key: 'description', header: 'Description', width: 340, text: (c) => c.description || '' },
+  { key: 'active', header: 'Active', width: 110, text: (c) => (c.active === 'true' ? 'active' : 'off'),
+    cell: (c) => <span className={`badge ${c.active === 'true' ? 'green' : ''}`}>{c.active === 'true' ? 'active' : 'off'}</span> },
+];
+
+/* ServiceNow builds a view name from a catalog title, so its own rule refuses anything else. */
+const CATALOG_TITLE = /^[A-Za-z0-9_ ]+$/;
+
+function CatalogsTab({ catalogs, onChanged }) {
+  const [creating, setCreating] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [draft, setDraft] = useState({ title: '', description: '', active: true });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const create = async () => {
+    setBusy(true); setError('');
+    try {
+      const r = await api.post('/catalog/catalogs', draft);
+      toast.success(`Created catalog "${disp(r, 'title') || draft.title}".`);
+      setDraft({ title: '', description: '', active: true });
+      setCreating(false);
+      onChanged?.();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const toggleActive = async () => {
+    setBusy(true); setError('');
+    try {
+      const next = selected.active !== 'true';
+      await api.patch(`/catalog/catalogs/${selected.sys_id}`, { active: String(next) });
+      setSelected({ ...selected, active: String(next) });
+      onChanged?.();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="page-full">
+      <DataTable
+        title="Catalogs"
+        action={<button className="btn primary sm" onClick={() => { setSelected(null); setError(''); setCreating(true); }}>New catalog</button>}
+        rows={catalogs}
+        error={error}
+        getRowId={(c) => c.sys_id}
+        activeId={selected?.sys_id ?? null}
+        onRowClick={(c) => { setCreating(false); setSelected(c); }}
+        filterPlaceholder="Filter catalogs…"
+        empty="No catalogs are readable on this instance."
+        columns={CATALOG_COLUMNS}
+      />
+      <RecordDrawer open={creating} onClose={() => setCreating(false)} title="New catalog" width={520}>
+        <div className="field"><label className="label">Title</label>
+          <input className="input" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+          {draft.title.trim() && !CATALOG_TITLE.test(draft.title.trim()) && (
+            <p className="error-text">Only letters, digits, spaces and underscores — ServiceNow builds a view name from a catalog title.</p>
+          )}</div>
+        <div className="field"><label className="label">Description</label>
+          <input className="input" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></div>
+        <label className="check" style={{ marginBottom: 10 }}>
+          <input type="checkbox" checked={draft.active} onChange={(e) => setDraft({ ...draft, active: e.target.checked })} /> Active
+        </label>
+        {error && <p className="error-text">{error}</p>}
+        <button className="btn primary" onClick={create} aria-busy={busy} disabled={busy || !CATALOG_TITLE.test(draft.title.trim())}>Create catalog</button>
+      </RecordDrawer>
+      <RecordDrawer open={Boolean(selected)} onClose={() => setSelected(null)} title={selected?.title || 'Catalog'} width={520}>
+        {selected && (
+          <>
+            <p style={{ color: 'var(--muted)' }}>{selected.description || 'No description.'}</p>
+            <div className="row" style={{ marginBottom: 10 }}>
+              <span className={`badge ${selected.active === 'true' ? 'green' : ''}`}>{selected.active === 'true' ? 'active' : 'inactive'}</span>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>sys_id {selected.sys_id}</span>
+            </div>
+            {error && <p className="error-text">{error}</p>}
+            <button className="btn sm" onClick={toggleActive} aria-busy={busy} disabled={busy}>
+              {selected.active === 'true' ? 'Deactivate' : 'Activate'}
+            </button>
+          </>
+        )}
+      </RecordDrawer>
+    </div>
+  );
+}
+
 /* ── Page ── */
 export default function Catalog() {
   const [tab, setTab] = useState('items');
@@ -703,10 +858,11 @@ export default function Catalog() {
   const [openItemId, setOpenItemId] = useState(null);
 
   const loadCategories = () => api.get('/catalog/categories').then(setCategories).catch(() => {});
+  const loadCatalogs = () => api.get('/catalog/catalogs').then(setCatalogs).catch(() => {});
   useEffect(() => {
     api.get('/catalog/meta').then(setMeta).catch(() => {});
     loadCategories();
-    api.get('/catalog/catalogs').then(setCatalogs).catch(() => {});
+    loadCatalogs();
   }, []);
 
   const openItem = (sysId) => { setOpenItemId(sysId); setTab('items'); };
@@ -716,6 +872,7 @@ export default function Catalog() {
   return (
     <div className="stack">
       <div className="tabs">
+        <button className={`tab ${tab === 'catalogs' ? 'active' : ''}`} onClick={() => setTab('catalogs')}>Catalogs</button>
         <button className={`tab ${tab === 'items' ? 'active' : ''}`} onClick={() => setTab('items')}>Items & variables</button>
         <button className={`tab ${tab === 'sets' ? 'active' : ''}`} onClick={() => setTab('sets')}>Variable sets</button>
         <button className={`tab ${tab === 'guides' ? 'active' : ''}`} onClick={() => setTab('guides')}>Order guides</button>
@@ -726,7 +883,7 @@ export default function Catalog() {
           is said rather than served quietly. */}
       {meta.variableTypeSource === 'fallback' && (
         <div className="note warn">
-          Variable types could not be read from this instance ({meta.variableTypeFallbackReason}), so NowHelpAssist is
+          Variable types could not be read from this instance ({meta.variableTypeFallbackReason}), so SAOS is
           showing its built-in list. Those codes drift between releases — spot-check any type you create.
         </div>
       )}
@@ -734,6 +891,7 @@ export default function Catalog() {
         <ItemsTab meta={meta} categories={categories} catalogs={catalogs} typeLabel={typeLabel}
           openItemId={openItemId} onOpened={() => setOpenItemId(null)} onCategoriesChanged={loadCategories} />
       )}
+      {tab === 'catalogs' && <CatalogsTab catalogs={catalogs} onChanged={loadCatalogs} />}
       {tab === 'sets' && <SetsTab meta={meta} typeLabel={typeLabel} />}
       {tab === 'guides' && <GuidesTab />}
       {tab === 'producers' && <ProducersTab onOpenItem={openItem} />}

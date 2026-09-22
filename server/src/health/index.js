@@ -8,6 +8,7 @@ import { cmdbInScope } from './cmdb-gate.js';
 import { explainFindings } from './explain.js';
 import { digest } from './digest.js';
 import { summariseScopes, normaliseModules, moduleTables, MODULE_KEYS } from './scopes.js';
+import { ITSM_TABLES } from './itsm-quality.js';
 import { DQ_INACTIVE_INSTALL_STATUS, intentMisTags } from './cmdb-signals.js';
 import { trackMisroutes } from './cmdb-csdm.js';
 import { CONSUMPTION_TRACKS } from './cmdb-consumption.js';
@@ -47,16 +48,26 @@ registerItsmCatalogue((ruleId) => (hasITSMRule(ruleId) ? adaptRule(ruleId) : nul
 export const MANIFEST_VERSION = '5.0.0';
 
 /*
- * How many findings a run STORES.
+ * A run STORES every finding it detected. There is no storage cap.
  *
- * This was 1,000, and the counts on the page were taken from what was stored.
- * Measured on techsnitchpvtltddemo2: 12,194 findings were detected, 1,000 were
- * stored, and the page said "1000 things found", "989 Moderate" and "0 Low" —
- * every one of those numbers was wrong. The cap is now a memory guard for
- * pathological instances rather than an everyday limit, and the counts come
- * from the full detected set whatever it is.
+ * There were two. At 1,000, the counts were taken from the stored slice, and
+ * on techsnitchpvtltddemo2 — 12,194 detected — the page said "1000 things
+ * found", "989 Moderate" and "0 Low". The counts were then moved to the full
+ * detected set and the cap raised to 25,000 as a "memory guard", which made
+ * the same defect the other way round: on an instance with 29,177 findings
+ * the ITSM view counted 56 Low and 280 Moderate from the full set, while the
+ * stored slice — the 25,000 highest priority_score rows ACROSS ALL MODULES,
+ * cut at 3.0 — held 0 Low and 33 Moderate. Selecting Low listed nothing;
+ * the score, the chips and the donut all described rows that did not exist.
+ *
+ * A finding that is counted but not stored cannot be listed, searched,
+ * opened, exported, muted or acknowledged, so the rows and the counts must be
+ * one population. The slice guarded no memory — `all` is built in full before
+ * it, with its evidence — and database growth is bounded by
+ * KEEP_FINDINGS_FOR_RUNS pruning in store.js, not by the size of one run.
+ * `findings_detected`, `findings_stored` and `findings_truncated` stay in the
+ * manifest so that runs recorded under a cap still say so.
  */
-export const MAX_FINDINGS = 25_000;
 const DEFAULT_STALE_DAYS = 90;
 
 export { digest };
@@ -288,9 +299,10 @@ export async function runHealthCheck({
   phases.analyse_ms = Date.now() - t0;
   /* Per rule pack, with the tables each read — see `stage` in rules.analyze. */
   phases.analyse_stages = rules.timings?.stages ?? [];
-  /* `let`: CMDB-137 can add one finding after scoring, and the slice is retaken then. */
+  /* `let`: CMDB-137 can add one finding after scoring, and the count is retaken then.
+     `findings` IS `all`: what is stored is what is counted. */
   let detected = all.length;
-  let findings = all.slice(0, MAX_FINDINGS);
+  let findings = all;
 
   let llm = { status: 'disabled', tokens_used: 0 };
   if (explain && findings.length) {
@@ -347,11 +359,22 @@ export async function runHealthCheck({
     if (trend) {
       cmdbQuality.tracks.trend = (cmdbQuality.tracks.trend || 0) + 1;
       detected = all.length;
-      findings = all.slice(0, MAX_FINDINGS);
+      findings = all;
     }
   }
   const score = cmdbQuality ? cmdbQuality.composite.score : (readModules.includes('cmdb') ? qualityScore(estate, coverage, all) : null);
-  const allScopes = summariseScopes(coverage, all, { cmdbQuality });
+  /* ITSM Quality scores the extracted record slice (itsm-quality.js): the
+     population is the rows this scan read, and the catalogue's rule rows carry
+     the estate-level verdicts. Neither is stored per run — the manifest keeps
+     the resulting summary, and a run recorded before the model recomputes
+     from its legacy findings alone. */
+  const itsmScoring = itsm ? {
+    rules: itsm.normalized.rules,
+    population: Object.fromEntries(ITSM_TABLES.map((t) => [t, new Set((estate[t] || []).map((r) => r.sys_id))])),
+  } : null;
+  /* The All scope carries the overall (overall-health.js) only when this scan
+     read every scorable area; `comparability` names the CMDB model for its key. */
+  const allScopes = summariseScopes(coverage, all, { cmdbQuality, itsm: itsmScoring, comparability: rules.comparability, overall: { modules: readModules } });
   /* Only the modules this scan checked carry a summary; the others keep theirs in their own runs. */
   const scopes = Object.fromEntries(Object.entries(allScopes).filter(([k]) => k === 'all' || readModules.includes(k)));
 

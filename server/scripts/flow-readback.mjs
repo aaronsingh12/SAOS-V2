@@ -20,6 +20,7 @@
 import zlib from 'node:zlib';
 import { table } from '../src/servicenow/client.js';
 import { flows } from '../src/servicenow/flows.js';
+import { readAppIdentity } from '../src/servicenow/fluent.js';
 
 const raw = (r, f) => {
   const v = r?.[f];
@@ -217,7 +218,10 @@ export async function readBack(sysId) {
 }
 
 /** Resolve by name inside our scope; refuses ambiguity rather than choosing. */
-export async function readBackByName(name, scope = 'x_2002152_nwforge') {
+/* The scope defaults to the one the workspace claims — it is minted per instance,
+   so a constant here named a retired PDI and reported every flow missing. */
+export async function readBackByName(name, scope = null) {
+  if (!scope) scope = (await readAppIdentity()).scope;
   const rows = await table.query('sys_hub_flow', {
     query: `name=${name}^sys_scope.scope=${scope}`, fields: 'sys_id,name,type', limit: 5, display: 'false',
   });

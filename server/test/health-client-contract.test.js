@@ -96,8 +96,10 @@ test('the page reads manifest fields by the names the server writes', () => {
   // is not made on both shows as a blank panel, not as an error.
   for (const field of [
     'cmdb_quality_score', 'score_withheld_because', 'score_definition',
-    'visible_cis', 'visible_relationships', 'findings_stored',
+    'visible_cis', 'findings_stored',
     'skipped_checks', 'severity_counts', 'coverage',
+    /* ITSM Quality (21 Sep 2026): the parts the ITSM tab explains its score with. */
+    'itsm_quality', 'record_part', 'rule_part',
   ]) {
     assert.match(PAGE, new RegExp(field), `the page never reads manifest.${field}`);
   }
@@ -376,12 +378,20 @@ test('every number on the page comes from the server summary for the scope, over
     'the headline count is the STORED number again');
 });
 
-test('the All view shows each scope on its own and never averages them', () => {
-  // CMDB and ITSM are record scores, ITOM a check score, Platform none. An
-  // average of those would be a number that means nothing.
-  assert.match(PAGE, /function ScopeTiles/);
+test('the All view shows each scope on its own and never computes the overall itself', () => {
+  /*
+   * The overall (overall-health.js, 21 Sep 2026) is the SERVER's: the mean
+   * share of attainable health over the scored areas, with its assessment
+   * state, coverage and Systemic posture decided once. The page draws each
+   * area on its own and reads scopes.all — it never averages scope scores in
+   * React, so a second arithmetic can never drift from the stored one.
+   */
+  assert.match(PAGE, /function AreaBars/, 'the All view no longer draws one column per area');
   assert.equal(/reduce\([^)]*score[^)]*\)\s*\/\s*/.test(PAGE), false, 'something averages the scope scores');
-  assert.match(PAGE, /rather than averaged/);
+  assert.match(PAGE, /const overallStatus = isAll \? \(summary\?\.status \?\? null\) : null/, 'the page does not take the overall state from the server');
+  assert.match(PAGE, /summary\?\.module_breakdown/, 'the page does not read the server\'s module breakdown');
+  assert.match(PAGE, /summary\?\.coverage_share/, 'the page does not read the server\'s coverage');
+  assert.match(PAGE, /summary\?\.systemic/, 'the page does not read the server\'s Systemic summary');
 });
 
 test('the All view shows whether to believe the CMDB score, not only the number', () => {
@@ -390,10 +400,11 @@ test('the All view shows whether to believe the CMDB score, not only the number'
    * CMDB with the trust gate open on seven blockers: the tile took its word from
    * the number alone, and the trust variants were wired to the CMDB tab only.
    */
-  assert.match(PAGE, /const untrusted = Boolean\(sum\?\.gate && !sum\.gate\.trustworthy/, 'a scope tile words its score without the gate');
-  assert.match(PAGE, /untrusted \? sum\.gate\.label/, 'an untrusted tile does not say why');
-  const allBranch = PAGE.slice(PAGE.indexOf("{scope === 'all' ? ("), PAGE.indexOf('<div className="card hs-scorecard">'));
-  assert.match(allBranch, /<TrustVariants composite=\{cmdbQ\.composite\} \/>/, 'the All view does not show the trust variants');
+  assert.match(PAGE, /function areaStatus\(sum\)/, 'there is no single status vocabulary for an area');
+  assert.match(PAGE, /if \(sum\.gate && !sum\.gate\.trustworthy\)/, 'areaStatus words a score without the gate');
+  assert.match(PAGE, /const st = areaStatus\(sum\)/, 'the area chart does not take its word from areaStatus');
+  assert.match(PAGE, /\(isAll \|\| scope === 'cmdb'\) && cmdbQ\?\.composite\?\.variants\?\.length > 0/, 'the All view does not show the trust variants');
+  assert.match(PAGE, /<TrustVariants composite=\{cmdbQ\.composite\} \/>/);
 });
 
 test('switching scope clears the area AND rule filters so a scope is never filtered to another scope’s', () => {
@@ -422,7 +433,7 @@ test('the header no longer claims Health Assist cannot write', () => {
 });
 
 test('every scope tone and switch class the page uses has a style', () => {
-  for (const cls of ['hs-scope', 'hs-scope-btn', 'hs-tiles', 'hs-tile', 'hs-checks', 'hs-check']) {
+  for (const cls of ['hs-scope', 'hs-scope-btn', 'hd-areas', 'hd-area', 'hd-area-fill', 'hs-checks', 'hs-check']) {
     /* String.raw, because in an ordinary template literal `\b` is a BACKSPACE
        character — the first version of this test could never match anything. */
     assert.match(CSS, new RegExp(String.raw`\.${cls}\b`), `styles.css has no .${cls}`);
@@ -431,8 +442,8 @@ test('every scope tone and switch class the page uses has a style', () => {
 
 test('the scorecard shows what is pulling the score down, and each driver filters to its findings', () => {
   assert.match(PAGE, /summary\?\.score_drivers/, 'the page does not render the score drivers');
-  assert.match(PAGE, /applyFilter\(\{ rule: filter\.rule === d\.rule_id \? '' : d\.rule_id \}\)/,
-    'a driver does not click through to its findings');
+  assert.match(PAGE, /const pickRule = \(rule\) => applyFilter\(\{ rule: filter\.rule === rule \? '' : rule \}\)/, 'there is no rule-pick helper');
+  assert.match(PAGE, /onClick=\{\(\) => pickRule\(d\.rule_id\)\}/, 'a driver does not click through to its findings');
   assert.match(PAGE, /if \(next\.rule\) qs\.set\('rule', next\.rule\)/, 'the rule filter never reaches the server');
   assert.match(PAGE, /do not add up/, 'the page does not say driver shares overlap');
 });

@@ -1,11 +1,11 @@
-// nowhelpassist-dba: x_2225382_nwforge_emp_asset_rq
+// nowhelpassist-dba: x_tepv_nwforge_emp_asset_rq
 // Generated from a validated table spec by dba-authoring.js. Deterministic —
 // no model output reaches this file. Edit the spec, not this source.
 import { Table, DateColumn, ReferenceColumn, StringColumn } from '@servicenow/sdk/core'
 
-export const x_2225382_nwforge_emp_asset_rq = Table({
-    $id: Now.ID["x_2225382_nwforge_emp_asset_rq_table"],
-    name: "x_2225382_nwforge_emp_asset_rq",
+export const x_tepv_nwforge_emp_asset_rq = Table({
+    $id: Now.ID["x_tepv_nwforge_emp_asset_rq_table"],
+    name: "x_tepv_nwforge_emp_asset_rq",
     label: "Employee Asset Request",
     extends: "task",
     extensible: false,

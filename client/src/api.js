@@ -155,7 +155,7 @@ export async function sse(path, body, onEvent, method = 'POST', { signal } = {})
     // caller's own error path already knows how to show this, and the terminal
     // needs the line more than the console does.
     const message =
-      'The connection to the NowHelpAssist server ended before this finished, so it is unknown how far it got. '
+      'The connection to the SAOS server ended before this finished, so it is unknown how far it got. '
       + 'Check the server terminal — if it is not running, start it with `npm run dev` in server/. '
       + 'Anything already written to the instance is on the Audit page.';
     logToServer('error', `${method} ${path} (stream) ended without a done/error frame — connection lost mid-stream`);

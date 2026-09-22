@@ -172,7 +172,7 @@ export default function PolicyBuilder({ catItemId, meta }) {
               <b>{p.short_description}</b>
               {!p.active && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}
               {p.managed
-                ? <span className="badge green" style={{ marginLeft: 6 }}>NowHelpAssist</span>
+                ? <span className="badge green" style={{ marginLeft: 6 }}>SAOS</span>
                 : <span className="badge" style={{ marginLeft: 6 }} title="No Fluent source — read-only here">platform</span>}
             </div>
             {p.managed && <button className="btn danger sm" onClick={() => removePolicy(p)}>Delete</button>}
@@ -264,13 +264,15 @@ export default function PolicyBuilder({ catItemId, meta }) {
           {run.events.map((ev, i) => (
             <div key={i} className="system-note mono">
               {ev.type === 'policy_building' ? 'compiling offline — nothing has reached the instance yet'
-                : ev.type === 'policy_installing' ? 'installing the application…'
-                  : JSON.stringify(ev)}
+                : ev.type === 'policy_tier_check' ? 'confirming the SDK targets the connected instance…'
+                  : ev.type === 'policy_installing' ? 'installing the application…'
+                    : JSON.stringify(ev)}
             </div>
           ))}
           {run.result && (
             <>
               <p className={run.result.ok ? 'ok-text' : 'error-text'}>{run.result.message}</p>
+              {run.result.warnings?.map((w, i) => <div key={`w${i}`} className="note warn">{w}</div>)}
               {run.result.diagnostics && <pre className="policy-diagnostics">{run.result.diagnostics}</pre>}
               {run.result.detail?.errors?.map((e, i) => <div key={i} className="note" style={{ borderLeftColor: 'var(--red)' }}>{e}</div>)}
               {run.result.readback && (

@@ -112,7 +112,7 @@ test('FINDINGS: every catalogue finding reaches the scan with its rule identity,
   assert.equal(new Set(r.findings.map((f) => f.fingerprint)).size, r.findings.length);
 });
 
-test('SCORE: catalogue findings join the ITSM scope but the ITSM score is still the eleven hard-coded rules\' number', async () => {
+test('SCORE: catalogue findings join the ITSM scope and move the ITSM Quality score by exactly the records they charge — never by a Systemic finding, never by a record outside the slice', async () => {
   const recent = { sys_updated_on: '2026-09-15 08:00:00' };
   /*
    * The shared fake cannot evaluate `^OR` (its group split is anchored, so an
@@ -133,10 +133,25 @@ test('SCORE: catalogue findings join the ITSM scope but the ITSM score is still 
   const legacy = r.findings.filter((f) => f.domain !== 'ITSM');
   assert.ok(catalogue.length > 0 && legacy.some((f) => /^ITSM-(INC|CHG|PRB)-/.test(f.rule_id)), 'both rule sets must be producing findings for this to prove anything');
   assert.notEqual(itsm.score, null);
-  const legacyOnly = summariseScopes(r.manifest.coverage, legacy).itsm;
-  assert.equal(itsm.score, legacyOnly.score, 'a catalogue finding moved the ITSM score');
-  assert.equal(itsm.score_basis, legacyOnly.score_basis);
-  assert.deepEqual(itsm.score_drivers, legacyOnly.score_drivers);
+  assert.ok(itsm.score >= 0 && itsm.score <= 100, `ITSM score ${itsm.score} is not 0–100`);
+  const q = itsm.itsm_quality;
+  assert.equal(q.model, 'itsm-quality/1');
+  assert.equal(itsm.scoring.key, q.scoring.key);
+  /* The stored summary was scored against the extracted slice; recomputing the
+     same findings WITHOUT the slice charges the legacy rules only (they read
+     the slice by construction) and says the catalogue findings were not placed
+     — so it can only score the same or higher, never lower. */
+  const unbounded = summariseScopes(r.manifest.coverage, r.findings.filter((f) => scopeOf(f) === 'itsm'), { itsm: { rules: r.manifest.itsm.rules, population: null } }).itsm;
+  assert.ok(unbounded.score >= itsm.score, 'charging fewer findings lowered the score');
+  assert.equal(
+    unbounded.itsm_quality.records.unbounded_catalogue,
+    catalogue.filter((f) => ['record', 'historical', 'relationship'].includes(f.kind) && f.base_severity !== 'SYSTEMIC' && (f.target_ids || []).length && ['incident', 'change_request', 'problem'].includes(f.table)).length,
+  );
+  /* A base-Systemic catalogue finding is posture: counted beside the score, charging nothing. */
+  assert.equal(q.systemic.findings, catalogue.filter((f) => f.base_severity === 'SYSTEMIC').length);
+  assert.ok(q.records.clean >= 0 && q.records.charged <= q.population.records, 'a record outside the slice was charged');
+  /* The drivers are the same records-per-rule breakdown, now over both rule sets. */
+  assert.ok(itsm.score_drivers.some((d) => /^ITSM-(INC|CHG|PRB)-/.test(d.rule_id)), 'no legacy driver');
   /* …while the scope's findings and severities do count them. */
   assert.equal(itsm.findings, r.findings.filter((f) => scopeOf(f) === 'itsm').length);
   assert.ok(itsm.domains.some((d) => d.domain === 'ITSM' && d.findings === catalogue.length), 'no ITSM catalogue domain row');

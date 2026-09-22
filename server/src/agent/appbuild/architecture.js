@@ -243,7 +243,24 @@ export function contractFromRequest(request) {
   const fieldLabels = [...textValue.matchAll(/^\s*\d+\.\s+(.+?)\s*$/gm)]
     .map((m) => m[1].trim())
     .filter(Boolean);
-  const flowRequested = /\bflow\s+designer\b|\bapproval\s+flow\b|\bcreate\s+(?:a\s+)?flow\b|\bflow\b/i.test(textValue);
+  /*
+   * A flow is REQUESTED only when the request asks for one to be built: a build
+   * verb governing "flow" ("create a Flow Designer flow", "build an approval
+   * flow"), or a flow listed under an "Also create:" block. The bare word used
+   * to be enough, so any goal that merely mentioned a flow — "Test the
+   * ServiceNow flow …", "why did my flow fail" — was refused for having no
+   * create_flow_live step.
+   */
+  const BUILD_FLOW = /\b(?:create|build|make|author|generate|design|set\s+up|add)\b:?\s+(?:(?:a|an|the|new)\s+)?(?:[\w-]+\s+){0,3}?flows?\b/i;
+  const lines = textValue.split(/\r?\n/);
+  const listedForCreation = lines.some((line, i) => {
+    if (!/^\s*(?:also\s+)?(?:create|build|add)\s*:\s*$/i.test(line)) return false;
+    for (let j = i + 1; j < lines.length && lines[j].trim(); j += 1) {
+      if (/\bflows?\b/i.test(lines[j])) return true;
+    }
+    return false;
+  });
+  const flowRequested = BUILD_FLOW.test(textValue) || listedForCreation;
   const uiPolicyRequested = /\bui\s+policy\b/i.test(textValue);
   const forbidHardcodedSysIds = /\bdo\s+not\s+hard[- ]?code\s+sys_?ids?\b|\bnever\s+hard[- ]?code\s+sys_?ids?\b/i.test(textValue);
   return {

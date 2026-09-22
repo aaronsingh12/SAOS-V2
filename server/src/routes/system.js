@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { getSettings, saveSettings, publicSettings, clearConnection } from '../config/store.js';
 import { testConnection, resetAuthCache } from '../servicenow/client.js';
 import { getSchema, referenceLookup, tableLookup, clearSchemaCaches, getTableHierarchy } from '../servicenow/schema.js';
-import { capability, cachedCapability } from '../servicenow/fluent.js';
+import { capability, cachedCapability, forgetInstanceState } from '../servicenow/fluent.js';
+import { boundInstance } from '../servicenow/instance-binding.js';
+import { purgeInstanceData } from '../memory/instance-purge.js';
 import { bindingStatus, invalidateBindingStatus } from '../servicenow/binding-status.js';
 import { autoSetupSdk, sdkSetupStatus } from '../servicenow/sdk-setup.js';
 
@@ -88,12 +90,24 @@ systemRouter.post('/settings', (req, res) => {
   res.json(publicSettings());
 });
 
-/** Unbind the instance: clears the stored credentials and every cached derivative. */
+/**
+ * Log out: clear the stored credentials and every cached derivative, then
+ * delete everything this app filed under the instance, so the next login
+ * starts from nothing and builds new scores and metrics.
+ *
+ * The identity is captured BEFORE the credentials are cleared, and the purge
+ * runs AFTER: clearing fires the instance-change listeners, which stop any
+ * health check still reading this instance before its rows are deleted.
+ */
 systemRouter.post('/connection/disconnect', (_req, res) => {
+  const { url, key } = boundInstance();
   clearConnection();
   resetAuthCache();
   clearSchemaCaches();
-  res.json({ ok: true, ...publicSettings() });
+  invalidateBindingStatus();
+  const purged = key ? purgeInstanceData({ url, key }) : { ok: true, total: 0, deleted: {} };
+  const sdkStateCleared = key ? forgetInstanceState(key) : false;
+  res.json({ ok: true, purged: { ...purged, sdkStateCleared }, ...publicSettings() });
 });
 
 systemRouter.post('/connection/test', async (_req, res, next) => {

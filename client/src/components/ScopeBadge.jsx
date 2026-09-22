@@ -20,7 +20,7 @@ export default function ScopeBadge({ scope, name = null, managed = false, title 
   return (
     <span
       className={`badge mono${managed ? ' green' : global ? '' : ' blue'}`}
-      title={title || [name, isId ? `sys_id ${scope}` : null, managed ? 'managed by NowHelpAssist' : null].filter(Boolean).join(' · ') || shown}
+      title={title || [name, isId ? `sys_id ${scope}` : null, managed ? 'managed by SAOS' : null].filter(Boolean).join(' · ') || shown}
     >
       {shown}
     </span>

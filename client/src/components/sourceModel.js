@@ -80,6 +80,25 @@ export function hostOf(url) {
   try { return new URL(url).host; } catch { return null; }
 }
 
+/**
+ * ONE DOCUMENT, ONE CARD. A retrieval returns CHUNKS, and six chunks of one
+ * page are one source. The key is the strongest stable identity available:
+ * the store's document id, else the canonical URL (scheme, host and path —
+ * a fragment or a tracking query does not make a second document), else the
+ * title. Exported so the provenance tests can hold the panel to it.
+ */
+export function docKey(h) {
+  const doc = asText(h?.document);
+  if (doc) return `doc:${doc}`;
+  const url = asText(h?.url);
+  if (url) {
+    try { const u = new URL(url); return `url:${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, '')}`; }
+    catch { return `url:${url.trim().toLowerCase()}`; }
+  }
+  const title = asText(h?.title) ?? asText(h?.topic);
+  return title ? `title:${title.trim().toLowerCase()}` : null;
+}
+
 /* The read-only tools whose whole job is to consult a store. Naming them is a
    judgement about this app's own tool list, so it lives here in the open rather
    than being inferred from a substring match that would catch `create_record`
@@ -160,12 +179,17 @@ export function toSources(ev) {
 
      A ServiceNow answer the model produced from its own training is not a
      retrieval and has no row, so it correctly never appears. */
+  /* CURRENT TURN ONLY. `ev` is one task's evidence and its tool events are
+     the rows that name this task (or, for rows written before tasks were
+     named, fall inside its window) — so every hit here was retrieved for
+     THIS response. Nothing is read from earlier turns, and a corpus document
+     that was not retrieved has no row to be read from. */
   const seenDoc = new Set();
   for (const e of toolEvents) {
     const hits = Array.isArray(e.retrieval?.hits) ? e.retrieval.hits : [];
     for (const h of hits) {
       const url = asText(h.url);
-      const key = url ?? `${asText(h.document) ?? ''}-${asText(h.title) ?? ''}`;
+      const key = docKey(h);
       if (!key || seenDoc.has(key)) continue;
       seenDoc.add(key);
       docs.push({

@@ -34,6 +34,9 @@ import {
  */
 
 const FLOWS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fluent-workspace/src/fluent/flows');
+/* Generated sources that installed and ran, kept as the linter corpus after the
+   deployable workspace was pruned (ad719eb). Fixtures, never installed. */
+const CORPUS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/flow-corpus');
 
 /** The incident schema as the instance really describes it, trimmed. */
 const INCIDENT = {
@@ -444,16 +447,17 @@ Flow({ $id: Now.ID['f'], name: 'F' },
  * ------------------------------------------------------------------ */
 
 test('the reference flow — a real generated source — passes every check', () => {
-  const src = fs.readFileSync(path.join(FLOWS_DIR, 'escalate-network-p1-incident.now.ts'), 'utf8');
+  const src = fs.readFileSync(path.join(CORPUS_DIR, 'escalate-network-p1-incident.now.ts'), 'utf8');
   const res = lintFlowDesign(src, { kind: 'flow', schemas: { incident: INCIDENT } });
   assert.deepEqual(res.errors, [], 'a flow that installed, activated and ran must not be rejected by its own linter');
 });
 
 test('every managed source parses without the linter throwing or hanging', () => {
-  const files = fs.readdirSync(FLOWS_DIR).filter((f) => f.endsWith('.now.ts'));
+  const files = [FLOWS_DIR, CORPUS_DIR].flatMap((dir) => fs.readdirSync(dir)
+    .filter((f) => f.endsWith('.now.ts')).map((f) => path.join(dir, f)));
   assert.ok(files.length >= 10, 'the managed sources are the corpus this linter has to survive');
   for (const f of files) {
-    const src = fs.readFileSync(path.join(FLOWS_DIR, f), 'utf8');
+    const src = fs.readFileSync(f, 'utf8');
     const res = lintFlowDesign(src, { kind: 'flow' });
     assert.equal(typeof res.ok, 'boolean', f);
     assert.ok(Array.isArray(res.errors), f);

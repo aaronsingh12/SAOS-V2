@@ -31,7 +31,7 @@ export default class ErrorBoundary extends Component {
   componentDidCatch(error, info) {
     // Keep the console entry: this is a genuine defect, and swallowing it
     // would make the boundary itself a place where evidence goes missing.
-    console.error('NowHelpAssist render error', error, info);
+    console.error('SAOS render error', error, info);
     // The console patch would catch this too, but the component stack is the
     // useful half and only exists here.
     logToServer('error', `render error on ${this.props.where || 'a page'}: ${error?.message || error}`,
@@ -42,7 +42,7 @@ export default class ErrorBoundary extends Component {
   report() {
     const { error, info } = this.state;
     return [
-      `NowHelpAssist — render error on ${this.props.where || 'a page'}`,
+      `SAOS — render error on ${this.props.where || 'a page'}`,
       `${error?.name || 'Error'}: ${error?.message || String(error)}`,
       '',
       (error?.stack || '(no stack)'),
@@ -70,7 +70,7 @@ export default class ErrorBoundary extends Component {
       <div className="card error-card" role="alert">
         <div className="card-title" style={{ color: 'var(--red)' }}>This page failed to render</div>
         <p style={{ margin: '0 0 12px', color: 'var(--muted)', fontSize: 13 }}>
-          The rest of NowHelpAssist is still running — pick another page in the sidebar. Nothing was written to
+          The rest of SAOS is still running — pick another page in the sidebar. Nothing was written to
           your instance by this failure.
         </p>
         <div className="row" style={{ marginBottom: 10 }}>

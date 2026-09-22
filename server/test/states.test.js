@@ -84,7 +84,7 @@ test('an unbound instance is stated as itself, with the fix one click away', () 
 test('an unreachable server blames the server, not the PDI', () => {
   const s = describeInstanceState({ loading: false, connected: false, serverDown: true, error: 'fetch failed' });
   assert.equal(s.kind, 'server');
-  assert.match(s.title, /NowHelpAssist server is not responding/);
+  assert.match(s.title, /(SAOS|NowHelpAssist) server is not responding/);
   assert.match(s.hint, /fetch failed/);
   assert.match(s.hint, /server\//);
   // Two different failures. Conflating them sends someone to re-enter working

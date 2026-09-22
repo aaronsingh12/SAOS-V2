@@ -70,6 +70,16 @@ export async function resolveFieldValue(tableName, field, value) {
     return { ok: true, field, type: def.type, resolved: value, raw: value, resolution: 'literal' };
   }
 
+  /*
+   * An empty value CLEARS a reference. It used to fall through to the lookup
+   * below, where an empty search matches every row, and the first one by
+   * display value was written instead — a "rollback" of `duplicate_of` stored
+   * "*ANNIE-IBM", an unrelated computer, on a live CI.
+   */
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return { ok: true, field, type: def.type, references: def.reference, resolved: '', display: '', resolution: 'cleared' };
+  }
+
   // Already a sys_id: confirm it exists rather than trusting its shape.
   if (/^[0-9a-f]{32}$/i.test(String(value || ''))) {
     const rows = await metaQuery(def.reference, { query: `sys_id=${value}`, fields: 'sys_id', max: 1 });

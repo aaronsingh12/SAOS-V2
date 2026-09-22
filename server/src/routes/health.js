@@ -1,8 +1,9 @@
+import crypto from 'node:crypto';
 import { Router } from 'express';
 import { log } from '../logging.js';
 import { startBuildRun, finishBuildRun, auditedEmit, csvCell } from '../memory/audit.js';
-import { boundInstance } from '../servicenow/instance-binding.js';
-import { runHealthCheck, MAX_FINDINGS, buildParameterRegistry, describeParameters, validateRuntimeParameters, itsmMeasureHistoryFrom } from '../health/index.js';
+import { boundInstance, onInstanceChanged } from '../servicenow/instance-binding.js';
+import { runHealthCheck, buildParameterRegistry, describeParameters, validateRuntimeParameters, itsmMeasureHistoryFrom } from '../health/index.js';
 import { TABLES, DEFAULT_TABLES } from '../health/tables.js';
 import { AGENTS, RULE_VERSION, SEVERITIES } from '../health/rules.js';
 import { remediationFor } from '../health/remediation.js';
@@ -24,6 +25,10 @@ import {
 } from '../health/finding-state.js';
 import { scopeVocabulary, normaliseScope, normaliseModules, MODULE_KEYS, scopeOf as scopeOfFinding, scopeOfRule } from '../health/scopes.js';
 import { INCREMENTAL_DEFAULTS } from '../health/incremental.js';
+import {
+  BULK_MAX, BULK_ITEM_STATUS, hasFieldFix, normaliseSelection, normaliseApprovals,
+  classifyProposal, classifyOutcome, proposalNote, summarise as summariseBulk,
+} from '../health/bulk.js';
 
 export const healthRouter = Router();
 
@@ -34,10 +39,12 @@ export const healthRouter = Router();
  * DETECTION READS; ONLY AN APPROVED PLAN WRITES. Running a check, reading
  * findings, setting a finding's lifecycle state and generating a remediation
  * proposal never touch the instance — the last two write only to our own
- * database. The single route that can lead to a change is
- * `POST /proposals/:id/approve`, and it binds the approval here and hands the
- * change list to the ordinary plan executor, which owns the gate, the read-back
- * and the audit trail. This router never imports the instance client.
+ * database. Two routes can lead to a change — `POST /proposals/:id/approve`
+ * and `POST /bulk/approve` — and both run the ONE sequence in `applyProposal`,
+ * which binds the approval here and hands each change list to the ordinary
+ * plan executor, which owns the gate, the read-back and the audit trail. Bulk
+ * is that sequence once per proposal, in order; it is not a second path. This
+ * router never imports the instance client.
  */
 
 /**
@@ -81,6 +88,9 @@ healthRouter.get('/meta', (req, res) => {
        false` became untrue the day remediation shipped. */
     detectionWrites: false,
     remediation: { requiresApproval: true, executesThrough: 'plan executor' },
+    /* Bulk Fix is the same flow, one finding after another; the cap is the
+       server's, so the page cannot offer a batch the server would refuse. */
+    bulk: { max: BULK_MAX, sequential: true },
     note: 'Checks only read. A fix is proposed first, and nothing on the instance changes until you approve that exact list.',
   });
 });
@@ -123,6 +133,15 @@ healthRouter.get('/meta', (req, res) => {
    (see `/proposals/:id/approve` below), and the architecture suite pins that.
    ══════════════════════════════════════════════════════════════════════════ */
 const liveHealthRuns = new Map();   // runId -> { runId, instanceKey, startedAt, controller, watchers, last }
+
+/* A check against an instance that is no longer bound — logged out of, or
+   switched away from — is stopped. It would otherwise keep reading with
+   credentials that were just cleared and file results nobody can see. */
+onInstanceChanged(({ previous }) => {
+  for (const entry of liveHealthRuns.values()) {
+    if (entry.instanceKey === previous) entry.controller.abort();
+  }
+});
 
 /** Close out rows this process is not executing. Cheap; runs on every question. */
 function reconcileRuns() {
@@ -438,18 +457,31 @@ healthRouter.get('/modules', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * `fixable` on a list row: does this rule have an automated single-field fix?
+ *
+ * Decided by the SAME registry the proposal builder reads (FIX_FIELD), so the
+ * page's Bulk Fix checkbox and the proposal it leads to can never disagree —
+ * a rule added there tomorrow becomes selectable without touching the page.
+ */
+const withFixable = (page) => ({
+  ...page,
+  findings: (page.findings || []).map((f) => ({ ...f, fixable: hasFieldFix(f.rule_id) })),
+});
+
 /** GET /api/health/modules/findings — findings from each module's own current result. */
 healthRouter.get('/modules/findings', (req, res, next) => {
   try {
-    res.json(listModuleFindings({
+    res.json(withFixable(listModuleFindings({
       scope: normaliseScope(req.query.scope),
       domain: req.query.domain || undefined,
       severity: req.query.severity || undefined,
       priority: req.query.priority || undefined,
       rule: req.query.rule || undefined,
+      q: req.query.q || undefined,
       limit: Math.min(Number(req.query.limit) || 100, 500),
       offset: Number(req.query.offset) || 0,
-    }));
+    })));
   } catch (err) { next(err); }
 });
 
@@ -505,15 +537,16 @@ healthRouter.get('/runs/:runId', (req, res, next) => {
 healthRouter.get('/runs/:runId/findings', (req, res, next) => {
   try {
     if (!getRun(req.params.runId)) return res.status(404).json({ message: 'No such run on the bound instance.' });
-    res.json(listFindings(req.params.runId, {
+    res.json(withFixable(listFindings(req.params.runId, {
       scope: normaliseScope(req.query.scope),
       domain: req.query.domain || undefined,
       severity: req.query.severity || undefined,
       priority: req.query.priority || undefined,
       rule: req.query.rule || undefined,
+      q: req.query.q || undefined,
       limit: Math.min(Number(req.query.limit) || 100, 500),
       offset: Number(req.query.offset) || 0,
-    }));
+    })));
   } catch (err) { next(err); }
 });
 
@@ -698,6 +731,82 @@ healthRouter.post('/proposals/:id/reject', (req, res, next) => {
   } catch (err) { return next(err); }
 });
 
+/** Statuses from which a proposal may still be approved. Anything else is settled. */
+const APPROVABLE = ['draft', 'edited'];
+
+/**
+ * Apply ONE approved proposal: prepare → bind → execute → validate.
+ *
+ * THE ONE SEQUENCE, SHARED BY BOTH ROUTES THAT LEAD TO A WRITE. The single
+ * Approve and apply and the Bulk Fix call this and nothing else, so a batch is
+ * literally the single flow run once per finding — same fingerprint check,
+ * same provenance re-read, same plan binding, same executor, same per-record
+ * card, same read-back. There is no bulk-only path to a mutation, and the
+ * approval inventory (phase9-approval-audit) still counts ONE `approvePlan`
+ * call in this file.
+ *
+ * `emit` is the route's audited emitter; `signal` is the request's abort. The
+ * caller owns the SSE headers, the audit run and the terminal frame.
+ */
+async function applyProposal({ p, presentedFingerprint, emit, signal }) {
+  /* ---- PREPARE: build and save the plan, park it at AWAITING_APPROVAL ---- */
+  const prep = await prepareRemediation({
+    proposalId: p.id,
+    proposal: p.proposal,
+    runId: p.runId,
+    presentedFingerprint,
+    emit,
+    signal,
+    /* The targets are re-read in the remediation's own session before the
+       plan is built, so the executor's provenance guard sees them. */
+    readRecord,
+  });
+
+  let result = prep;
+  if (prep.ok) {
+    /* ---- APPROVE ----------------------------------------------------------
+     * BOUND HERE, IN THE ROUTE, ON PURPOSE.
+     *
+     * `routes/` is the only place this system raises or binds an approval, so
+     * that a reader auditing "what can authorise a write" can read the routers
+     * and stop. `approvePlan` refuses on a fingerprint mismatch and is the only
+     * thing that may open the edge into EXECUTING.
+     *
+     * The provenance is `user_click` because that is literally what happened: a
+     * human read this exact change list and pressed Approve and apply.
+     *
+     * This binds the PLAN. The executor still raises its per-step card before
+     * each write, and that card is answered in the drawer through
+     * POST /api/agent/approve — never here. This route does not resolve
+     * approvals; it only binds the one the human just gave.
+     */
+    const bound = approvePlan(prep.taskId, prep.planFingerprint, { source: 'user_click' });
+    if (!bound.ok) {
+      result = {
+        ok: false,
+        reason: bound.reason,
+        taskId: prep.taskId,
+        note: bound.reason === 'fingerprint_mismatch'
+          ? 'The plan changed after it was built, so the approval does not apply. Nothing ran.'
+          : `The plan could not be approved (${bound.reason}). Nothing ran.`,
+      };
+    } else {
+      /* ---- EXECUTE + VALIDATE ---- */
+      result = await runRemediation({
+        proposalId: p.id,
+        proposal: p.proposal,
+        taskId: prep.taskId,
+        sessionId: prep.sessionId,
+        changes: prep.changes,
+        emit,
+        signal,
+        readRecord,
+      });
+    }
+  }
+  return result;
+}
+
 /**
  * POST /api/health/proposals/:id/approve  (SSE)
  *
@@ -711,24 +820,17 @@ healthRouter.post('/proposals/:id/reject', (req, res, next) => {
 healthRouter.post('/proposals/:id/approve', async (req, res) => {
   const p = getProposal(req.params.id);
   if (!p) return res.status(404).json({ message: 'No such proposal on the bound instance.' });
-  if (!['draft', 'edited'].includes(p.status)) {
+  if (!APPROVABLE.includes(p.status)) {
     return res.status(409).json({ message: `This proposal is already ${p.status}.` });
   }
 
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  const write = (event) => { try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client gone */ } };
+  const write = openStream(res);
   const auditRun = startBuildRun({
     kind: 'health_remediation',
     label: `${p.ruleId} · ${p.findingFingerprint.slice(0, 12)}`,
     request: { proposalId: p.id, runId: p.runId, changes: executableChanges(p.proposal).length },
   });
   const emit = auditedEmit(auditRun, write);
-  const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* noop */ } }, 15000);
 
   /* Phase 0's cancellation: the client aborting is the only cancel path. */
   const controller = new AbortController();
@@ -737,61 +839,9 @@ healthRouter.post('/proposals/:id/approve', async (req, res) => {
   res.on('close', onGone);
 
   try {
-    /* ---- PREPARE: build and save the plan, park it at AWAITING_APPROVAL ---- */
-    const prep = await prepareRemediation({
-      proposalId: p.id,
-      proposal: p.proposal,
-      runId: p.runId,
-      presentedFingerprint: req.body?.fingerprint || null,
-      emit,
-      signal: controller.signal,
-      /* The targets are re-read in the remediation's own session before the
-         plan is built, so the executor's provenance guard sees them. */
-      readRecord,
+    const result = await applyProposal({
+      p, presentedFingerprint: req.body?.fingerprint || null, emit, signal: controller.signal,
     });
-
-    let result = prep;
-    if (prep.ok) {
-      /* ---- APPROVE ----------------------------------------------------------
-       * BOUND HERE, IN THE ROUTE, ON PURPOSE.
-       *
-       * `routes/` is the only place this system raises or binds an approval, so
-       * that a reader auditing "what can authorise a write" can read the routers
-       * and stop. `approvePlan` refuses on a fingerprint mismatch and is the only
-       * thing that may open the edge into EXECUTING.
-       *
-       * The provenance is `user_click` because that is literally what happened: a
-       * human read this exact change list and pressed Approve and apply.
-       *
-       * This binds the PLAN. The executor still raises its per-step card before
-       * each write, and that card is answered in the drawer through
-       * POST /api/agent/approve — never here. This route does not resolve
-       * approvals; it only binds the one the human just gave.
-       */
-      const bound = approvePlan(prep.taskId, prep.planFingerprint, { source: 'user_click' });
-      if (!bound.ok) {
-        result = {
-          ok: false,
-          reason: bound.reason,
-          taskId: prep.taskId,
-          note: bound.reason === 'fingerprint_mismatch'
-            ? 'The plan changed after it was built, so the approval does not apply. Nothing ran.'
-            : `The plan could not be approved (${bound.reason}). Nothing ran.`,
-        };
-      } else {
-        /* ---- EXECUTE + VALIDATE ---- */
-        result = await runRemediation({
-          proposalId: p.id,
-          proposal: p.proposal,
-          taskId: prep.taskId,
-          sessionId: prep.sessionId,
-          changes: prep.changes,
-          emit,
-          signal: controller.signal,
-          readRecord,
-        });
-      }
-    }
 
     emit({
       type: result.ok ? 'done' : 'error',
@@ -807,7 +857,205 @@ healthRouter.post('/proposals/:id/approve', async (req, res) => {
     emit({ type: 'error', message: err.message });
     finishBuildRun(auditRun, { status: 'error', summary: { proposalId: p.id, message: err.message } });
   } finally {
-    clearInterval(keepAlive);
+    settled = true;
+    res.off('close', onGone);
+    res.end();
+  }
+  return undefined;
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   BULK FIX — the single flow, once per selected finding
+
+   Two streamed routes, mirroring the two halves of the single flow:
+
+     POST /bulk/proposals   generate a proposal for each selected finding
+     POST /bulk/approve     apply each reviewed proposal, one after another
+
+   Between them the reviewer edits, excludes and approves in the page, exactly
+   as they do for one finding — every proposal is its own row, with its own
+   fingerprint, and the approve body carries the fingerprint of EACH version
+   the reviewer saw. There is no batch-level approval that could cover a
+   proposal nobody read.
+
+   SEQUENTIAL, ON PURPOSE. Each proposal is applied in its own session with its
+   own provenance re-read, its own plan binding and its own per-record cards,
+   and a card is one question to one person — two batches of cards racing for
+   the same reviewer would be a worse interface, not a faster one. The executor
+   also cancels at a step boundary, so a stopped batch leaves each item either
+   fully reported or never started.
+
+   Nothing here writes. The instance is reached only through `applyProposal`
+   above, which is the single route's own sequence.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * POST /api/health/bulk/proposals  (SSE)
+ *
+ * Body: `{ items: [{ runId, fingerprint }] }`. Emits one `item_proposed` (or
+ * `item_skipped`) per finding as it is ready, then `done` with every item.
+ * Read-only: it touches the instance for current values and writes only
+ * proposal rows to our own database, exactly as the single proposal route does.
+ */
+healthRouter.post('/bulk/proposals', async (req, res) => {
+  const sel = normaliseSelection(req.body?.items);
+  if (!sel.ok) return res.status(sel.reason === 'too_many' ? 413 : 400).json({ message: sel.note });
+
+  const write = openStream(res);
+  const controller = new AbortController();
+  let settled = false;
+  const onGone = () => { if (!settled && !res.writableEnded) controller.abort(); };
+  res.on('close', onGone);
+
+  const items = [];
+  try {
+    write({ type: 'bulk_started', phase: 'proposals', total: sel.items.length });
+    for (let i = 0; i < sel.items.length; i += 1) {
+      const it = sel.items[i];
+      const item = { key: it.key, runId: it.runId, fingerprint: it.fingerprint, index: i };
+      if (controller.signal.aborted) {
+        items.push({ ...item, status: BULK_ITEM_STATUS.NOT_STARTED, note: 'Stopped before this finding was reached.' });
+        continue;
+      }
+      write({ type: 'item_started', key: it.key, index: i, total: sel.items.length });
+
+      /*
+       * STALE: the run or the finding is not on this instance any more — the
+       * run was deleted, or the page's list outlived a re-scan. Said per item
+       * rather than failing the batch, because the other findings are fine.
+       */
+      const finding = getRun(it.runId) ? getFinding(it.runId, it.fingerprint) : null;
+      if (!finding) {
+        items.push({ ...item, status: BULK_ITEM_STATUS.STALE, note: 'This finding is no longer in its run on the bound instance. Re-run the scan and select it again.' });
+        write({ type: 'item_skipped', key: it.key, status: BULK_ITEM_STATUS.STALE, note: items.at(-1).note });
+        continue;
+      }
+      item.ruleId = finding.rule_id;
+      item.title = finding.title;
+      item.severity = finding.severity;
+      item.table = finding.table;
+
+      /* A finding that already has an applied proposal in this run is flagged,
+         not refused: the reviewer decides whether to try again. */
+      const prior = proposalsForFinding(it.runId, it.fingerprint).find((x) => ['applied', 'partial'].includes(x.status));
+      if (prior) {
+        item.priorProposal = { id: prior.id, status: prior.status, decidedAt: prior.decidedAt };
+      }
+
+      try {
+        const draft = await buildProposal(finding, { readRecord, resolveReference });
+        const id = createProposal({ runId: it.runId, finding, draft });
+        const stored = getProposal(id);
+        const executable = executableChanges(stored.proposal).length;
+        item.proposalId = id;
+        item.proposal = stored;
+        item.proposalFingerprint = proposalFingerprint(stored.proposal);
+        item.status = classifyProposal(stored.proposal, executable);
+        item.note = proposalNote(item.status);
+        items.push(item);
+        write({ type: 'item_proposed', key: it.key, item });
+      } catch (err) {
+        log.error('health', `bulk proposal for ${it.fingerprint.slice(0, 12)} failed — ${err.message}`, err);
+        items.push({ ...item, status: BULK_ITEM_STATUS.PROPOSAL_FAILED, note: `The proposal could not be generated: ${err.message}` });
+        write({ type: 'item_skipped', key: it.key, status: BULK_ITEM_STATUS.PROPOSAL_FAILED, note: items.at(-1).note });
+      }
+    }
+    write({ type: 'done', phase: 'proposals', items });
+  } catch (err) {
+    write({ type: 'error', message: err.message, items });
+  } finally {
+    settled = true;
+    res.off('close', onGone);
+    res.end();
+  }
+  return undefined;
+});
+
+/**
+ * POST /api/health/bulk/approve  (SSE)
+ *
+ * Body: `{ items: [{ proposalId, fingerprint }] }` — each fingerprint is the
+ * version of THAT proposal the reviewer approved. Every frame the single route
+ * would stream for a proposal is streamed here tagged with `item: proposalId`,
+ * so the page answers each executor card against the right session, and
+ * `item_done` closes each one with the store's own verdict. `done` carries the
+ * batch, never rounded up.
+ */
+healthRouter.post('/bulk/approve', async (req, res) => {
+  const sel = normaliseApprovals(req.body?.items);
+  if (!sel.ok) return res.status(sel.reason === 'too_many' ? 413 : 400).json({ message: sel.note });
+
+  const bulkId = crypto.randomUUID();
+  const write = openStream(res);
+  const controller = new AbortController();
+  let settled = false;
+  const onGone = () => { if (!settled && !res.writableEnded) controller.abort(); };
+  res.on('close', onGone);
+
+  const items = [];
+  const settle = (item) => { items.push(item); write({ type: 'item_done', item: item.proposalId, ...item }); };
+  try {
+    write({ type: 'bulk_started', phase: 'apply', bulkId, total: sel.items.length });
+    for (let i = 0; i < sel.items.length; i += 1) {
+      const { proposalId, fingerprint } = sel.items[i];
+      const base = { proposalId, index: i };
+      if (controller.signal.aborted) {
+        settle({ ...base, status: BULK_ITEM_STATUS.NOT_STARTED, note: 'Stopped before this proposal was reached. Nothing was sent for it.' });
+        continue;
+      }
+      const p = getProposal(proposalId);
+      if (!p) {
+        settle({ ...base, status: BULK_ITEM_STATUS.STALE, note: 'No such proposal on the bound instance. Nothing was sent for it.' });
+        continue;
+      }
+      base.runId = p.runId;
+      base.fingerprint = p.findingFingerprint;
+      base.ruleId = p.ruleId;
+      if (!APPROVABLE.includes(p.status)) {
+        settle({ ...base, status: BULK_ITEM_STATUS.ALREADY_DECIDED, note: `This proposal is already ${p.status}. Nothing was sent for it.`, proposal: p });
+        continue;
+      }
+      /* Nothing executable — no field fix, or no value supplied. The single
+         route would open a task and fail it with "nothing to do"; here it is
+         a skip with the same reason, because the batch goes on. */
+      if (!executableChanges(p.proposal).length) {
+        const status = classifyProposal(p.proposal, 0);
+        settle({ ...base, status, note: proposalNote(status) ?? 'Nothing to apply.', proposal: p });
+        continue;
+      }
+
+      write({ type: 'item_started', item: proposalId, index: i, total: sel.items.length, ruleId: p.ruleId });
+      /* One audit run per proposal — the same unit the single route records —
+         carrying the batch id so the runs can be read together afterwards. */
+      const auditRun = startBuildRun({
+        kind: 'health_remediation',
+        label: `${p.ruleId} · ${p.findingFingerprint.slice(0, 12)} · bulk ${bulkId.slice(0, 8)}`,
+        request: { proposalId: p.id, runId: p.runId, changes: executableChanges(p.proposal).length, bulkId },
+      });
+      const emit = auditedEmit(auditRun, (e) => write({ ...e, item: proposalId }));
+      let result;
+      try {
+        result = await applyProposal({ p, presentedFingerprint: fingerprint, emit, signal: controller.signal });
+        finishBuildRun(auditRun, {
+          status: result.ok ? 'ok' : 'error',
+          summary: { proposalId: p.id, taskId: result.taskId ?? null, status: result.status ?? result.reason, bulkId },
+        });
+      } catch (err) {
+        result = { ok: false, reason: 'error', note: err.message };
+        finishBuildRun(auditRun, { status: 'error', summary: { proposalId: p.id, message: err.message, bulkId } });
+      }
+      settle({
+        ...base,
+        status: classifyOutcome(result),
+        note: result.ok ? null : (result.note || result.reason),
+        result,
+        proposal: getProposal(p.id),
+      });
+    }
+    write({ type: 'done', phase: 'apply', bulkId, items, summary: summariseBulk(items) });
+  } catch (err) {
+    write({ type: 'error', message: err.message, bulkId, items, summary: summariseBulk(items) });
+  } finally {
     settled = true;
     res.off('close', onGone);
     res.end();
@@ -884,15 +1132,17 @@ healthRouter.get('/trend', (req, res, next) => {
  * `-` or `@` (trap #38), and these carry rule text and model-authored
  * summaries.
  */
+const EXPORT_EVERY_ROW = -1;
 function exportFilters(req) {
   return {
     scope: normaliseScope(req.query.scope),
     domain: req.query.domain || undefined,
     severity: req.query.severity || undefined,
     rule: req.query.rule || undefined,
-    /* The run's own storage cap, not a smaller one of our own: an export that
-       silently stopped at 10,000 of 12,194 would be a different report. */
-    limit: MAX_FINDINGS,
+    /* Every stored row. A run stores every finding it detected, and an export
+       that silently stopped at 10,000 of 12,194 would be a different report.
+       SQLite reads a negative LIMIT as "no upper bound". */
+    limit: EXPORT_EVERY_ROW,
   };
 }
 

@@ -115,7 +115,7 @@ export function DisconnectedBanner() {
   return (
     <div className="note warn" style={{ marginBottom: 12 }}>
       {s.kind === 'server'
-        ? <>The NowHelpAssist server is not responding (<span className="mono">{h.error}</span>). Anything that touches the instance will fail until it is back.</>
+        ? <>The SAOS server is not responding (<span className="mono">{h.error}</span>). Anything that touches the instance will fail until it is back.</>
         : <>No instance is bound, so anything that reads or writes ServiceNow will fail. <Link to="/">Connect one on the Dashboard</Link>.</>}
     </div>
   );
