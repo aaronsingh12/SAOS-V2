@@ -49,7 +49,7 @@ const { createTask, startTask, completeTask } = await import('../src/memory/task
 const P = await import('../src/agent/plan/index.js');
 
 const DB_SRC = fs.readFileSync(new URL('../src/memory/db.js', import.meta.url), 'utf8');
-const HEAD_VERSION = 29;
+const HEAD_VERSION = 31;
 
 /** The migration bodies only, with comments stripped. */
 const MIGRATION_BODY = (() => {

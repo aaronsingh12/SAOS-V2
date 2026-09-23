@@ -338,10 +338,10 @@ test('E17 — §59: every metadata object leaving the projection passes through 
  * §77 — the database
  * ================================================================== */
 
-test('E18 — §77: no new tables, and the schema is still at 29', () => {
+test('E18 — §77: no new tables, and the schema is still at 31', () => {
   const db = new DatabaseSync(path.join(scratch, 'ver.db'));
   migrate(db);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 29);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 31);
 
   /* And the skill registry is configuration, not a table. */
   const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);

@@ -6,6 +6,17 @@ import { toast } from '../components/toast.js';
 import RemediationDrawer from '../components/RemediationDrawer.jsx';
 import BulkFixDrawer from '../components/BulkFixDrawer.jsx';
 import { ItsmCatalogue, ItsmParameters, CrossDomainLinks, ItsmFindingDetail } from '../components/HealthItsm.jsx';
+import SeverityDonut from '../components/SeverityDonut.jsx';
+import DimensionModal from '../components/DimensionModal.jsx';
+import DimensionManager from '../components/DimensionManager.jsx';
+import DimensionIcon from '../components/DimensionIcon.jsx';
+import {
+  DimensionKpis, DimensionGrid, DimensionAnalytics, DimensionDetail, DimensionMatrix,
+} from '../components/DimensionViews.jsx';
+import {
+  GROUP_MODES, groupModeOf, chipsFor, withFilterParams, dimensionFromParams, UNCLASSIFIED_ID,
+} from '../components/healthDimensions.js';
+import { useBinding } from '../hooks/useBinding.js';
 import {
   useHealthRun, isActive, startHealthRun, stopHealthRun, discoverHealthRun, getHealthRun,
 } from '../components/healthRun.js';
@@ -793,93 +804,6 @@ function AreaBars({ summaries, scopes, onPick }) {
   );
 }
 
-/**
- * FINDINGS BY SEVERITY — a donut, five slices, the total in the middle.
- *
- * Severity is a status scale, so every slice carries its word, its glyph and
- * its number in the legend beside it; the hue alone is never asked to tell
- * Critical from High. Click a slice or a legend row to filter the findings
- * below; the same one again, or "All", puts everything back.
- *
- * Drawn with one <circle> per slice on a 100-unit path, so a slice's length is
- * its share and its offset is the sum of the shares before it. The entrance
- * runs the dash from nothing to its length, in order around the ring, once.
- */
-function SeverityDonut({ rows, total, active, onPick }) {
-  const [drawn, setDrawn] = useState(false);
-  useEffect(() => {
-    const t = requestAnimationFrame(() => setDrawn(true));
-    return () => cancelAnimationFrame(t);
-  }, []);
-  const sum = rows.reduce((n, r) => n + r.count, 0);
-  const nonZero = rows.filter((r) => r.count > 0).length;
-  const GAP = nonZero > 1 ? 1 : 0;                       // a 2px surface gap between slices
-  let cursor = 0;
-  const slices = rows.map((r) => {
-    const pct = sum ? (r.count / sum) * 100 : 0;
-    const len = pct === 0 ? 0 : (pct > GAP * 2 ? pct - GAP : pct / 2);
-    const s = { ...r, pct, len, start: cursor };
-    cursor += pct;
-    return s;
-  });
-  return (
-    <div className="hd-donut-wrap">
-      <div className="hd-donut">
-        <svg viewBox="0 0 100 100" role="img"
-          aria-label={`Findings by severity: ${rows.map((r) => `${r.label} ${r.count.toLocaleString()}`).join(', ')}`}>
-          <circle className="hd-donut-track" cx="50" cy="50" r="40" />
-          <g transform="rotate(-90 50 50)">
-          {slices.filter((s) => s.len > 0).map((s) => (
-            <circle
-              key={s.key}
-              className={`hd-donut-seg tone-${s.tone}${active === s.key ? ' is-on' : ''}${active && active !== s.key ? ' is-off' : ''}`}
-              cx="50" cy="50" r="40" pathLength="100"
-              strokeDasharray={drawn ? `${s.len} ${100 - s.len}` : '0 100'}
-              strokeDashoffset={-(s.start + GAP / 2)}
-              style={{ transitionDelay: drawn ? `${s.start * 7}ms` : '0ms' }}
-              onClick={() => onPick(s.key)}
-              tabIndex={0}
-              role="button"
-              aria-pressed={active === s.key}
-              aria-label={`${s.label}: ${s.count.toLocaleString()} (${s.pct.toFixed(1)}%)`}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(s.key); } }}
-            >
-              <title>{`${s.label} · ${s.count.toLocaleString()} (${s.pct.toFixed(1)}%)`}</title>
-            </circle>
-          ))}
-          </g>
-        </svg>
-        <div className="hd-donut-center">
-          <span>Total findings</span>
-          <b>{total.toLocaleString()}</b>
-        </div>
-      </div>
-      <ul className={`hd-legend${drawn ? ' is-in' : ''}`}>
-        {slices.map((s, i) => (
-          <li key={s.key} style={{ '--hd-delay': `${120 + i * 60}ms` }}>
-            <button type="button"
-              className={`hd-legend-row tone-${s.tone}${active === s.key ? ' is-on' : ''}${active && active !== s.key ? ' is-off' : ''}`}
-              onClick={() => onPick(s.key)} aria-pressed={active === s.key} title={s.blurb}>
-              <i aria-hidden="true" />
-              <span className="hd-legend-label"><span className="hs-glyph" aria-hidden="true">{s.glyph}</span>{s.label}</span>
-              <b>{s.count.toLocaleString()}</b>
-              <em>{sum ? `${s.pct < 1 && s.pct > 0 ? '<1' : Math.round(s.pct)}%` : '—'}</em>
-            </button>
-          </li>
-        ))}
-        <li style={{ '--hd-delay': `${120 + slices.length * 60}ms` }}>
-          <button type="button" className={`hd-legend-row hd-legend-all${!active ? ' is-on' : ''}`}
-            onClick={() => onPick(null)} aria-pressed={!active}>
-            <i aria-hidden="true" />
-            <span className="hd-legend-label">All severities</span>
-            <b>{sum.toLocaleString()}</b>
-            <em />
-          </button>
-        </li>
-      </ul>
-    </div>
-  );
-}
 
 export default function HealthAssist() {
   const navigate = useNavigate();
@@ -919,7 +843,23 @@ export default function HealthAssist() {
   const progress = healthRun.progress;
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState({ domain: '', severity: '', rule: '' });
+  /* Severity and dimension are read from the URL so a filtered view survives a
+     refresh and can be shared (?severity=HIGH&dimension=ownership-accountability;
+     the pre-rename ?category= is still read). Domain and rule stay page state:
+     an area belongs to one scope. */
+  const [filter, setFilter] = useState(() => ({
+    domain: '', severity: params.get('severity') || '', rule: '', dimension: dimensionFromParams(params),
+  }));
+  /* FINDING DIMENSIONS — a classification over findings, resolved by the server
+     from each finding's rule. `dimData` is the dimension list with counts over
+     the findings in view; nothing here decides what a dimension contains. */
+  const [dimData, setDimData] = useState(null);
+  const [dimErr, setDimErr] = useState('');
+  const [dimSearch, setDimSearch] = useState('');
+  /* The create / edit / view dialog: null, or { mode, id, step }. */
+  const [dimModal, setDimModal] = useState(null);
+  /* The connected instance, for the page header — read, never changed here. */
+  const { instance: boundHost } = useBinding();
 
   /* The opened finding. `null` means the overview; anything else replaces it
      with the detail view, because two scroll positions on one page is how a
@@ -974,10 +914,13 @@ export default function HealthAssist() {
   /* Which surface is showing: the dashboard, or the full findings table it
      links to. In the URL like the scope, so "View all findings" survives a
      refresh and can be shared. Same data, same filters — only the framing. */
-  const view = params.get('view') === 'findings' ? 'findings' : 'dashboard';
+  /* A third surface, `dimensions`, is Manage dimensions — breadcrumbed under
+     Findings, and like the other two it lives in the URL. */
+  const VIEWS = ['findings', 'dimensions'];
+  const view = VIEWS.includes(params.get('view')) ? params.get('view') : 'dashboard';
   const setView = (next) => {
     const qs = new URLSearchParams(params);
-    if (next === 'findings') qs.set('view', 'findings'); else qs.delete('view');
+    if (VIEWS.includes(next)) qs.set('view', next); else qs.delete('view');
     setParams(qs, { replace: true });
   };
   /* The page scrolls inside .content, not the window — so that is what is
@@ -1041,6 +984,7 @@ export default function HealthAssist() {
     if (next.domain) qs.set('domain', next.domain);
     if (next.rule) qs.set('rule', next.rule);
     if (next.severity) qs.set('severity', next.severity);
+    if (next.dimension) qs.set('dimension', next.dimension);
     if (q.trim()) qs.set('q', q.trim());
     qs.set('limit', String(FINDINGS_PAGE));
     if (offset) qs.set('offset', String(offset));
@@ -1056,10 +1000,33 @@ export default function HealthAssist() {
     }
   }, []);
 
+  /* How the findings page groups: severity (the original), dimension, or both. */
+  const group = groupModeOf(params.get('group'));
+  const setGroup = (mode) => setParams(withFilterParams(params, filter, mode), { replace: true });
+
   const applyFilter = async (patch) => {
     const next = { ...filter, ...patch };
     setFilter(next);
+    /* Severity and dimension follow into the URL; the list is the same query either way. */
+    if (next.severity !== filter.severity || next.dimension !== filter.dimension) {
+      setParams(withFilterParams(params, next, group), { replace: true });
+    }
     if (run) { try { await loadFindings(next, scope, { q: query }); } catch (e) { setError(e.message); } }
+  };
+
+  /*
+   * Go to a surface and set the filter in ONE URL write. Two separate writes
+   * would each start from the same stale params and the second would undo the
+   * first. `group` is kept unless given; the filter patch is optional.
+   */
+  const goTo = (nextView, { group: nextGroup = group, patch = null } = {}) => {
+    const next = patch ? { ...filter, ...patch } : filter;
+    if (patch) setFilter(next);
+    const qs = withFilterParams(params, next, nextGroup);
+    if (VIEWS.includes(nextView)) qs.set('view', nextView); else qs.delete('view');
+    setParams(qs, { replace: true });
+    document.querySelector('.content')?.scrollTo({ top: 0 });
+    if (patch && run) loadFindings(next, scope, { q: query }).catch((e) => setError(e.message));
   };
 
   /* Typing searches the whole scan, not the page: debounced so a word is one
@@ -1107,6 +1074,74 @@ export default function HealthAssist() {
     loadFindings({ ...filter, domain: '', rule: '' }, scope, { q: query }).catch((e) => setError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewKey, Boolean(run)]);
+
+  /*
+   * Dimension counts over the findings in view — the same scope, area, rule and
+   * search the list uses, one request, recomputed by the server from each
+   * finding's rule. A failure here never blocks Health: the severity view and
+   * the list still work, and the dimension views say why they are empty.
+   */
+  const [dimVersion, setDimVersion] = useState(0);
+  const dimSeq = useRef(0);
+  useEffect(() => {
+    if (!run) { setDimData(null); return undefined; }
+    const seq = ++dimSeq.current;
+    const t = setTimeout(async () => {
+      const qs = new URLSearchParams();
+      if (scope !== 'all') qs.set('scope', scope);
+      if (filter.domain) qs.set('domain', filter.domain);
+      if (filter.rule) qs.set('rule', filter.rule);
+      if (query.trim()) qs.set('q', query.trim());
+      try {
+        const data = await api.get(`/health/dimensions${qs.toString() ? `?${qs}` : ''}`);
+        if (seq !== dimSeq.current) return;
+        setDimData(data);
+        setDimErr('');
+      } catch (e) {
+        if (seq === dimSeq.current) setDimErr(`Unable to load dimensions. ${e.message}`);
+      }
+    }, query ? SEARCH_DEBOUNCE_MS : 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey, Boolean(run), filter.domain, filter.rule, query, dimVersion]);
+
+  /* A dimension in the URL that no longer exists (deleted elsewhere) is cleared
+     rather than left filtering to an error. */
+  useEffect(() => {
+    if (!dimData || !filter.dimension) return;
+    if (!dimData.dimensions.some((c) => c.id === filter.dimension)) {
+      toast.info('That dimension no longer exists — showing every dimension.');
+      applyFilter({ dimension: '' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dimData]);
+
+  const dimById = useMemo(
+    () => Object.fromEntries((dimData?.dimensions || []).map((c) => [c.id, c])),
+    [dimData],
+  );
+  /* Picking a dimension on the findings page brings its detail into view: the
+     detail renders below the analytics, and a selection that changed something
+     off-screen reads as a click that did nothing. */
+  const detailRef = useRef(null);
+  const pickDimension = (id, { reveal = false } = {}) => {
+    const next = !id || filter.dimension === id ? '' : id;
+    applyFilter({ dimension: next });
+    if (reveal && next) requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+  const pickCell = (dimensionId, severity, on = false) => (
+    on ? applyFilter({ dimension: '', severity: '' }) : applyFilter({ dimension: dimensionId, severity })
+  );
+  /* The dialog, and what it changes. A deleted dimension that was the active
+     filter is cleared; an edited one re-reads the list it is filtering. */
+  const openDimension = (d, step) => setDimModal(d.editable && step
+    ? { mode: 'edit', id: d.id, step }
+    : { mode: 'view', id: d.id, step: 2 });
+  const onDimensionsChanged = ({ id, deleted } = {}) => {
+    setDimVersion((v) => v + 1);
+    if (deleted && filter.dimension === id) applyFilter({ dimension: '' });
+    else if (id && filter.dimension === id && run) loadFindings(filter, scope, { q: query }).catch((e) => setError(e.message));
+  };
 
   /* Opening the page picks up a check that is already running — started
      before a refresh, from another tab, or before you went elsewhere. */
@@ -1591,6 +1626,24 @@ export default function HealthAssist() {
   const scannedModules = moduleKeys.filter((m) => modulesInfo?.[m]?.runId);
   const hasAnyRun = scannedModules.length > 0;
   const pageTitle = isAll ? 'Full System Scan' : `${scopeInfo?.label} scan`;
+  const originalView = view === 'dashboard' || (view === 'findings' && group === 'severity');
+  const headTitle = view === 'dimensions' ? 'Manage dimensions'
+    : group === 'dimension' ? 'Findings by dimension'
+      : group === 'both' ? 'Findings by dimension and severity' : 'Findings by severity';
+  const headSub = view === 'dimensions'
+    ? 'View, edit and organise system and custom dimensions. Dimensions group related findings by the kind of problem they describe.'
+    : group === 'dimension' ? 'Explore findings grouped by dimension across your ServiceNow instance. Click a dimension to see its findings and what drives them.'
+      : group === 'both' ? 'Click a cell to view the findings for that dimension at the selected severity.'
+        : 'Every finding the scan detected, grouped by how serious it is.';
+  /* Reload what this page reads — the module results, the dimension counts and
+     the findings list. It re-reads; it never re-scans. */
+  const refreshAll = async () => {
+    try {
+      await reloadModules();
+      setDimVersion((v) => v + 1);
+      if (run) await loadFindings(filter, scope, { q: query });
+    } catch (e) { setError(e.message); }
+  };
   const activeSev = filter.severity ? (sevByKey[filter.severity] || { key: filter.severity, label: filter.severity, tone: 'info' }) : null;
   const activeDomain = filter.domain ? (domainRows.find((d) => d.domain === filter.domain)?.label || domainLabel[filter.domain] || filter.domain) : null;
   const topFindings = visibleFindings.slice(0, TOP_N);
@@ -1686,6 +1739,75 @@ export default function HealthAssist() {
     </div>
   );
 
+  /* ── Dimensions: the active filter, the row chips, and the filter bar ──
+     A dimension is another way to look at the same findings. It changes which
+     rows are listed and nothing about them: selecting, fixing, muting and the
+     bulk fix all act on the finding, whatever dimension it was reached from. */
+  const activeDim = filter.dimension ? (dimById[filter.dimension] || { id: filter.dimension, name: filter.dimension }) : null;
+  const dimChips = (f, max = 1) => {
+    const { shown, more, all } = chipsFor(f.dimensions, dimById, max);
+    if (!all.length) return <span className="hs-muted">—</span>;
+    return (
+      <span className="hx-chips" title={all.map((c) => c.name).join(' · ')}>
+        {shown.map((c) => (
+          <span key={c.id} className={`hx-chip${c.id === UNCLASSIFIED_ID ? ' is-unc' : ''}`}>{c.name}</span>
+        ))}
+        {more > 0 && <span className="hx-chip is-more">+{more}</span>}
+      </span>
+    );
+  };
+  const clearDim = activeDim && (
+    <> · dimension <button type="button" className="btn ghost sm hs-inline-clear" onClick={() => pickDimension('')}>{activeDim.name} ×</button></>
+  );
+  /* The bands the dimension views chart — the dashboard's five, in the server's words. */
+  const bands = DASHBOARD_SEVERITIES.map((k) => sevByKey[k] || SEVERITY_FALLBACK.find((x) => x.key === k));
+  /* The filter bar above the findings table: one labelled control per filter
+     the list already had (severity, module, status, search), plus dimension.
+     Each writes the SAME filter state the charts and cards write. */
+  const filterBar = (
+    <div className="hx-filterbar">
+      <label className="hx-fsel">
+        <span>Dimension</span>
+        <select className="select" value={filter.dimension} onChange={(e) => pickDimension(e.target.value)} aria-label="Filter findings by dimension">
+          <option value="">All dimensions</option>
+          {(dimData?.dimensions || []).map((c) => (
+            <option key={c.id} value={c.id}>{c.name} ({(c.findings || 0).toLocaleString()})</option>
+          ))}
+        </select>
+      </label>
+      <label className="hx-fsel">
+        <span>Severity</span>
+        <select className="select" value={filter.severity} onChange={(e) => applyFilter({ severity: e.target.value })} aria-label="Filter findings by severity">
+          <option value="">All</option>
+          {severities.filter((sv) => sv.key !== 'INFO' || sevCounts.INFO).map((sv) => (
+            <option key={sv.key} value={sv.key}>{sv.label}</option>
+          ))}
+        </select>
+      </label>
+      <label className="hx-fsel">
+        <span>Module</span>
+        <select className="select" value={filter.domain} onChange={(e) => applyFilter({ domain: e.target.value })} aria-label="Filter findings by module">
+          <option value="">All</option>
+          {domainRows.map((d) => <option key={d.domain} value={d.domain}>{d.label} ({d.findings.toLocaleString()})</option>)}
+          {filter.domain && !domainRows.some((d) => d.domain === filter.domain) && <option value={filter.domain}>{domainLabel[filter.domain] || filter.domain}</option>}
+        </select>
+      </label>
+      <label className="hx-fsel">
+        <span>Status</span>
+        <select className="select" value={showQuiet ? 'all' : 'active'} onChange={(e) => setShowQuiet(e.target.value === 'all')} aria-label="Filter findings by status">
+          <option value="active">Open and acknowledged</option>
+          <option value="all">All, including muted and accepted</option>
+        </select>
+      </label>
+      <label className="hx-search hx-fsearch">
+        <DimensionIcon name="search" size={15} />
+        <input type="search" className="input" value={query} onChange={(e) => setQuery(e.target.value)}
+          placeholder={activeDim ? 'Search findings in this dimension…' : 'Search findings — title, rule, module, table…'} aria-label="Search findings" />
+        {query && <button type="button" className="hd-search-clear" onClick={() => setQuery('')} aria-label="Clear search">×</button>}
+      </label>
+    </div>
+  );
+
   /* ── Bulk fix: the checkbox column, the button and the selection bar ──
      Shared by the top-findings table and the full table, so the same
      selection is visible from both. The button is always present and disabled
@@ -1749,15 +1871,17 @@ export default function HealthAssist() {
      filter, the lifecycle controls and the export. Reached from "View all
      findings" and from the URL (?view=findings). */
   const findingsTable = (
-    <div className="card hd-section">
+    <div className="card hd-section hx-findings">
       <div className="hd-section-head hs-findings-head">
         <div>
-          <h2 className="hd-h2">
-            All findings{scope !== 'all' ? ` · ${scopeInfo?.label}` : ''}
+          <h2 className="hd-h2 hx-findings-title">
+            {activeDim ? <>Findings in {activeDim.name}</> : <>All findings{scope !== 'all' ? ` · ${scopeInfo?.label}` : ''}</>}
             <span className="hd-count">{findingsBusy ? '…' : total.toLocaleString()}</span>
           </h2>
           <div className="hd-section-sub">
-            {(filter.severity || filter.domain || filter.rule) ? 'Filtered' : 'Everything the scan found, most urgent first'}
+            {activeDim
+              ? <>Showing {total.toLocaleString()} finding{total === 1 ? '' : 's'} in this dimension. Use the filters to refine your view.</>
+              : (filter.severity || filter.domain || filter.rule) ? 'Filtered' : 'Everything the scan found, most urgent first'}
             {activeDomain && <> · area <b>{activeDomain}</b></>}
             {filter.rule && (
               <button type="button" className="btn ghost sm hs-inline-clear" onClick={() => applyFilter({ rule: '' })}>
@@ -1777,36 +1901,22 @@ export default function HealthAssist() {
           {filter.domain && (
             <button type="button" className="btn ghost sm" onClick={() => applyFilter({ domain: '' })}>Clear area</button>
           )}
-          {quietCount > 0 && (
-            <button type="button" className="btn ghost sm" onClick={() => setShowQuiet((v) => !v)}>
-              {showQuiet ? 'Hide' : 'Show'} muted
-            </button>
-          )}
           {/* The export honours the filters on screen. An export that does
-              not match what you were looking at is a different report. */}
-          <a className="btn ghost sm" href={exportHref} download>Export CSV</a>
+              not match what you were looking at is a different report. The
+              Status select above is the former "Show muted" switch. */}
+          <a className="btn ghost sm hx-btn-ic" href={exportHref} download><DimensionIcon name="download" size={15} /> Export CSV</a>
           {bulkFixButton}
         </span>
       </div>
       {selectionBar}
 
-      <div className="hd-findings-tools">
-        {sevFilterBar}
-        <label className="hd-search">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"
-            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-          <input type="search" className="input" value={query} onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search findings — title, rule, module, table…" aria-label="Search findings" />
-          {query && (
-            <button type="button" className="hd-search-clear" onClick={() => setQuery('')} aria-label="Clear search">×</button>
-          )}
-        </label>
-      </div>
+      {filterBar}
       {searchTerms.length > 0 && !findingsBusy && (
         <p className="hd-search-note">
           <b>{total.toLocaleString()}</b> finding{total === 1 ? '' : 's'} in this scan match
           {activeSev ? <> within <b className={`tone-${activeSev.tone} hd-tone-text`}>{activeSev.label}</b></> : null}
-          {activeDomain ? <> in <b>{activeDomain}</b></> : null}.
+          {activeDomain ? <> in <b>{activeDomain}</b></> : null}
+          {activeDim ? <> in the dimension <b>{activeDim.name}</b></> : null}.
           <span className="hs-muted"> Searched every stored finding — titles, rules, tables, and the CI names, serials, addresses and sys_ids in the evidence.</span>
         </p>
       )}
@@ -1817,16 +1927,16 @@ export default function HealthAssist() {
         <EmptyState
           title={searchTerms.length
             ? `No finding in this scan matches “${query.trim()}”.`
-            : total === 0 && !filter.severity && !filter.domain
+            : total === 0 && !filter.severity && !filter.domain && !filter.dimension
               ? `Nothing found${scope !== 'all' ? ` in ${scopeInfo?.label}` : ''} in what was read.`
               : quietCount > 0 && findings.length === quietCount
                 ? 'Everything here is muted or accepted.'
                 : 'Nothing matches this filter.'}
           hint={searchTerms.length
-            ? (filter.severity || filter.domain
-              ? 'Every stored finding was searched, within the severity and area selected. Try fewer or different words, or clear the filter.'
+            ? (filter.severity || filter.domain || filter.dimension
+              ? 'Every stored finding was searched, within the severity, area and dimension selected. Try fewer or different words, or clear the filter.'
               : 'Every stored finding was searched. Try fewer or different words, or clear the search.')
-            : total === 0 && !filter.severity && !filter.domain
+            : total === 0 && !filter.severity && !filter.domain && !filter.dimension
               ? 'That is a statement about the tables that were read, not about the whole instance. Check the scan coverage before treating it as a clean bill of health.'
               : quietCount > 0 && findings.length === quietCount
                 ? 'They are still detected and still counted — "Show muted" brings them back.'
@@ -1843,6 +1953,7 @@ export default function HealthAssist() {
                 <th style={{ width: 120 }}>Severity</th>
                 <th>Finding</th>
                 <th style={{ width: 180 }}>Area</th>
+                <th style={{ width: 200 }}>Dimension</th>
                 <th style={{ width: 90 }}>Records</th>
                 <th style={{ width: 170 }}>Status</th>
                 <th style={{ width: 36 }} aria-label="Open" />
@@ -1874,6 +1985,7 @@ export default function HealthAssist() {
                       )}
                     </td>
                     <td className="hs-muted">{domainLabel[f.domain] || f.domain || '—'}</td>
+                    <td>{dimChips(f, 2)}</td>
                     <td className="mono">{(f.target_ids?.length ?? 0).toLocaleString()}</td>
                     <td>
                       {lc !== 'open' && (
@@ -1911,15 +2023,41 @@ export default function HealthAssist() {
       {/* ── HEADER ──────────────────────────────────────────────────────── */}
       <div className="card hd-header">
         <div className="hd-header-main">
-          <div className="hd-header-text">
-            <h1 className="hd-title">{pageTitle}</h1>
-            <p className="hd-subtitle">
-              {isAll
-                ? 'Comprehensive health check across your ServiceNow instance'
-                : scopeInfo?.description || `Health check of the ${scopeInfo?.label} area of your ServiceNow instance`}
-            </p>
-          </div>
+          {originalView ? (
+            <div className="hd-header-text">
+              <h1 className="hd-title">{pageTitle}</h1>
+              <p className="hd-subtitle">
+                {isAll
+                  ? 'Comprehensive health check across your ServiceNow instance'
+                  : scopeInfo?.description || `Health check of the ${scopeInfo?.label} area of your ServiceNow instance`}
+              </p>
+            </div>
+          ) : (
+            /* The Findings and Manage-dimensions surfaces: breadcrumbed, and
+               titled by what they show. */
+            <div className="hd-header-text">
+              <nav className="hx-crumbs" aria-label="Breadcrumb">
+                <button type="button" onClick={() => goTo('dashboard')}>Health Assist</button>
+                <DimensionIcon name="chevronRight" size={14} />
+                {view === 'dimensions' ? (
+                  <>
+                    <button type="button" onClick={() => goTo('findings')}>Findings</button>
+                    <DimensionIcon name="chevronRight" size={14} />
+                    <span aria-current="page">Manage dimensions</span>
+                  </>
+                ) : <span aria-current="page">Findings</span>}
+              </nav>
+              <h1 className="hd-title hx-title">{headTitle}</h1>
+              <p className="hd-subtitle">{headSub}</p>
+            </div>
+          )}
           <div className="hd-actions">
+            {!originalView && boundHost?.host && (
+              <div className="hx-instance" title={boundHost.url || boundHost.host}>
+                <i className={boundHost.connected === false ? 'is-off' : ''} aria-hidden="true" />
+                <span><em>Instance</em><b>{boundHost.host.replace(/\.service-now\.com$/i, '')}</b></span>
+              </div>
+            )}
             <div className="hd-lastscan" title={lastScanAt ? lastScanAt.toLocaleString() : 'No scan has run yet'}>
               <span className="hd-lastscan-ic"><CalendarIcon /></span>
               <span className="hd-lastscan-text">
@@ -1927,6 +2065,11 @@ export default function HealthAssist() {
                 <b>{lastScanAt ? fmtWhen(lastScanAt) : 'Not yet'}</b>
               </span>
             </div>
+            {!originalView && (
+              <button type="button" className="hx-iconbtn" onClick={refreshAll} title="Reload findings and dimensions" aria-label="Reload findings and dimensions">
+                <DimensionIcon name="cycle" size={17} />
+              </button>
+            )}
             {running && (
               /* An explicit request, not a disconnect: leaving the page no longer
                  stops a check, so Stop has to say so on purpose. The server stops
@@ -1966,7 +2109,39 @@ export default function HealthAssist() {
         <ScopeSwitch scopes={scopeList} value={scope} onChange={pickScope} counts={scopeCounts} />
       )}
 
-      {!run && !running && !error && (scope === 'all' ? !composed : !moduleRunId) && (
+      {/* ── VIEW: Severity | Dimension | Both. A page-level switch, independent of
+             the area bar above. Severity IS the original Health Assist page;
+             Dimension and Both are the finding-dimension views. ───────────── */}
+      {run && view !== 'dimensions' && (
+        <div className="hx-controls">
+          <span className="hx-switch" role="tablist" aria-label="View findings by">
+            {GROUP_MODES.map((m) => (
+              <button key={m.key} type="button" role="tab" aria-selected={group === m.key}
+                className={group === m.key ? 'is-on' : ''}
+                onClick={() => (m.key === 'severity' ? goTo('dashboard', { group: 'severity', patch: filter.dimension ? { dimension: '' } : null }) : goTo('findings', { group: m.key }))}>
+                {m.label}
+              </button>
+            ))}
+          </span>
+          {group !== 'severity' && (
+            <span className="hx-controls-right">
+              <label className="hx-search hx-dimsearch">
+                <DimensionIcon name="search" size={15} />
+                <input type="search" className="input" value={dimSearch} onChange={(e) => setDimSearch(e.target.value)}
+                  placeholder="Search dimensions…" aria-label="Search dimensions" />
+              </label>
+              <button type="button" className="btn hx-btn-ic" onClick={() => goTo('dimensions')}>
+                <DimensionIcon name="sliders" size={15} /> Manage dimensions
+              </button>
+              <button type="button" className="btn primary hx-btn-ic" onClick={() => setDimModal({ mode: 'create', id: null, step: 1 })}>
+                <DimensionIcon name="plus" size={16} strokeWidth={2.4} /> Create dimension
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+
+      {!run && !running && !error && view !== 'dimensions' && (scope === 'all' ? !composed : !moduleRunId) && (
         <div className="card">
           {scope === 'all' || !composed ? (
             <EmptyState
@@ -1986,14 +2161,82 @@ export default function HealthAssist() {
         </div>
       )}
 
-      {run && view === 'findings' && (
+      {run && view === 'findings' && group === 'severity' && (
         <>
           <button type="button" className="btn ghost sm hs-back" onClick={showDashboard}>← Back to dashboard</button>
           {findingsTable}
         </>
       )}
 
-      {run && view !== 'findings' && (
+      {run && view === 'findings' && group !== 'severity' && (
+        <div className="hx-page">
+          {group !== 'severity' && dimErr && (
+            <p className="error-text">{dimErr} The severity view and the findings list still work.</p>
+          )}
+          {group !== 'severity' && !dimErr && !dimData && <div className="card"><SkeletonLines lines={6} /></div>}
+
+          {group === 'dimension' && dimData && (
+            <>
+              <DimensionKpis
+                data={dimData}
+                unclassifiedActive={filter.dimension === UNCLASSIFIED_ID}
+                onPickUnclassified={() => pickDimension(UNCLASSIFIED_ID, { reveal: true })}
+              />
+              <DimensionGrid data={dimData} search={dimSearch} selected={filter.dimension} onPick={(id) => pickDimension(id, { reveal: true })} />
+              <DimensionAnalytics
+                data={dimData}
+                bands={bands}
+                selected={filter.dimension}
+                activeSeverity={filter.severity}
+                onPickSeverity={pickSeverity}
+                onPickDimension={(id) => pickDimension(id, { reveal: true })}
+              />
+              <div ref={detailRef} className="hx-anchor">
+                <DimensionDetail
+                  dimension={filter.dimension ? dimById[filter.dimension] : null}
+                  bands={bands}
+                  domainLabel={domainLabel}
+                  activeSeverity={filter.severity}
+                  activeRule={filter.rule}
+                  activeDomain={filter.domain}
+                  onPickSeverity={pickSeverity}
+                  onPickRule={(rule) => applyFilter({ rule: filter.rule === rule ? '' : rule })}
+                  onPickDomain={(domain) => applyFilter({ domain: filter.domain === domain ? '' : domain })}
+                  onManage={(id) => setDimModal({ mode: 'edit', id, step: 1 })}
+                />
+              </div>
+            </>
+          )}
+
+          {group === 'both' && dimData && (
+            <DimensionMatrix
+              data={dimData}
+              bands={bands}
+              search={dimSearch}
+              activeDimension={filter.dimension}
+              activeSeverity={filter.severity}
+              onPickCell={pickCell}
+              onPickDimension={(id) => pickDimension(id)}
+            />
+          )}
+
+          {findingsTable}
+        </div>
+      )}
+
+      {view === 'dimensions' && (
+        <DimensionManager
+          scope={scope}
+          reloadKey={dimVersion}
+          showHead={false}
+          onCreate={() => setDimModal({ mode: 'create', id: null, step: 1 })}
+          onOpen={(d, step) => openDimension(d, step)}
+          onViewFindings={(id) => goTo('findings', { group: 'dimension', patch: { dimension: id } })}
+          onChanged={onDimensionsChanged}
+        />
+      )}
+
+      {run && view === 'dashboard' && (
         <>
           {/* ── OVERALL HEALTH. On the All view: the server's overall
                  (overall-health.js) — the mean share of attainable health over
@@ -2157,6 +2400,7 @@ export default function HealthAssist() {
                       : 'Most urgent first.'}
                   {activeDomain && <> · module <b>{activeDomain}</b> <button type="button" className="btn ghost sm hs-inline-clear" onClick={() => applyFilter({ domain: '' })}>×</button></>}
                   {filter.rule && <> · rule <button type="button" className="btn ghost sm hs-inline-clear" onClick={() => applyFilter({ rule: '' })}>{filter.rule} ×</button></>}
+                  {clearDim}
                   {quietCount > 0 && <span className="hs-muted"> · {quietCount} muted or accepted hidden</span>}
                 </span>
               </div>
@@ -2171,12 +2415,12 @@ export default function HealthAssist() {
               <div className="hd-loading" aria-busy="true"><SkeletonLines lines={6} /></div>
             ) : topFindings.length === 0 ? (
               <EmptyState
-                title={total === 0 && !filter.severity && !filter.domain && !filter.rule
+                title={total === 0 && !filter.severity && !filter.domain && !filter.rule && !filter.dimension
                   ? `Nothing found${scope !== 'all' ? ` in ${scopeInfo?.label}` : ''} in what was read.`
                   : quietCount > 0 && findings.length === quietCount
                     ? 'Everything here is muted or accepted.'
                     : `No ${activeSev ? activeSev.label.toLowerCase() : ''} findings match.`}
-                hint={total === 0 && !filter.severity && !filter.domain && !filter.rule
+                hint={total === 0 && !filter.severity && !filter.domain && !filter.rule && !filter.dimension
                   ? 'That is a statement about the tables that were read, not about the whole instance. Check the scan coverage below before treating it as a clean bill of health.'
                   : quietCount > 0 && findings.length === quietCount
                     ? 'They are still detected and still counted — "View all findings" can show them.'
@@ -2191,6 +2435,7 @@ export default function HealthAssist() {
                       <th style={{ width: 120 }}>Severity</th>
                       <th>Finding</th>
                       <th style={{ width: 200 }}>Module</th>
+                      <th style={{ width: 180 }}>Dimension</th>
                       <th style={{ width: 96 }}>Records</th>
                       <th style={{ width: 36 }} aria-label="Open" />
                     </tr>
@@ -2215,6 +2460,7 @@ export default function HealthAssist() {
                             {lc !== 'open' && <span className="hs-lc hd-lc">{stateLabel(lc)}</span>}
                           </td>
                           <td className="hs-muted">{domainLabel[f.domain] || f.domain || '—'}</td>
+                          <td>{dimChips(f)}</td>
                           <td className="mono">{(f.target_ids?.length ?? 0).toLocaleString()}</td>
                           <td className="hs-muted">→</td>
                         </tr>
@@ -2634,6 +2880,20 @@ export default function HealthAssist() {
         items={bulkItems || []}
         onClose={() => setBulkItems(null)}
         onSettled={onBulkSettled}
+      />
+
+      {/* Create / edit / view a dimension. Saving re-reads the counts; see
+          onDimensionsChanged for what a save or a delete does to the list. */}
+      <DimensionModal
+        open={Boolean(dimModal)}
+        mode={dimModal?.mode || 'create'}
+        dimensionId={dimModal?.id || null}
+        initialStep={dimModal?.step || 1}
+        scope={scope}
+        bands={bands}
+        onClose={() => setDimModal(null)}
+        onSaved={(d) => onDimensionsChanged({ id: d?.id })}
+        onViewFindings={(id) => goTo('findings', { group: 'dimension', patch: { dimension: id } })}
       />
     </div>
   );

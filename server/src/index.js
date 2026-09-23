@@ -20,6 +20,7 @@ import { knowledgeRouter } from './routes/knowledge.js';
 import { skillsRouter } from './routes/skills.js';
 import { healthRouter } from './routes/health.js';
 import { attachmentsRouter } from './routes/attachments.js';
+import { healthDimensionsRouter } from './routes/health-dimensions.js';
 import { log, requestLogger, banner } from './logging.js';
 import { SnowError } from './servicenow/client.js';
 import { getDb } from './memory/db.js';
@@ -73,6 +74,12 @@ app.use('/api/skills', skillsRouter);
 
 // Health Assist. Read-only estate analysis: extraction through the one client,
 // deterministic rules, and a manifest that says what it could not see.
+// Finding dimensions are mounted first: a classification layered over
+// findings, with its own tables and no path to a finding row or the instance.
+// `/categories` is the pre-rename address, kept as a deprecated alias of the
+// same router so nothing that still calls it breaks; `/dimensions` is canonical.
+app.use('/api/health/dimensions', healthDimensionsRouter);
+app.use('/api/health/categories', healthDimensionsRouter);
 app.use('/api/health', healthRouter);
 
 // eslint-disable-next-line no-unused-vars

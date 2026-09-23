@@ -8,6 +8,8 @@ import './experience.css';
 /* The ROBOTIC theme (Preferences). Every rule is scoped to
    :root[data-theme="robotic"], so it is inert while Black is selected. */
 import './theme-robotic.css';
+// Finding dimensions (Health Assist): cards, matrix, manage page, dialog.
+import './health-dimensions.css';
 import { installClientLogging } from './logging.js';
 import { applyTheme, currentTheme } from './theme.js';
 
