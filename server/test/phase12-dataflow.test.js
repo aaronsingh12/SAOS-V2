@@ -991,7 +991,7 @@ test('A4 — Phase 12 added no migration: dataflow rides on the existing tables'
    * Phase 1 task tables, and no migration anywhere was added FOR IT. The head is
    * still pinned, so a stray migration 25 fails this the way 24 used to.
    */
-  assert.equal(getDb().prepare('PRAGMA user_version').get().user_version, 29);
+  assert.equal(getDb().prepare('PRAGMA user_version').get().user_version, 31);
 
   const dbSrc = read('memory/db.js');
   assert.match(dbSrc, /\/\/ 24 — HEALTH ASSIST/, 'migration 24 is no longer the Health Assist one');
@@ -1000,7 +1000,9 @@ test('A4 — Phase 12 added no migration: dataflow rides on the existing tables'
   assert.match(dbSrc, /\/\/ 27 — CMDB QUALITY SCORING/, 'migration 27 is no longer the CMDB Quality one');
   assert.match(dbSrc, /\/\/ 28 — MODULE SCANS AND INCREMENTAL CHANGE CHECKS/, 'migration 28 is no longer the module-scan one');
   assert.match(dbSrc, /\/\/ 29 — ITSM CATALOGUE PARAMETERS/, 'migration 29 is no longer the ITSM catalogue parameters one');
-  assert.ok(!/\/\/ 30 —/.test(dbSrc), 'a migration 30 appeared');
+  assert.match(dbSrc, /\/\/ 30 — HEALTH FINDING CATEGORIES/, 'migration 30 is no longer the health categories one');
+  assert.match(dbSrc, /\/\/ 31 — HEALTH FINDING CATEGORIES ARE NOW "FINDING DIMENSIONS"/, 'migration 31 is no longer the dimensions rename');
+  assert.ok(!/\/\/ 32 —/.test(dbSrc), 'a migration 32 appeared');
 
   // And nothing in the schema knows what a dataflow or a $ref is.
   const tables = getDb().prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);

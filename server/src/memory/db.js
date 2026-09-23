@@ -1339,6 +1339,118 @@ const MIGRATIONS = [
       );
     `);
   },
+
+  // 30 — HEALTH FINDING CATEGORIES: a classification layered OVER findings.
+  //
+  // A category is a theme ("Ownership & Accountability") that groups RULES, not
+  // findings: every finding a rule produces inherits the rule's categories at
+  // READ time. That is why health_findings gains no column here. Denormalising
+  // a category onto each row would mean rewriting history whenever a mapping
+  // changed, and a deleted category would have to reach into finding rows —
+  // the one table this feature must never write.
+  //
+  // GLOBAL, not per instance. A category is a statement about what a rule
+  // MEANS, which does not change with the PDI it ran against; the findings it
+  // is resolved over are still scoped per instance by the store.
+  //
+  // `name_key` is the case-folded, trimmed name, so "Ownership gaps" and
+  // "ownership gaps " cannot both exist. Built-in rows are synced from code
+  // (health/categories.js) rather than inserted here, so the product taxonomy
+  // can change in a release without editing a shipped migration.
+  //
+  // Deleting a category cascades to ITS mappings and nothing else — findings,
+  // runs, lifecycle states and proposals have no reference to either table.
+  //
+  // REPLAY GUARD (added with migration 31, which renames these tables to
+  // health_dimensions / health_dimension_rules): once the renamed table exists,
+  // this migration has already done its work under the new name, so a replay
+  // must not re-create the old tables beside it (phase9-database D6). It
+  // changes nothing for a real database — a fresh one runs 30 then 31, and one
+  // already at 30 or 31 never runs 30 again.
+  (db) => {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'health_dimensions'").get()) return;
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS health_categories (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        name_key     TEXT NOT NULL UNIQUE,
+        description  TEXT,
+        type         TEXT NOT NULL CHECK (type IN ('built_in', 'custom', 'system')),
+        created_by   TEXT,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS health_category_rules (
+        category_id  TEXT NOT NULL REFERENCES health_categories(id) ON DELETE CASCADE,
+        rule_id      TEXT NOT NULL,
+        source       TEXT NOT NULL CHECK (source IN ('builtin', 'manual', 'matcher', 'ai')),
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        PRIMARY KEY (category_id, rule_id)
+      );
+
+      -- "Which categories does this rule belong to" and the Uncategorised
+      -- NOT IN subquery both read by rule_id.
+      CREATE INDEX IF NOT EXISTS idx_health_category_rules_rule ON health_category_rules(rule_id);
+    `);
+  },
+
+  // 31 — HEALTH FINDING CATEGORIES ARE NOW "FINDING DIMENSIONS".
+  //
+  // A terminology rename of migration 30's two tables, nothing more: every row
+  // and mapping is kept, every id is kept, and a rule belongs to exactly the
+  // dimensions it belonged to as categories. Migration 30 is left as shipped
+  // (a database already at 30 would never re-run an edited one).
+  //
+  //   health_categories      → health_dimensions
+  //   health_category_rules  → health_dimension_rules  (category_id → dimension_id)
+  //   'uncategorised'        → 'unclassified', the system fallback's id and name
+  //
+  // Not to be confused with the CMDB Quality score's D1–D10 dimensions, which
+  // live in scoring JSON and are untouched by this.
+  //
+  // RENAMES ONLY — no row is deleted and no table or index is dropped, which is
+  // what the no-data-loss guard (phase9-database D2) requires of every shipped
+  // migration. The rules-by-rule_id index moves with its table under its
+  // original name; an index name is not user-visible and dropping it would be
+  // the one destructive statement here.
+  //
+  // REPLAY-SAFE: each rename runs only while the old name exists and the new
+  // one does not. A replayed migration 30 re-creates the two old tables EMPTY
+  // beside the renamed ones; they are left as they are, hold nothing, and
+  // nothing reads them.
+  (db) => {
+    const has = (t) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t));
+    const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+
+    if (has('health_categories') && !has('health_dimensions')) {
+      db.exec('ALTER TABLE health_categories RENAME TO health_dimensions');
+    }
+    if (has('health_category_rules') && !has('health_dimension_rules')) {
+      db.exec('ALTER TABLE health_category_rules RENAME TO health_dimension_rules');
+    }
+    if (has('health_dimension_rules') && cols('health_dimension_rules').includes('category_id')) {
+      db.exec('ALTER TABLE health_dimension_rules RENAME COLUMN category_id TO dimension_id');
+    }
+
+    /* The fallback's new id and name. Parent and children move in one step with
+       the foreign-key check deferred to commit (the runner wraps every
+       migration in a transaction), so no mapping is orphaned even for an
+       instant. A custom dimension already called "Unclassified" keeps its name
+       and the fallback takes an id-qualified key — the same resolution the
+       built-in sync applies to the same clash. */
+    db.exec(`
+      PRAGMA defer_foreign_keys = ON;
+      UPDATE health_dimensions
+         SET id = 'unclassified', name = 'Unclassified',
+             name_key = CASE WHEN EXISTS (SELECT 1 FROM health_dimensions WHERE name_key = 'unclassified')
+                             THEN 'unclassified#unclassified' ELSE 'unclassified' END
+       WHERE id = 'uncategorised'
+         AND NOT EXISTS (SELECT 1 FROM health_dimensions WHERE id = 'unclassified');
+      UPDATE health_dimension_rules SET dimension_id = 'unclassified' WHERE dimension_id = 'uncategorised';
+    `);
+  },
 ];
 
 /**

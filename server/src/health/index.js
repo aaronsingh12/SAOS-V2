@@ -19,15 +19,19 @@ import { runITSMRules } from './itsm/runner.js';
 import { normalizeITSMRun, countingClient, itsmPerformance } from './itsm/integration.js';
 import { ITSM_PARAMETERS } from './itsm/parameters.js';
 import { ITSM_RULE_CONFIGS } from './itsm/rules/index.js';
-import { hasITSMRule } from './itsm/catalogue.js';
+import { hasITSMRule, getAllITSMRules } from './itsm/catalogue.js';
 import { adaptRule } from './itsm/adapter.js';
 import { collectMeasures, historyForScan, historyFromRuns } from './itsm/measure-history.js';
 import { undeterminedOf } from './itsm/engines/result.js';
 import { registerItsmCatalogue } from './remediation.js';
+import { registerItsmCatalogueRules } from './rule-catalogue.js';
 import { evaluateLinks } from './cross-domain/links.js';
 
 /* The remediation layer's ITSM catalogue guidance — registered here, the one facade over health/itsm. */
 registerItsmCatalogue((ruleId) => (hasITSMRule(ruleId) ? adaptRule(ruleId) : null));
+/* The category layer's rule catalogue (rule-catalogue.js) gets the ITSM rules
+   the same way — injected here, so it never imports health/itsm itself. */
+registerItsmCatalogueRules(getAllITSMRules);
 
 /**
  * Health Assist — the run.

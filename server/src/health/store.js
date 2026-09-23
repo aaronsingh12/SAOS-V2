@@ -5,6 +5,7 @@ import { stateMap, QUIET_STATES } from './finding-state.js';
 import { scopeFilter, summariseScopes, overallScope, itomScoringOf, SCOPE_KEYS, MODULE_KEYS, SCOPES, moduleTables, scopeOfRule } from './scopes.js';
 import { TABLES } from './tables.js';
 import { cmdbHistoryFromRuns, cmdbSnapshotEligibility } from './cmdb-history.js';
+import { dimensionClause } from './finding-dimensions.js';
 
 /**
  * Durable health runs.
@@ -815,11 +816,24 @@ function searchClause(q) {
  * current result. Every row carries `run_id`, so opening one reads it from the
  * run it belongs to.
  */
-export function listModuleFindings({ scope = 'all', domain, severity, priority, rule, q, limit = 100, offset = 0 } = {}) {
+/*
+ * The WHERE clause of the module findings view — each module's rows from its
+ * own current run, plus the page's filters. One builder, so the list, its
+ * total and the dimension counts can never disagree about which findings are
+ * "in view". `null` when no module has a result.
+ *
+ * `dimension` narrows by a rule-level classification resolved in SQL
+ * (health/finding-dimensions.js): the finding rows are read, never rewritten.
+ * `rules` is an explicit rule-id list, used to preview a dimension not yet saved.
+ */
+function moduleFindingsWhere({ scope = 'all', domain, severity, priority, rule, q, dimension, rules } = {}) {
+  /* Resolved first: an unknown dimension is a 404 even before any scan exists,
+     never an empty page that reads as "nothing in this dimension". */
+  const dim = dimension ? dimensionClause(dimension) : null;
   const results = moduleResults();
   const modules = scope && scope !== 'all' ? [scope] : MODULE_KEYS;
   const pairs = modules.filter((m) => results[m]?.runId).map((m) => ({ runId: results[m].runId, module: m }));
-  if (!pairs.length) return { total: 0, limit, offset, findings: [] };
+  if (!pairs.length) return null;
   const clauses = [];
   const args = [];
   for (const p of pairs) {
@@ -832,8 +846,37 @@ export function listModuleFindings({ scope = 'all', domain, severity, priority, 
   if (severity) { where.push('severity = ?'); args.push(severity); }
   if (priority) { where.push('priority = ?'); args.push(priority); }
   if (rule) { where.push('rule_id = ?'); args.push(rule); }
+  if (dim) { where.push(dim.clause); args.push(...dim.args); }
+  if (Array.isArray(rules)) {
+    if (!rules.length) where.push('0');
+    else { where.push(`rule_id IN (${rules.map(() => '?').join(',')})`); args.push(...rules); }
+  }
   const search = searchClause(q);
   if (search) { where.push(search.clause); args.push(...search.args); }
+  return { where, args };
+}
+
+/**
+ * Findings in view, counted per (rule, severity, domain) — the input to
+ * dimension totals, the dimension × severity matrix, a dimension's top rules
+ * and its related modules. One GROUP BY over the same rows
+ * the list shows (muted ones included, as every other count on the page does),
+ * so dimension counts cost one query however many dimensions exist.
+ */
+export function moduleRuleSeverityCounts(filters = {}) {
+  const w = moduleFindingsWhere(filters);
+  if (!w) return [];
+  return getDb().prepare(`
+    SELECT rule_id, severity, domain, COUNT(*) AS n FROM health_findings
+     WHERE ${w.where.join(' AND ')}
+     GROUP BY rule_id, severity, domain
+  `).all(...w.args);
+}
+
+export function listModuleFindings({ scope = 'all', domain, severity, priority, rule, q, dimension, limit = 100, offset = 0 } = {}) {
+  const w = moduleFindingsWhere({ scope, domain, severity, priority, rule, q, dimension });
+  if (!w) return { total: 0, limit, offset, findings: [] };
+  const { where, args } = w;
   const db = getDb();
   const rows = db.prepare(`
     SELECT * FROM health_findings WHERE ${where.join(' AND ')}
@@ -852,7 +895,7 @@ export function listModuleFindings({ scope = 'all', domain, severity, priority, 
  * findings each carrying its evidence rows is megabytes of JSON the list view
  * never renders.
  */
-export function listFindings(runId, { scope, domain, severity, priority, rule, q, fingerprint, limit = 100, offset = 0, withEvidence = false } = {}) {
+export function listFindings(runId, { scope, domain, severity, priority, rule, q, dimension, fingerprint, limit = 100, offset = 0, withEvidence = false } = {}) {
   const where = ['run_id = ?'];
   const args = [runId];
   const sf = scopeFilter(scope);
@@ -861,6 +904,7 @@ export function listFindings(runId, { scope, domain, severity, priority, rule, q
   if (severity) { where.push('severity = ?'); args.push(severity); }
   if (priority) { where.push('priority = ?'); args.push(priority); }
   if (rule) { where.push('rule_id = ?'); args.push(rule); }
+  if (dimension) { const d = dimensionClause(dimension); where.push(d.clause); args.push(...d.args); }
   if (fingerprint) { where.push('fingerprint = ?'); args.push(fingerprint); }
   const search = searchClause(q);
   if (search) { where.push(search.clause); args.push(...search.args); }

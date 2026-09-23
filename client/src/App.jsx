@@ -33,6 +33,7 @@ const TITLES = {
   '/flows': 'Flow Designer',
   '/sla': 'SLA Definitions',
   '/access': 'Access Control',
+  '/health': 'Health Assist',
   '/tables': 'Database Administration',
   '/meetings': 'Meeting Intelligence',
   '/applications': 'Applications',

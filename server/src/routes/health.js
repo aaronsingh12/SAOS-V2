@@ -25,6 +25,11 @@ import {
 } from '../health/finding-state.js';
 import { scopeVocabulary, normaliseScope, normaliseModules, MODULE_KEYS, scopeOf as scopeOfFinding, scopeOfRule } from '../health/scopes.js';
 import { INCREMENTAL_DEFAULTS } from '../health/incremental.js';
+import { mappingIndex, dimensionsForRule } from '../health/finding-dimensions.js';
+
+/* The finding-dimension filter. `category` is the pre-rename spelling, still
+   accepted so a bookmarked or scripted URL keeps working; `dimension` wins. */
+const dimensionParam = (q) => q.dimension || q.category || undefined;
 import {
   BULK_MAX, BULK_ITEM_STATUS, hasFieldFix, normaliseSelection, normaliseApprovals,
   classifyProposal, classifyOutcome, proposalNote, summarise as summariseBulk,
@@ -464,10 +469,20 @@ healthRouter.get('/modules', (req, res, next) => {
  * page's Bulk Fix checkbox and the proposal it leads to can never disagree —
  * a rule added there tomorrow becomes selectable without touching the page.
  */
-const withFixable = (page) => ({
-  ...page,
-  findings: (page.findings || []).map((f) => ({ ...f, fixable: hasFieldFix(f.rule_id) })),
-});
+/*
+ * Each row also carries its finding DIMENSIONS — resolved from its rule at read time
+ * (health/finding-dimensions.js), never stored on the finding. One mapping read
+ * per page, however many rows. Unclassified when no dimension claims the rule.
+ */
+const withFixable = (page) => {
+  const index = mappingIndex();
+  return {
+    ...page,
+    findings: (page.findings || []).map((f) => ({
+      ...f, fixable: hasFieldFix(f.rule_id), dimensions: dimensionsForRule(f.rule_id, index),
+    })),
+  };
+};
 
 /** GET /api/health/modules/findings — findings from each module's own current result. */
 healthRouter.get('/modules/findings', (req, res, next) => {
@@ -479,6 +494,7 @@ healthRouter.get('/modules/findings', (req, res, next) => {
       priority: req.query.priority || undefined,
       rule: req.query.rule || undefined,
       q: req.query.q || undefined,
+      dimension: dimensionParam(req.query),
       limit: Math.min(Number(req.query.limit) || 100, 500),
       offset: Number(req.query.offset) || 0,
     })));
@@ -544,6 +560,7 @@ healthRouter.get('/runs/:runId/findings', (req, res, next) => {
       priority: req.query.priority || undefined,
       rule: req.query.rule || undefined,
       q: req.query.q || undefined,
+      dimension: dimensionParam(req.query),
       limit: Math.min(Number(req.query.limit) || 100, 500),
       offset: Number(req.query.offset) || 0,
     })));
@@ -1139,6 +1156,7 @@ function exportFilters(req) {
     domain: req.query.domain || undefined,
     severity: req.query.severity || undefined,
     rule: req.query.rule || undefined,
+    dimension: dimensionParam(req.query),
     /* Every stored row. A run stores every finding it detected, and an export
        that silently stopped at 10,000 of 12,194 would be a different report.
        SQLite reads a negative LIMIT as "no upper bound". */

@@ -5,6 +5,8 @@ import './styles.css';
 /* The agent workspace: status, activity, plan, skills, task history. Its own
    file rather than 250 more lines in styles.css — one feature, one sheet. */
 import './experience.css';
+// Finding dimensions (Health Assist): cards, matrix, manage page, dialog.
+import './health-dimensions.css';
 import { installClientLogging } from './logging.js';
 
 // Before render, so a failure during the first paint is still captured.
