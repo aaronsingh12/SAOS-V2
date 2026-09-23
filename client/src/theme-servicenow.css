@@ -1,0 +1,553 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   SERVICENOW THEME — a light theme in the Now palette.
+
+   Every rule is scoped to :root[data-theme="servicenow"], so the Original
+   theme is untouched: with the attribute absent, nothing in this file matches.
+   Switched from Preferences (theme.js).
+
+   A resemblance, not a copy: the colours, shapes and motion are taken from
+   servicenow.com and developer.servicenow.com (measured from the pages and the
+   Now Design System tokens), but there is no ServiceNow logo, wordmark or
+   proprietary typeface here. The app keeps its own name and mark.
+
+     · navy chrome (#032d42) for the side column, with the hero-banner deep
+       gradient and a faint green glow
+     · a cool pale ground (#f2f5f7) under white cards with soft, wide shadows
+     · signal green (#62d84e) as the fill accent, always carrying navy text;
+       a deeper green (#18803a) where green has to be readable as text
+     · the green→teal gradient (#62d84e → #24c2ce) for bars and underlines
+     · pill buttons, 12px cards, the focus blue (#3c59e7) for keyboard focus
+     · DM Sans (loaded on demand) standing in for the brand's own sans
+
+   MOTION — slow drifting aurora behind the content, pages and cards rising in
+   on arrival, a shine across the primary button, a sliding nav marker, tabs
+   that underline from the centre, springy dialogs and toasts. Every piece is a
+   CSS transition or animation, so the global `prefers-reduced-motion` rule in
+   styles.css stops all of it; entrance animations fill BACKWARDS only, so with
+   motion off (or once they finish) nothing is left transformed.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+:root[data-theme="servicenow"] {
+  --sn-navy: #032d42;
+  --sn-navy-2: #0b3d57;
+  --sn-navy-deep: #021f2e;
+  --sn-green: #62d84e;
+  --sn-green-press: #52c93f;
+  --sn-green-text: #18803a;
+  --sn-teal: #24c2ce;
+  --sn-teal-deep: #007393;
+  --sn-cyan: #00cbe6;
+  --sn-focus: #3c59e7;
+  --sn-ground: #f2f5f7;
+  --sn-grad: linear-gradient(90deg, #62d84e, #24c2ce);
+  --sn-shadow-sm: 0 1px 2px rgba(3, 45, 66, 0.06), 0 4px 16px -8px rgba(3, 45, 66, 0.14);
+  --sn-shadow-md: 0 2px 4px rgba(3, 45, 66, 0.06), 0 16px 36px -16px rgba(3, 45, 66, 0.28);
+  --sn-shadow-lg: 0 32px 64px -24px rgba(3, 45, 66, 0.45), 0 2px 8px rgba(3, 45, 66, 0.08);
+  --sn-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --sn-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --ink: #f2f5f7;
+  --panel: #ffffff;
+  --panel-2: #f5f8fa;
+  --line: #d9e1e6;
+  --line-soft: #e9eef1;
+  --text: #15232e;
+  --muted: #5a6b77;
+  /* Green as TEXT must stay readable on white, so the token is the deep
+     green; the bright signal green is applied as a fill, below. */
+  --verdigris: #18803a;
+  --verdigris-dim: #e4f7df;
+  --amber: #b45309;
+  --amber-dim: #fef3c7;
+  --red: #c8102e;
+  --blue: #007393;
+  --font-display: 'DM Sans', 'Inter', system-ui, sans-serif;
+  --font-body: 'DM Sans', 'Inter', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --radius: 12px;
+  --radius-sm: 8px;
+
+  /* Severity scale, re-tuned for a white panel. */
+  --hs-systemic: #7c3aed;
+  --hs-critical: #e11d48;
+  --hs-major:    #d97706;
+  --hs-moderate: #0284c7;
+  --hs-low:      #64748b;
+  --hs-scan:     #0891b2;
+
+  color-scheme: light;
+}
+
+:root[data-theme="servicenow"] body { background: var(--sn-ground); color: var(--text); -webkit-font-smoothing: antialiased; }
+:root[data-theme="servicenow"] ::selection { background: rgba(98, 216, 78, 0.35); }
+:root[data-theme="servicenow"] h1,
+:root[data-theme="servicenow"] h2,
+:root[data-theme="servicenow"] h3 { font-weight: 700; letter-spacing: -0.015em; }
+:root[data-theme="servicenow"] :focus-visible { outline: 2px solid var(--sn-focus); outline-offset: 2px; border-radius: 6px; }
+:root[data-theme="servicenow"] * { scrollbar-width: thin; scrollbar-color: #b9c6ce transparent; }
+:root[data-theme="servicenow"] a { transition: color 160ms; }
+:root[data-theme="servicenow"] a:hover { color: var(--sn-navy); }
+
+/* ── The playground: aurora instead of the wave field ────────────────────────
+   The .app-bg layer is reused as the frame (absolute, inset 0, clipped,
+   pointer-events none), so the drift can overflow its pseudo-elements without
+   ever reaching the page's scroll area. Hiding the waves' container also
+   parks their WebGL loop — it pauses when not intersecting. */
+:root[data-theme="servicenow"] .app-bg .gradient-waves-container { display: none; }
+/* A faint dot grid that fades out down the page. The fade is a ground-coloured
+   layer over the dots, not a mask, so the aurora above it stays full-height. */
+:root[data-theme="servicenow"] .app-bg {
+  background-image:
+    linear-gradient(180deg, rgba(242, 245, 247, 0) 0%, rgba(242, 245, 247, 0.55) 45%, #f2f5f7 85%),
+    radial-gradient(rgba(3, 45, 66, 0.075) 1px, transparent 1.5px);
+  background-size: auto, 22px 22px;
+}
+:root[data-theme="servicenow"] .app-bg::before,
+:root[data-theme="servicenow"] .app-bg::after {
+  content: '';
+  position: absolute;
+  inset: -18%;
+  pointer-events: none;
+  will-change: transform;
+}
+:root[data-theme="servicenow"] .app-bg::before {
+  background:
+    radial-gradient(38% 46% at 14% 8%, rgba(98, 216, 78, 0.22), transparent 70%),
+    radial-gradient(34% 42% at 88% 12%, rgba(36, 194, 206, 0.20), transparent 70%);
+  animation: sn-drift-a 26s ease-in-out infinite alternate;
+}
+:root[data-theme="servicenow"] .app-bg::after {
+  background:
+    radial-gradient(40% 36% at 72% 88%, rgba(0, 115, 147, 0.13), transparent 70%),
+    radial-gradient(30% 32% at 18% 78%, rgba(98, 216, 78, 0.12), transparent 70%);
+  animation: sn-drift-b 34s ease-in-out infinite alternate;
+}
+@keyframes sn-drift-a {
+  0%   { transform: translate3d(-3%, -2%, 0) scale(1); }
+  50%  { transform: translate3d(4%, 3%, 0) scale(1.08); }
+  100% { transform: translate3d(-1%, 5%, 0) scale(1.03); }
+}
+@keyframes sn-drift-b {
+  0%   { transform: translate3d(3%, 2%, 0) scale(1.04); }
+  50%  { transform: translate3d(-4%, -3%, 0) scale(1); }
+  100% { transform: translate3d(2%, -5%, 0) scale(1.09); }
+}
+
+/* ── Side column: navy chrome, its own token scope ───────────────────────── */
+:root[data-theme="servicenow"] .sidebar {
+  --ink: var(--sn-navy-deep);
+  --panel: var(--sn-navy);
+  --panel-2: var(--sn-navy-2);
+  --line: rgba(255, 255, 255, 0.14);
+  --line-soft: rgba(255, 255, 255, 0.08);
+  --text: #f2f7f9;
+  --muted: #9db4c0;
+  --verdigris: var(--sn-green);
+  --verdigris-dim: #1f5a3a;
+  --amber: #fbbf24;
+  --red: #fb7185;
+  --blue: #5ed3e6;
+  --hs-systemic: #c4a1f0;
+  --hs-scan: #67e8f9;
+  color-scheme: dark;
+  color: #f2f7f9;
+  background:
+    radial-gradient(130% 38% at 0% 100%, rgba(98, 216, 78, 0.16), transparent 62%),
+    radial-gradient(90% 30% at 100% 0%, rgba(36, 194, 206, 0.10), transparent 60%),
+    linear-gradient(180deg, #032d42 0%, #04344c 55%, #0a4561 100%);
+  border-right: 0;
+  box-shadow: 1px 0 0 rgba(3, 45, 66, 0.10), 10px 0 30px -18px rgba(3, 45, 66, 0.55);
+}
+:root[data-theme="servicenow"] .sidebar .btn { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.18); color: #f2f7f9; box-shadow: none; }
+:root[data-theme="servicenow"] .sidebar .btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.32); }
+:root[data-theme="servicenow"] .sidebar .input,
+:root[data-theme="servicenow"] .sidebar .select,
+:root[data-theme="servicenow"] .sidebar .textarea { background: rgba(2, 31, 46, 0.6); color: #f2f7f9; border-color: rgba(255, 255, 255, 0.18); }
+
+:root[data-theme="servicenow"] .nav-brand { border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+:root[data-theme="servicenow"] .nav-brand-name { font-weight: 800; letter-spacing: -0.02em; }
+:root[data-theme="servicenow"] .nav-brand-name .assist {
+  background: var(--sn-grad);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+}
+:root[data-theme="servicenow"] .nav-brand-sub { font-family: var(--font-body); letter-spacing: 0.02em; color: #8fb0bf; }
+:root[data-theme="servicenow"] .nav-section-label {
+  font-family: var(--font-body); font-weight: 700; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.1em; color: #7fa3b3;
+}
+:root[data-theme="servicenow"] .nav-collapse:hover { background: rgba(255, 255, 255, 0.10); }
+
+/* The marker: a gradient bar that springs open on the active row. */
+:root[data-theme="servicenow"] .nav-item {
+  position: relative;
+  border-radius: 10px;
+  color: #b9cdd6;
+  font-weight: 500;
+  transition: background-color 200ms, color 200ms;
+}
+:root[data-theme="servicenow"] .nav-item::before {
+  content: '';
+  position: absolute; left: 0; top: 7px; bottom: 7px;
+  width: 3px; border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, var(--sn-green), var(--sn-teal));
+  transform: scaleY(0);
+  transition: transform 320ms var(--sn-spring);
+}
+:root[data-theme="servicenow"] .nav-item .nav-ic,
+:root[data-theme="servicenow"] .nav-item > [data-ic] { transition: translate 220ms var(--sn-ease), color 200ms; }
+:root[data-theme="servicenow"] .nav-item:hover { background: rgba(255, 255, 255, 0.07); color: #fff; }
+:root[data-theme="servicenow"] .nav-item:hover .nav-ic,
+:root[data-theme="servicenow"] .nav-item:hover > [data-ic] { translate: 2px 0; }
+:root[data-theme="servicenow"] .nav-item.active {
+  background: linear-gradient(90deg, rgba(98, 216, 78, 0.22), rgba(98, 216, 78, 0.03));
+  color: #fff; font-weight: 600;
+  box-shadow: none;
+}
+:root[data-theme="servicenow"] .nav-item.active::before { transform: scaleY(1); }
+:root[data-theme="servicenow"] .nav-item.active .nav-ic,
+:root[data-theme="servicenow"] .nav-item.active > [data-ic] { color: var(--sn-green); }
+:root[data-theme="servicenow"] .nav-flyout {
+  border-radius: 14px;
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 24px 48px -16px rgba(0, 0, 0, 0.55);
+}
+:root[data-theme="servicenow"] .nav-user-avatar {
+  background: var(--sn-grad); border: 0; color: var(--sn-navy);
+  box-shadow: 0 0 0 3px rgba(98, 216, 78, 0.18);
+}
+:root[data-theme="servicenow"] .sidebar.is-mobile { box-shadow: 16px 0 40px -12px rgba(3, 45, 66, 0.6); }
+:root[data-theme="servicenow"] .dialog-scrim,
+:root[data-theme="servicenow"] .nav-backdrop {
+  background: rgba(3, 45, 66, 0.42);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+
+/* ── Page title: navy, with the gradient bar growing in beneath it ────────── */
+:root[data-theme="servicenow"] .page-title {
+  color: var(--sn-navy);
+  font-size: 23px; font-weight: 800; letter-spacing: -0.025em;
+  margin-bottom: 18px;
+}
+:root[data-theme="servicenow"] .page-title::after {
+  content: '';
+  display: block;
+  width: 46px; height: 4px; margin-top: 8px;
+  border-radius: 4px;
+  background: var(--sn-grad);
+  transform-origin: left center;
+  animation: sn-bar-grow 800ms var(--sn-ease) 150ms backwards;
+}
+@keyframes sn-bar-grow { from { transform: scaleX(0); opacity: 0; } to { transform: scaleX(1); opacity: 1; } }
+
+/* ── Arrival: the page rises in, cards in a short stagger ────────────────── */
+:root[data-theme="servicenow"] .content > * { animation: sn-rise 480ms var(--sn-ease) backwards; }
+:root[data-theme="servicenow"] .content > *:nth-child(2) { animation-delay: 40ms; }
+:root[data-theme="servicenow"] .content > *:nth-child(3) { animation-delay: 80ms; }
+:root[data-theme="servicenow"] .content > *:nth-child(n+4) { animation-delay: 120ms; }
+:root[data-theme="servicenow"] .content :is(.grid2, .grid3) > .card { animation: sn-rise 560ms var(--sn-ease) backwards; }
+:root[data-theme="servicenow"] .content :is(.grid2, .grid3) > .card:nth-child(1) { animation-delay: 80ms; }
+:root[data-theme="servicenow"] .content :is(.grid2, .grid3) > .card:nth-child(2) { animation-delay: 140ms; }
+:root[data-theme="servicenow"] .content :is(.grid2, .grid3) > .card:nth-child(3) { animation-delay: 200ms; }
+:root[data-theme="servicenow"] .content :is(.grid2, .grid3) > .card:nth-child(4) { animation-delay: 260ms; }
+:root[data-theme="servicenow"] .content :is(.grid2, .grid3) > .card:nth-child(5) { animation-delay: 320ms; }
+:root[data-theme="servicenow"] .content :is(.grid2, .grid3) > .card:nth-child(n+6) { animation-delay: 380ms; }
+@keyframes sn-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+/* ── Surfaces: white, soft and wide shadows, 12px corners ────────────────── */
+:root[data-theme="servicenow"] .card,
+:root[data-theme="servicenow"] .tool-card {
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--sn-shadow-sm);
+  transition: box-shadow 280ms var(--sn-ease), border-color 280ms;
+}
+:root[data-theme="servicenow"] .card:hover,
+:root[data-theme="servicenow"] .tool-card:hover { box-shadow: var(--sn-shadow-md); border-color: #d3dde3; }
+:root[data-theme="servicenow"] .card-title {
+  font-family: var(--font-body); font-weight: 700; font-size: 12px;
+  letter-spacing: 0.08em; color: var(--sn-navy);
+}
+:root[data-theme="servicenow"] .card-title::before {
+  content: '';
+  display: inline-block; vertical-align: 2px;
+  width: 6px; height: 6px; margin-right: 8px;
+  border-radius: 50%;
+  background: var(--sn-green);
+  box-shadow: 0 0 0 3px rgba(98, 216, 78, 0.2);
+}
+:root[data-theme="servicenow"] .stat b { color: var(--sn-navy); font-weight: 800; letter-spacing: -0.03em; }
+:root[data-theme="servicenow"] .note {
+  background: #eef6f8; border-left-color: var(--sn-teal-deep);
+  border-radius: 8px; color: #3d5361;
+}
+:root[data-theme="servicenow"] .note.warn { background: #fff8e6; border-left-color: #f0a500; }
+
+:root[data-theme="servicenow"] .dt {
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--sn-shadow-sm);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  transition: box-shadow 280ms var(--sn-ease);
+}
+:root[data-theme="servicenow"] .dt:hover { box-shadow: var(--sn-shadow-md); }
+:root[data-theme="servicenow"] .dt-top { background: #f7f9fa; }
+:root[data-theme="servicenow"] .dt-title { color: var(--sn-navy); font-weight: 700; }
+:root[data-theme="servicenow"] .dt-filter {
+  background: #fff;
+  transition: border-color 160ms, box-shadow 220ms;
+}
+:root[data-theme="servicenow"] .dt-filter:focus-within { border-color: var(--sn-teal-deep); box-shadow: 0 0 0 3px rgba(0, 203, 230, 0.2); }
+:root[data-theme="servicenow"] .dt-table thead th { background: #f7f9fa; }
+:root[data-theme="servicenow"] .dt-table tbody td { transition: background-color 160ms; }
+:root[data-theme="servicenow"] .dt-table tbody tr:hover td { background: #f3f9f4; }
+:root[data-theme="servicenow"] .dt-table tbody tr.is-selected td { background: #e8f8e4; }
+
+:root[data-theme="servicenow"] .ref-menu,
+:root[data-theme="servicenow"] .composer-menu {
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  box-shadow: var(--sn-shadow-lg);
+  animation: sn-menu-in 220ms var(--sn-ease);
+}
+:root[data-theme="servicenow"] .ref-opt { transition: background-color 140ms; border-radius: 6px; }
+:root[data-theme="servicenow"] .ref-opt:hover,
+:root[data-theme="servicenow"] .composer-menu-item:hover:not(:disabled) { background: #eef8ec; }
+:root[data-theme="servicenow"] .ref-chip { background: #fff; }
+@keyframes sn-menu-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
+
+:root[data-theme="servicenow"] .dialog {
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  box-shadow: var(--sn-shadow-lg);
+  animation: sn-pop 380ms var(--sn-spring);
+}
+:root[data-theme="servicenow"] .dialog-title { color: var(--sn-navy); font-weight: 700; }
+:root[data-theme="servicenow"] .dialog-target { background: var(--sn-ground); }
+:root[data-theme="servicenow"] .dialog-scrim { animation: sn-fade 220ms ease-out; }
+@keyframes sn-pop { from { opacity: 0; transform: translateY(10px) scale(0.95); } to { opacity: 1; transform: none; } }
+@keyframes sn-fade { from { opacity: 0; } to { opacity: 1; } }
+
+:root[data-theme="servicenow"] .toast {
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--blue);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px -14px rgba(3, 45, 66, 0.4);
+  animation: sn-toast-in 460ms var(--sn-spring);
+}
+:root[data-theme="servicenow"] .toast.success { border-left-color: var(--sn-green); }
+:root[data-theme="servicenow"] .toast.error { border-left-color: var(--red); }
+@keyframes sn-toast-in { from { opacity: 0; transform: translateX(28px) scale(0.96); } to { opacity: 1; transform: none; } }
+
+/* ── Buttons: pills; the primary is the green one with a passing shine ───── */
+:root[data-theme="servicenow"] .btn {
+  background: #fff; color: var(--sn-navy);
+  border: 1px solid #c7d2d9;
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-weight: 600;
+  transition:
+    background-color 180ms, border-color 180ms, color 180ms,
+    box-shadow 240ms var(--sn-ease), transform 200ms var(--sn-spring),
+    background-position 800ms var(--sn-ease);
+}
+:root[data-theme="servicenow"] .btn.sm { padding: 4px 12px; }
+:root[data-theme="servicenow"] .btn:hover:not(:disabled) {
+  border-color: var(--sn-navy);
+  box-shadow: 0 6px 16px -10px rgba(3, 45, 66, 0.55);
+  transform: translateY(-1px);
+}
+:root[data-theme="servicenow"] .btn:active:not(:disabled) { transform: translateY(0) scale(0.97); box-shadow: none; transition-duration: 80ms; }
+:root[data-theme="servicenow"] .btn.primary {
+  background-color: var(--sn-green);
+  background-image: linear-gradient(110deg, transparent 32%, rgba(255, 255, 255, 0.55) 46%, transparent 60%);
+  background-size: 260% 100%;
+  background-position: 130% 0;
+  background-repeat: no-repeat;
+  border-color: var(--sn-green);
+  color: var(--sn-navy);
+  font-weight: 700;
+}
+:root[data-theme="servicenow"] .btn.primary:hover:not(:disabled) {
+  background-color: var(--sn-green-press);
+  background-position: -30% 0;
+  border-color: var(--sn-green-press);
+  box-shadow: 0 8px 20px -8px rgba(82, 201, 63, 0.85);
+}
+:root[data-theme="servicenow"] .btn.danger { background: #fff; color: var(--red); border-color: #f0b3bd; }
+:root[data-theme="servicenow"] .btn.danger:hover:not(:disabled) { background: #fdecef; border-color: var(--red); box-shadow: 0 6px 16px -10px rgba(200, 16, 46, 0.6); }
+:root[data-theme="servicenow"] .btn.amber { background: #ffc233; border-color: #ffc233; color: #3a2500; }
+:root[data-theme="servicenow"] .btn.amber:hover:not(:disabled) { background: #ffb400; border-color: #ffb400; }
+:root[data-theme="servicenow"] .btn.ghost { background: transparent; border-color: transparent; }
+:root[data-theme="servicenow"] .btn.ghost:hover:not(:disabled) { background: rgba(3, 45, 66, 0.06); border-color: transparent; box-shadow: none; }
+:root[data-theme="servicenow"] .sidebar .btn.primary { background-color: var(--sn-green); border-color: var(--sn-green); color: var(--sn-navy); }
+
+/* ── Fields: white, with a teal focus ring that eases in ────────────────── */
+:root[data-theme="servicenow"] .input,
+:root[data-theme="servicenow"] .select,
+:root[data-theme="servicenow"] .textarea {
+  background: #fff; color: var(--text);
+  border: 1px solid #cdd7dd;
+  transition: border-color 160ms, box-shadow 240ms var(--sn-ease), background-color 160ms;
+}
+:root[data-theme="servicenow"] .input:hover,
+:root[data-theme="servicenow"] .select:hover,
+:root[data-theme="servicenow"] .textarea:hover { border-color: #9fb0bb; }
+:root[data-theme="servicenow"] .input::placeholder,
+:root[data-theme="servicenow"] .textarea::placeholder { color: #8797a2; }
+:root[data-theme="servicenow"] .input:focus,
+:root[data-theme="servicenow"] .select:focus,
+:root[data-theme="servicenow"] .textarea:focus { border-color: var(--sn-teal-deep); box-shadow: 0 0 0 3px rgba(0, 203, 230, 0.2); }
+:root[data-theme="servicenow"] .label { color: #3d5361; font-weight: 600; }
+:root[data-theme="servicenow"] input[type="checkbox"],
+:root[data-theme="servicenow"] input[type="radio"] { accent-color: var(--sn-green-text); }
+
+/* ── Tables, tabs, badges, chips ─────────────────────────────────────────── */
+:root[data-theme="servicenow"] .table th { color: #5a6b77; font-weight: 700; letter-spacing: 0.06em; }
+:root[data-theme="servicenow"] .table td { transition: background-color 160ms; }
+:root[data-theme="servicenow"] .table tr.click:hover td { background: #f3f9f4; }
+:root[data-theme="servicenow"] .table tr.selected td { background: #e8f8e4; box-shadow: inset 3px 0 0 var(--sn-green); }
+
+:root[data-theme="servicenow"] .tabs { gap: 2px; border-bottom-color: var(--line); }
+:root[data-theme="servicenow"] .tab {
+  border-radius: 8px 8px 0 0;
+  border-bottom-color: transparent;
+  background-image: var(--sn-grad);
+  background-repeat: no-repeat;
+  background-origin: border-box;
+  background-position: 50% 100%;
+  background-size: 0% 3px;
+  transition: color 180ms, background-color 180ms, background-size 360ms var(--sn-ease);
+}
+:root[data-theme="servicenow"] .tab:hover { color: var(--sn-navy); background-color: rgba(3, 45, 66, 0.04); background-size: 28% 3px; }
+:root[data-theme="servicenow"] .tab.active { color: var(--sn-navy); border-bottom-color: transparent; background-size: 100% 3px; }
+
+:root[data-theme="servicenow"] .badge { background: #eef2f4; border-color: transparent; color: #3d5361; }
+:root[data-theme="servicenow"] .badge.green { background: #e4f7df; color: #15692e; }
+:root[data-theme="servicenow"] .badge.amber { background: #fff3d6; color: #8a4b00; }
+:root[data-theme="servicenow"] .badge.red { background: #fde8eb; color: #a4122a; }
+:root[data-theme="servicenow"] .badge.blue { background: #e0f4f8; color: #005c76; }
+
+:root[data-theme="servicenow"] .chip {
+  background: #fff; color: #3d5361;
+  border-color: #cdd7dd;
+  transition: border-color 160ms, color 160ms, background-color 160ms, transform 200ms var(--sn-spring), box-shadow 220ms;
+}
+:root[data-theme="servicenow"] .chip:hover { border-color: var(--sn-green); color: var(--sn-navy); transform: translateY(-1px); box-shadow: 0 4px 12px -6px rgba(3, 45, 66, 0.35); }
+:root[data-theme="servicenow"] .chip.is-on { background: #e8f8e4; border-color: var(--sn-green); color: var(--sn-navy); }
+:root[data-theme="servicenow"] .step-num { background: var(--sn-green); color: var(--sn-navy); border-color: var(--sn-green); font-weight: 700; }
+:root[data-theme="servicenow"] .dot.on { background: var(--sn-green); animation: sn-ping 2.4s ease-out infinite; }
+@keyframes sn-ping {
+  0%   { box-shadow: 0 0 0 0 rgba(98, 216, 78, 0.55); }
+  70%  { box-shadow: 0 0 0 7px rgba(98, 216, 78, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(98, 216, 78, 0); }
+}
+
+/* ── Agent workspace ─────────────────────────────────────────────────────── */
+:root[data-theme="servicenow"] .bubble {
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px 16px 16px 16px;
+  box-shadow: var(--sn-shadow-sm);
+}
+:root[data-theme="servicenow"] .msg.user .bubble {
+  background: linear-gradient(135deg, #032d42, #0b4a66);
+  color: #f2f7f9;
+  border: 1px solid transparent;
+  border-radius: 16px 4px 16px 16px;
+  box-shadow: 0 8px 22px -12px rgba(3, 45, 66, 0.7);
+}
+:root[data-theme="servicenow"] .msg.user .bubble a { color: #8be67b; }
+:root[data-theme="servicenow"] .msg.user .bubble .md code,
+:root[data-theme="servicenow"] .msg.user .bubble .md pre { background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.18); }
+:root[data-theme="servicenow"] .approval-card {
+  background: linear-gradient(180deg, #fff8e6, #fff);
+  border: 1px solid #f0c36d;
+  animation: sn-attention 2.8s ease-in-out infinite;
+}
+:root[data-theme="servicenow"] .approval-card .title { color: #8a4b00; font-weight: 700; }
+@keyframes sn-attention {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(255, 180, 0, 0.12), var(--sn-shadow-sm); }
+  50%      { box-shadow: 0 0 0 6px rgba(255, 180, 0, 0.22), var(--sn-shadow-sm); }
+}
+
+:root[data-theme="servicenow"] .composer,
+:root[data-theme="servicenow"] .composer-glow .composer {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 32px -14px rgba(3, 45, 66, 0.32), 0 1px 2px rgba(3, 45, 66, 0.06);
+  transition: border-color 200ms, box-shadow 300ms var(--sn-ease);
+}
+:root[data-theme="servicenow"] .composer:focus-within {
+  border-color: var(--sn-green);
+  box-shadow: 0 14px 36px -14px rgba(3, 45, 66, 0.35), 0 0 0 4px rgba(98, 216, 78, 0.2);
+}
+:root[data-theme="servicenow"] .composer.is-listening { border-color: var(--sn-green); }
+:root[data-theme="servicenow"] .composer-btn,
+:root[data-theme="servicenow"] .composer-chip,
+:root[data-theme="servicenow"] .composer-model { transition: background-color 160ms, color 160ms, transform 200ms var(--sn-spring); }
+:root[data-theme="servicenow"] .composer-btn:hover,
+:root[data-theme="servicenow"] .composer-chip:hover,
+:root[data-theme="servicenow"] .composer-model:hover { background: #eef3f5; color: var(--sn-navy); }
+:root[data-theme="servicenow"] .composer-btn:active { transform: scale(0.92); }
+:root[data-theme="servicenow"] .composer-send {
+  background: var(--sn-green); color: var(--sn-navy);
+  box-shadow: 0 6px 14px -6px rgba(82, 201, 63, 0.9);
+  transition: background-color 160ms, box-shadow 220ms, transform 240ms var(--sn-spring), opacity 120ms;
+}
+:root[data-theme="servicenow"] .composer-send:hover:not(:disabled) { background: var(--sn-green-press); transform: translateY(-1px) scale(1.07); box-shadow: 0 10px 20px -8px rgba(82, 201, 63, 0.95); }
+:root[data-theme="servicenow"] .composer-send:active:not(:disabled) { transform: scale(0.92); }
+:root[data-theme="servicenow"] .composer-send:disabled { background: #e3e9ec; color: #8c9ba5; box-shadow: none; }
+:root[data-theme="servicenow"] .composer-send.is-running { background: #e4f7df; color: var(--sn-navy); }
+
+:root[data-theme="servicenow"] .dock-pill,
+:root[data-theme="servicenow"] .act-dot {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: var(--line);
+  box-shadow: 0 10px 26px -14px rgba(3, 45, 66, 0.4);
+  transition: border-color 160ms, color 160ms, box-shadow 240ms var(--sn-ease), transform 220ms var(--sn-spring);
+}
+:root[data-theme="servicenow"] .dock-pill:hover,
+:root[data-theme="servicenow"] .act-dot:hover { border-color: var(--sn-green); transform: translateY(-2px); box-shadow: 0 14px 30px -14px rgba(3, 45, 66, 0.5); }
+:root[data-theme="servicenow"] .act-dot.is-open { border-color: var(--sn-green); }
+:root[data-theme="servicenow"] .act-drawer-inner {
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  box-shadow: var(--sn-shadow-lg);
+}
+:root[data-theme="servicenow"] .act-drawer-title { color: var(--sn-navy); }
+
+/* The welcome headline is an SVG; its fill was the Original theme's light text. */
+:root[data-theme="servicenow"] .welcome-headline .stroke-text__fill { fill: var(--sn-navy); }
+:root[data-theme="servicenow"] .welcome-headline .stroke-text__stroke { stroke: var(--sn-green); }
+:root[data-theme="servicenow"] .welcome-sub { color: #4e6170; }
+
+/* ── Attachments ─────────────────────────────────────────────────────────── */
+:root[data-theme="servicenow"] .composer-file {
+  background: #fff; border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 2px 6px -2px rgba(3, 45, 66, 0.15);
+  animation: sn-pop 320ms var(--sn-spring) backwards;
+}
+:root[data-theme="servicenow"] .composer-file.is-ready { background: #f1fbef; border-color: #bfe8b6; }
+:root[data-theme="servicenow"] .composer-file.is-error { border-color: #f0b3bd; background: #fff5f6; }
+:root[data-theme="servicenow"] .composer.is-dragging { border-color: var(--sn-green); background: #f3fdf2; box-shadow: 0 0 0 4px rgba(98, 216, 78, 0.25); }
+:root[data-theme="servicenow"] .msg-file { border: 1px solid rgba(242, 247, 249, 0.3); background: rgba(242, 247, 249, 0.08); border-radius: 10px; }
+
+/* ── Motion off: nothing is left mid-lift ──────────────────────────────────
+   The global rule stops every animation and transition; these are the hover
+   and press transforms, which would otherwise still jump. */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="servicenow"] .btn:hover:not(:disabled),
+  :root[data-theme="servicenow"] .btn:active:not(:disabled),
+  :root[data-theme="servicenow"] .chip:hover,
+  :root[data-theme="servicenow"] .composer-send:hover:not(:disabled),
+  :root[data-theme="servicenow"] .composer-send:active:not(:disabled),
+  :root[data-theme="servicenow"] .composer-btn:active,
+  :root[data-theme="servicenow"] .dock-pill:hover,
+  :root[data-theme="servicenow"] .act-dot:hover { transform: none; }
+  :root[data-theme="servicenow"] .nav-item:hover .nav-ic,
+  :root[data-theme="servicenow"] .nav-item:hover > [data-ic] { translate: none; }
+}

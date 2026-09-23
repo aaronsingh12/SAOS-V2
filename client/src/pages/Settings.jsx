@@ -6,7 +6,7 @@ import { DisconnectedBanner } from '../components/states.jsx';
 import {
   desktopNotificationsEnabled, notificationSupport, notifyDesktop, setDesktopNotifications, subscribeNotificationPref,
 } from '../components/notify.js';
-import { THEME_LABELS, useTheme } from '../theme.js';
+import ThemePicker from '../components/ThemePicker.jsx';
 
 const HINTS = {
   anthropic: { model: 'claude-sonnet-4-6', baseUrl: 'api.anthropic.com (fixed)', key: true },
@@ -96,21 +96,17 @@ function NotificationsCard() {
 }
 
 /**
- * Theme — one button that always offers the OTHER theme: "Switch to ROBOTIC"
- * while Black is on, "Switch to Black" while ROBOTIC is on. Per browser.
+ * Theme — a dropdown of the three looks: Original, ServiceNow, ROBOTIC.
+ * Per browser; the switch animates out from where it was chosen.
  */
 function ThemeCard() {
-  const [theme, setTheme] = useTheme();
-  const next = theme === 'robotic' ? 'black' : 'robotic';
   return (
     <div className="card">
       <div className="card-title">Theme</div>
       <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--muted)' }}>
-        Current theme: <b>{THEME_LABELS[theme]}</b>. Saved in this browser.
+        How the studio looks. Saved in this browser.
       </p>
-      <button type="button" className="btn primary" onClick={() => setTheme(next)}>
-        Switch to {THEME_LABELS[next]}
-      </button>
+      <ThemePicker />
     </div>
   );
 }

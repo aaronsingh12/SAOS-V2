@@ -8,6 +8,9 @@ import './experience.css';
 /* The ROBOTIC theme (Preferences). Every rule is scoped to
    :root[data-theme="robotic"], so it is inert while Black is selected. */
 import './theme-robotic.css';
+/* The ServiceNow theme (Preferences), scoped to :root[data-theme="servicenow"]
+   the same way. */
+import './theme-servicenow.css';
 // Finding dimensions (Health Assist): cards, matrix, manage page, dialog.
 import './health-dimensions.css';
 import { installClientLogging } from './logging.js';
