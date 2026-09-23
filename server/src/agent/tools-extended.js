@@ -93,6 +93,33 @@ export const EXTENDED_TOOLS = [
     },
   },
 
+  /* ── core: files the user attached to this chat ────────────────────────── */
+  {
+    name: 'read_attachment',
+    description:
+      'Read more of a file the user attached to this chat (PDF, Word, Excel, CSV, PowerPoint, image via OCR, text). '
+      + 'A large attachment arrives in the <attachments> block as an outline plus only the passages most relevant to '
+      + 'the question; call this when the answer needs a part that was not shown — never guess at unseen content. '
+      + 'Pass `query` (words to search for; returns the best-matching passages), or `parts` (part numbers from the '
+      + 'block\'s [part n/N] tags, or page-tagged passages\' part numbers), or `from` (read sequentially from a part; '
+      + 'the answer gives next_from to continue). Returns at most ~7,000 characters per call. Read-only.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The attachment id shown in the <attachments> block, e.g. att_ab12…' },
+        query: { type: 'string', description: 'Words to search the file for.' },
+        parts: { type: 'array', items: { type: 'number' }, description: 'Specific part numbers to read.' },
+        from: { type: 'number', description: 'Read sequentially starting at this part number.' },
+      },
+      required: ['id'],
+    },
+    execute: async ({ id, query, parts, from } = {}, ctx = {}) => {
+      const { readAttachment } = await import('../attachments/index.js');
+      return readAttachment({ session: ctx.sessionId, id, query, parts, from });
+    },
+  },
+
   /* ── catalog: catalogs, categories, variable sets, policy edits ────────── */
   {
     name: 'list_catalogs',

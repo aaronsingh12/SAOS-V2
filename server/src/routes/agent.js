@@ -24,6 +24,8 @@ import { computeBudget } from '../memory/budget.js';
 import { buildSystemPrompt } from '../agent/prompts.js';
 import { TOOLS } from '../agent/tools.js';
 import { loadHistory } from '../memory/sessions.js';
+import { buildAttachmentBlock } from '../attachments/index.js';
+import { getAttachment, removeSessionAttachments } from '../attachments/store.js';
 
 export const agentRouter = Router();
 
@@ -105,7 +107,7 @@ agentRouter.patch('/sessions/:id', (req, res, next) => {
  */
 agentRouter.delete('/sessions', (_req, res) => {
   const sessions = listSessions({ limit: 10_000 });
-  for (const s of sessions) clearWriteGuard(s.id);
+  for (const s of sessions) { clearWriteGuard(s.id); removeSessionAttachments(s.id); }
   const result = deleteAllSessions();
   log.info('agent', `deleted ${result.deleted} chat session(s); audit preserved: ${result.auditPreserved}`);
   res.json(result);
@@ -119,6 +121,7 @@ agentRouter.delete('/sessions/:id', (req, res) => {
   // deleted session must not leave its drop history behind for the id to be
   // reused against.
   clearWriteGuard(req.params.id);
+  removeSessionAttachments(req.params.id);
   res.json(deleteSession(req.params.id));
 });
 
@@ -208,9 +211,25 @@ agentRouter.post('/facts/seed', (_req, res) => res.json(seedLedger()));
  * exactly the global state this phase is not allowed to introduce.
  */
 agentRouter.post('/chat', async (req, res) => {
-  const { sessionId, message, retry } = req.body || {};
-  if (!sessionId || !message) {
+  const { sessionId, retry } = req.body || {};
+  const attachmentIds = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 10) : [];
+  const typed = String(req.body?.message || '').trim();
+  if (!sessionId || (!typed && !attachmentIds.length)) {
     return res.status(400).json({ message: 'sessionId and message are required' });
+  }
+  /*
+   * ATTACHMENTS — appended to the user's words as one <attachments> block,
+   * sized to a fixed token budget and ranked against what the user asked (see
+   * attachments/index.js). Built here, deterministically, so a retry of this
+   * turn sends identical bytes; the model reaches anything left out through
+   * read_attachment. An id that is not filed under this chat is ignored.
+   */
+  let message = typed || 'Please read the attached file(s).';
+  if (attachmentIds.length) {
+    let records = [];
+    try { records = attachmentIds.map((id) => getAttachment(sessionId, id)).filter(Boolean); } catch { records = []; }
+    const block = buildAttachmentBlock(records, typed);
+    if (block) message = `${message}\n\n${block}`;
   }
   if (getSession(sessionId) && !sessionBelongsToCurrentInstance(sessionId)) {
     return res.status(409).json({ message: 'This chat belongs to another instance. Start a new chat for the current instance.' });
@@ -242,7 +261,8 @@ agentRouter.post('/chat', async (req, res) => {
    */
   const task = beginTurn({
     sessionId,
-    goal: message,
+    // The user's own words, never the attachment block appended to them.
+    goal: typed || message.split('\n\n<attachments>')[0],
     retry: Boolean(retry),
     skills: skillSnapshot(enabledSkills({ tools: TOOLS })),
   });
@@ -304,7 +324,7 @@ agentRouter.post('/chat', async (req, res) => {
     // A retry re-issues an existing turn; it must not re-trigger the side
     // effects of receiving the message for the first time.
     if (!retry) {
-      const remembered = rememberFromChat(message);
+      const remembered = rememberFromChat(typed);
       if (remembered) emit({ type: 'remembered', fact: remembered });
     }
     /*

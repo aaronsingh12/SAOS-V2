@@ -5,15 +5,15 @@
 import { Table, StringColumn, CrossScopePrivilege } from '@servicenow/sdk/core'
 
 export const incident = Table({
-    $id: Now.ID["x_tepv_nwforge_augment_incident"],
+    $id: Now.ID["x_2002152_nwforge_augment_incident"],
     augments: "incident",
     schema: {
-        x_tepv_nwforge_triage_note: StringColumn({ label: "Triage Note", maxLength: 400 }),
+        x_2002152_nwforge_triage_note: StringColumn({ label: "Triage Note", maxLength: 400 }),
     },
 })
 
 CrossScopePrivilege({
-    $id: Now.ID["x_tepv_nwforge_xsp_incident_read"],
+    $id: Now.ID["x_2002152_nwforge_xsp_incident_read"],
     operation: "read",
     status: 'allowed',
     targetType: 'sys_db_object',
@@ -22,7 +22,7 @@ CrossScopePrivilege({
 })
 
 CrossScopePrivilege({
-    $id: Now.ID["x_tepv_nwforge_xsp_incident_write"],
+    $id: Now.ID["x_2002152_nwforge_xsp_incident_write"],
     operation: "write",
     status: 'allowed',
     targetType: 'sys_db_object',

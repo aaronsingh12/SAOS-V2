@@ -5,6 +5,7 @@ import { getSchema, referenceLookup, tableLookup, clearSchemaCaches, getTableHie
 import { capability, cachedCapability, forgetInstanceState } from '../servicenow/fluent.js';
 import { boundInstance } from '../servicenow/instance-binding.js';
 import { purgeInstanceData } from '../memory/instance-purge.js';
+import { purgeAttachmentsForInstance } from '../attachments/store.js';
 import { bindingStatus, invalidateBindingStatus } from '../servicenow/binding-status.js';
 import { autoSetupSdk, sdkSetupStatus } from '../servicenow/sdk-setup.js';
 
@@ -107,7 +108,9 @@ systemRouter.post('/connection/disconnect', (_req, res) => {
   invalidateBindingStatus();
   const purged = key ? purgeInstanceData({ url, key }) : { ok: true, total: 0, deleted: {} };
   const sdkStateCleared = key ? forgetInstanceState(key) : false;
-  res.json({ ok: true, purged: { ...purged, sdkStateCleared }, ...publicSettings() });
+  // Files attached to this instance's chats go with the chats.
+  const attachmentsRemoved = url ? purgeAttachmentsForInstance(url) : 0;
+  res.json({ ok: true, purged: { ...purged, sdkStateCleared, attachmentsRemoved }, ...publicSettings() });
 });
 
 systemRouter.post('/connection/test', async (_req, res, next) => {

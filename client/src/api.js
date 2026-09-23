@@ -42,7 +42,39 @@ export const api = {
   patch: (p, b) => request('PATCH', p, b),
   put: (p, b) => request('PUT', p, b),
   del: (p) => request('DELETE', p),
+  upload: (p, file, { signal } = {}) => upload(p, file, signal),
 };
+
+/**
+ * Upload one file as the raw request body (the server takes the name from the
+ * query string, so no multipart encoding is needed on either side). Logged
+ * like every other call — name and size only, never content.
+ */
+async function upload(path, file, signal) {
+  const start = Date.now();
+  let res;
+  try {
+    res = await fetch(BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+      signal,
+    });
+  } catch (err) {
+    if (err?.name !== 'AbortError') logToServer('error', `POST ${path} — network failure: ${err.message}`);
+    throw err;
+  }
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON */ }
+  if (!res.ok) {
+    const message = data?.message || `Upload failed (${res.status})`;
+    logToServer('warn', `POST ${path} → ${res.status}  ${message}`);
+    throw new Error(message);
+  }
+  logToServer('debug', `POST ${path} → ${res.status}  ${file.size}B  ${Date.now() - start}ms`);
+  return data;
+}
 
 /**
  * Send a request and read Server-Sent Events off the response body.

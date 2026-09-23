@@ -6,6 +6,7 @@ import { DisconnectedBanner } from '../components/states.jsx';
 import {
   desktopNotificationsEnabled, notificationSupport, notifyDesktop, setDesktopNotifications, subscribeNotificationPref,
 } from '../components/notify.js';
+import { THEME_LABELS, useTheme } from '../theme.js';
 
 const HINTS = {
   anthropic: { model: 'claude-sonnet-4-6', baseUrl: 'api.anthropic.com (fixed)', key: true },
@@ -90,6 +91,26 @@ function NotificationsCard() {
         Send a test notification
       </button>
       {note && <p className="error-text">{note}</p>}
+    </div>
+  );
+}
+
+/**
+ * Theme — one button that always offers the OTHER theme: "Switch to ROBOTIC"
+ * while Black is on, "Switch to Black" while ROBOTIC is on. Per browser.
+ */
+function ThemeCard() {
+  const [theme, setTheme] = useTheme();
+  const next = theme === 'robotic' ? 'black' : 'robotic';
+  return (
+    <div className="card">
+      <div className="card-title">Theme</div>
+      <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--muted)' }}>
+        Current theme: <b>{THEME_LABELS[theme]}</b>. Saved in this browser.
+      </p>
+      <button type="button" className="btn primary" onClick={() => setTheme(next)}>
+        Switch to {THEME_LABELS[next]}
+      </button>
     </div>
   );
 }
@@ -233,6 +254,8 @@ export default function Settings() {
         </p>
         <div id={AGENT_PREFS_SLOT_ID} className="prefs-slot" />
       </div>
+
+      <ThemeCard />
 
       <NotificationsCard />
 

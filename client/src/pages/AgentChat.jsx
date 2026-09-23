@@ -26,6 +26,9 @@ import TaskHistory from '../components/TaskHistory.jsx';
 import { rowFromFrame, mergeRows, deriveStatus } from '../components/activity.js';
 import { useAgentSlots } from '../components/agentRail.js';
 import Composer from '../components/Composer.jsx';
+import {
+  MAX_FILES, describeAttachment, precheckFile, splitAttachmentBlock,
+} from '../components/attachments.js';
 import { ActivityIndicator, ActivityDrawer } from '../components/ActivityDock.jsx';
 import AgentWelcome from '../components/AgentWelcome.jsx';
 import { AnimatedItem } from '../components/AnimatedList.jsx';
@@ -47,12 +50,32 @@ const uid = () => `m${nextId++}`;
  * decision on an in-flight turn, and a resolved one is history. What it did is
  * visible in the tool card it gated.
  */
+/*
+ * CHAT IDS MINTED HERE THAT HAVE NO SERVER ROW YET.
+ *
+ * The server creates a session on its first message, so a fresh id — the
+ * first visit, after Delete Chats, after deleting the open chat — has nothing
+ * to load. Asking anyway answered 404 three times per new chat (session,
+ * messages, task history), each logged as an error on both sides. Ids in this
+ * set skip those reads; the first send removes the id, after which it is an
+ * ordinary session and loads normally.
+ */
+const unsentSessions = new Set();
+function mintSessionId() {
+  const id = crypto.randomUUID();
+  unsentSessions.add(id);
+  return id;
+}
+
 function hydrate(messages) {
   const out = [];
   for (const m of messages) {
     const e = m.entry;
     if (e.role === 'user') {
-      out.push({ id: uid(), kind: 'user', text: e.text });
+      // The stored text carries the <attachments> block the server appended;
+      // on screen that is the user's words plus one chip per file.
+      const { text, files } = splitAttachmentBlock(e.text);
+      out.push({ id: uid(), kind: 'user', text, files });
     } else if (e.role === 'assistant') {
       // Whitespace is not text. D-7 stops blank turns being written at all, but
       // sessions recorded before it still hold them, and `if (e.text)` is
@@ -105,10 +128,49 @@ export default function AgentChat() {
   const [sessionId, setSessionId] = useState(
     () => params.get('session')
       || localStorage.getItem(scopedSessionKey(null))
-      || crypto.randomUUID()
+      || mintSessionId()
   );
   // Set when this chat came from a meeting. Drives the banner and the rail mark.
   const [origin, setOrigin] = useState(null);
+  /*
+   * FILES FOR THE NEXT MESSAGE. Each is uploaded (and read — parsed, OCR'd) as
+   * soon as it is attached, so the time is spent while the person types, and
+   * Send is instant. `lastSentFiles` lets a retry re-send the same files.
+   */
+  const [attachments, setAttachments] = useState([]);
+  const lastSentFiles = useRef([]);
+
+  const attachFiles = (fileList) => {
+    const room = MAX_FILES - attachments.length;
+    const files = fileList.slice(0, Math.max(0, room));
+    if (fileList.length > files.length) toast.info(`Up to ${MAX_FILES} files per message.`);
+    for (const file of files) {
+      const key = `${file.name}-${file.size}-${Math.random().toString(36).slice(2, 8)}`;
+      const refused = precheckFile(file);
+      if (refused) {
+        setAttachments((cur) => [...cur, { key, name: file.name, size: file.size, status: 'error', error: refused }]);
+        continue;
+      }
+      setAttachments((cur) => [...cur, { key, name: file.name, size: file.size, status: 'uploading' }]);
+      const owner = sessionId;
+      api.upload(`/attachments?sessionId=${encodeURIComponent(owner)}&name=${encodeURIComponent(file.name)}`, file)
+        .then((meta) => setAttachments((cur) => cur.map((a) => (a.key === key ? { ...a, status: 'ready', meta } : a))))
+        .catch((e) => setAttachments((cur) => cur.map((a) => (a.key === key ? { ...a, status: 'error', error: e.message } : a))));
+    }
+  };
+
+  const removeAttachment = (key) => {
+    setAttachments((cur) => {
+      const gone = cur.find((a) => a.key === key);
+      if (gone?.meta?.id) {
+        api.del(`/attachments/${gone.meta.id}?sessionId=${encodeURIComponent(sessionId)}`).catch(() => { /* already gone */ });
+      }
+      return cur.filter((a) => a.key !== key);
+    });
+  };
+
+  // Pending files belong to the chat they were attached in.
+  useEffect(() => { setAttachments([]); }, [sessionId]);
   const [loadingSession, setLoadingSession] = useState(false);
   const [digestCount, setDigestCount] = useState(0);
   // The three measured budget numbers for this session, streamed at meta time.
@@ -304,7 +366,7 @@ export default function AgentChat() {
   useEffect(() => {
     if (running) return;
     const key = scopedSessionKey(instanceUrl);
-    const next = params.get('session') || localStorage.getItem(key) || crypto.randomUUID();
+    const next = params.get('session') || localStorage.getItem(key) || mintSessionId();
     if (next === sessionId) return;
     setSessionId(next);
     setMessages([]);
@@ -352,6 +414,7 @@ export default function AgentChat() {
   useEffect(() => {
     let cancelled = false;
     setOrigin(null);
+    if (unsentSessions.has(sessionId)) return undefined; // no row yet — see mintSessionId
     api.get(`/agent/sessions/${sessionId}`).then(async (row) => {
       if (cancelled || row?.source !== 'meeting') return;
       setOrigin({ kind: 'meeting', ref: row.source_ref, label: row.source_label });
@@ -419,8 +482,12 @@ export default function AgentChat() {
   // A-2: Agent -> Settings -> Agent must lose NOTHING.
   useEffect(() => {
     let alive = true;
-    setLoadingSession(true);
-    api
+    // A chat with no server row yet (see mintSessionId) has no transcript and
+    // no task history to load; it starts empty rather than asking and 404ing.
+    const unsent = unsentSessions.has(sessionId);
+    setLoadingSession(!unsent);
+    if (unsent) { setMessages([]); setDigestCount(0); }
+    else api
       .get(`/agent/sessions/${sessionId}/messages`)
       .then((data) => {
         if (!alive) return;
@@ -453,7 +520,7 @@ export default function AgentChat() {
     setTaskId(null);
     liveTask.current = null;
     seqRef.current = 0;
-    api.get(`/agent/plan/history/${sessionId}`)
+    if (!unsent) api.get(`/agent/plan/history/${sessionId}`)
       .then((h) => {
         const newest = h.tasks?.[0];
         if (alive && newest) openTask(newest.task_id);
@@ -603,9 +670,24 @@ export default function AgentChat() {
   };
 
   const send = async (text, { retry = false } = {}) => {
-    const message = (text ?? input).trim();
-    if (!message || running) return;
-    if (!retry) setInput('');
+    const typed = (text ?? input).trim();
+    /*
+     * FILES travel with the next ordinary message. A retry re-sends the files
+     * of the turn it retries, so the server rebuilds the identical block.
+     */
+    // Slash commands run their own pipelines, which take no files; any attached
+    // files stay in the composer for the next ordinary message.
+    const isCommand = /^\/(build|knowledge|know|lint|test|change|diagnose)\b/i.test(typed);
+    const files = retry ? lastSentFiles.current : (isCommand ? [] : attachments.filter((a) => a.status === 'ready'));
+    if ((!typed && !files.length) || running || attachments.some((a) => a.status === 'uploading')) return;
+    const message = typed || 'Please read the attached file(s).';
+    if (!retry) {
+      setInput('');
+      lastSentFiles.current = files;
+      if (files.length) setAttachments([]);
+    }
+    // From its first message this chat exists on the server and loads normally.
+    unsentSessions.delete(sessionId);
     setRunning(true);
     setStopping(false);
     /*
@@ -625,7 +707,13 @@ export default function AgentChat() {
     seqRef.current = 0;
     const controller = new AbortController();
     turnAbort.current = controller;
-    if (!retry) push({ kind: 'user', text: message });
+    if (!retry) {
+      push({
+        kind: 'user',
+        text: typed,
+        files: files.map((f) => ({ name: f.name, summary: describeAttachment(f.meta) })),
+      });
+    }
 
     /*
      * PHASE 14 — `/diagnose <question>` runs the Doctor instead of an ordinary
@@ -952,7 +1040,9 @@ export default function AgentChat() {
     }
 
     try {
-      await streamed('/agent/chat', { sessionId, message, retry }, (evt) => {
+      await streamed('/agent/chat', {
+        sessionId, message, retry, attachments: files.map((f) => f.meta.id),
+      }, (evt) => {
         switch (evt.type) {
           case 'meta': setMeta(evt); break;
           // PHASE 8 — which durable task this turn is. Additive: a client that
@@ -1186,7 +1276,7 @@ export default function AgentChat() {
     if (running) return;
     openAgent();
     const id = crypto.randomUUID();
-    try { await api.post('/agent/sessions', { id }); } catch { /* created on first message anyway */ }
+    try { await api.post('/agent/sessions', { id }); } catch { unsentSessions.add(id); /* created on first message anyway */ }
     setSessionId(id);
     setSearchHits(null);
     setQuery('');
@@ -1227,7 +1317,7 @@ export default function AgentChat() {
     if (!ok) return;
     try {
       const res = await api.del('/agent/sessions');
-      setSessionId(crypto.randomUUID());
+      setSessionId(mintSessionId());
       refreshSessions();
       if (res.auditPreserved === false) {
         toast.error(`Deleted ${res.deleted} chat(s), but the audit trail changed — check the Audit page.`);
@@ -1249,7 +1339,7 @@ export default function AgentChat() {
     try {
       await api.del(`/agent/sessions/${s.id}`);
       if (s.id === sessionId) {
-        const id = crypto.randomUUID();
+        const id = mintSessionId();
         setSessionId(id);
       }
       refreshSessions();
@@ -1621,7 +1711,23 @@ export default function AgentChat() {
             if (m.kind === 'user') {
               // User bubbles stay literal on purpose: what you typed is what you
               // see, and nobody wants their asterisks eaten.
-              return <div key={m.id} className="msg user"><div className="bubble">{m.text}</div></div>;
+              return (
+                <div key={m.id} className="msg user">
+                  <div className="bubble">
+                    {m.text}
+                    {m.files?.length > 0 && (
+                      <ul className="msg-files" aria-label="Attached files">
+                        {m.files.map((f, i) => (
+                          <li key={`${f.name}-${i}`} className="msg-file" title={f.summary || f.name}>
+                            <span className="msg-file-name">{f.name}</span>
+                            {f.summary && <span className="msg-file-meta">{f.summary}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              );
             }
             if (m.kind === 'assistant') {
               return (
@@ -2044,6 +2150,9 @@ export default function AgentChat() {
           onSubmit={send}
           onStop={stop}
           onNewChat={newChat}
+          attachments={attachments}
+          onAttachFiles={attachFiles}
+          onRemoveAttachment={removeAttachment}
           running={running}
           stopping={stopping}
           model={meta}

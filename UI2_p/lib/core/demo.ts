@@ -1,0 +1,72 @@
+export const demoObjects = [
+  {
+    table: "cmdb_ci",
+    sysId: "ci-app-001",
+    domain: "global",
+    data: {
+      name: "Payments API",
+      sys_class_name: "cmdb_ci_service",
+      assigned_to: "",
+      support_group: "Payments Ops",
+      last_discovered: "2026-09-18 10:00:00",
+      install_status: "1",
+    },
+  },
+  {
+    table: "cmdb_ci",
+    sysId: "ci-app-002",
+    domain: "global",
+    data: {
+      name: "Payments API",
+      sys_class_name: "cmdb_ci_service",
+      assigned_to: "Priya Shah",
+      support_group: "Payments Ops",
+      last_discovered: "2026-09-18 10:00:00",
+      install_status: "1",
+    },
+  },
+  {
+    table: "cmdb_ci",
+    sysId: "ci-host-001",
+    domain: "global",
+    data: {
+      name: "pay-prod-01",
+      sys_class_name: "cmdb_ci_server",
+      assigned_to: "SRE Team",
+      support_group: "Platform Ops",
+      last_discovered: "2025-10-01 10:00:00",
+      install_status: "1",
+    },
+  },
+  {
+    table: "cmdb_ci",
+    sysId: "ci-host-002",
+    domain: "global",
+    data: {
+      name: "pay-prod-02",
+      sys_class_name: "cmdb_ci_server",
+      assigned_to: "SRE Team",
+      support_group: "Platform Ops",
+      last_discovered: "2026-09-17 10:00:00",
+      install_status: "1",
+    },
+  },
+  {
+    table: "cmdb_rel_ci",
+    sysId: "rel-001",
+    domain: "global",
+    data: { parent: "ci-app-001", child: "ci-host-001", type: "Depends on" },
+  },
+  {
+    table: "cmdb_rel_ci",
+    sysId: "rel-002",
+    domain: "global",
+    data: { parent: "ci-app-001", child: "ci-host-001", type: "Depends on" },
+  },
+  {
+    table: "cmdb_rel_ci",
+    sysId: "rel-003",
+    domain: "global",
+    data: { parent: "ci-app-002", child: "ci-missing", type: "Depends on" },
+  },
+];

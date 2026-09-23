@@ -2244,3 +2244,50 @@ a.src-item { cursor: pointer; }
 .nav-item.active > [data-ic='dashboard']    { color: var(--verdigris); }
 .nav-item.active > [data-ic='audit']        { color: var(--text); }
 .nav-item.active > [data-ic='settings']     { color: var(--text); }
+
+/* ── Attachments: chips in the composer and in the sent message ───────────
+   Built only from existing tokens, so the Black and ROBOTIC themes both carry
+   them. A chip states what was READ (kind, pages, OCR confidence, tokens), not
+   just the file name — that is the part a person needs to trust the answer. */
+.composer-files {
+  list-style: none; margin: 0; padding: 2px 2px 6px;
+  display: flex; flex-wrap: wrap; gap: 6px;
+  width: 100%;
+}
+.composer-file {
+  display: flex; align-items: center; gap: 8px;
+  max-width: 280px; min-width: 0;
+  padding: 6px 6px 6px 9px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); color: var(--text);
+}
+.composer-file.is-error { border-color: var(--red); }
+.composer-file.is-ready .composer-file-icon { color: var(--verdigris); }
+.composer-file.is-error .composer-file-icon { color: var(--red); }
+.composer-file-icon { display: inline-flex; flex: none; color: var(--muted); }
+.composer-file-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.composer-file-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-file-meta { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-file.is-error .composer-file-meta { color: var(--red); white-space: normal; }
+.composer-file-spin {
+  flex: none; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--verdigris);
+  animation: attach-spin 0.8s linear infinite;
+}
+@keyframes attach-spin { to { transform: rotate(360deg); } }
+.composer-file-x {
+  flex: none; border: 0; background: transparent; color: var(--muted);
+  font-size: 16px; line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: var(--radius-sm);
+}
+.composer-file-x:hover { color: var(--text); background: var(--panel); }
+.composer.is-dragging { border-color: var(--verdigris); box-shadow: 0 0 0 3px color-mix(in srgb, var(--verdigris) 25%, transparent); }
+
+.msg-files { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; white-space: normal; }
+.msg-file {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 9px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+}
+.msg-file-name { font-size: 12.5px; font-weight: 600; }
+.msg-file-meta { font-size: 11px; opacity: 0.8; }

@@ -1,0 +1,282 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   ROBOTIC THEME — the UI2_p ("SAOS 2.0") look, applied to this app.
+
+   Every rule is scoped to :root[data-theme="robotic"], so the default Black
+   theme is untouched: with the attribute absent, nothing in this file matches.
+   Switched from Preferences (theme.js).
+
+   The language, taken from UI2_p/app/globals.css and its components:
+     · a pale ground (#f4f8f9) with deep-teal ink (#0d2f3f) for text and rules
+     · white surfaces with a 2px ink border and a hard offset shadow, no blur
+     · square corners; the "brutal" press — lift on hover, sink on press
+     · signal green (#5edc56) as the one accent, always carrying ink text
+     · a dark navy side column (#0c2633) whose active item is a green block
+     · Arial Black display type, uppercase mono labels
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+:root[data-theme="robotic"] {
+  --robo-ground: #f4f8f9;
+  --robo-ink: #0d2f3f;
+  --robo-ink-soft: #476371;
+  --robo-green: #5edc56;
+  --robo-green-press: #4ecd46;
+  --robo-navy: #0c2633;
+  --robo-navy-deep: #071922;
+  --robo-yellow: #ffd166;
+
+  --ink: #f4f8f9;
+  --panel: #ffffff;
+  --panel-2: #e9f1f3;
+  --line: #0d2f3f;
+  --line-soft: #d2ebf0;
+  --text: #0d2f3f;
+  --muted: #476371;
+  /* Green as TEXT must stay readable on white, so the token is the deep
+     green UI2_p uses for words; the bright signal green is applied as a
+     fill, below, where ink sits on top of it. */
+  --verdigris: #1a7f37;
+  --verdigris-dim: #e5f9e4;
+  --amber: #b45309;
+  --amber-dim: #fef3c7;
+  --red: #be123c;
+  --blue: #0369a1;
+  --font-display: 'Arial Black', 'Arial', sans-serif;
+  --font-body: Arial, Helvetica, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --radius: 0px;
+  --radius-sm: 0px;
+
+  /* Severity scale, re-tuned for a light panel (white). */
+  --hs-systemic: #7c3aed;
+  --hs-critical: #e11d48;
+  --hs-major:    #d97706;
+  --hs-moderate: #0284c7;
+  --hs-low:      #64748b;
+  --hs-scan:     #0891b2;
+
+  color-scheme: light;
+}
+
+:root[data-theme="robotic"] body { background: var(--robo-ground); color: var(--robo-ink); }
+:root[data-theme="robotic"] ::selection { background: var(--robo-green); color: var(--robo-ink); }
+:root[data-theme="robotic"] h1,
+:root[data-theme="robotic"] h2,
+:root[data-theme="robotic"] h3 { font-weight: 900; letter-spacing: -0.02em; }
+:root[data-theme="robotic"] :focus-visible { outline: 2px solid var(--robo-ink); outline-offset: 2px; border-radius: 0; }
+:root[data-theme="robotic"] * { scrollbar-width: thin; scrollbar-color: #8e8981 transparent; }
+
+/* The animated wave field belongs to Black. ROBOTIC is a flat ground. */
+:root[data-theme="robotic"] .app-bg { display: none; }
+
+/* ── Side column: dark navy, its own token scope ─────────────────────────── */
+:root[data-theme="robotic"] .sidebar {
+  --ink: var(--robo-navy-deep);
+  --panel: var(--robo-navy);
+  --panel-2: #123445;
+  --line: rgba(255, 255, 255, 0.18);
+  --line-soft: rgba(255, 255, 255, 0.10);
+  --text: #f4f8f9;
+  --muted: #9fb6c0;
+  --verdigris: var(--robo-green);
+  --verdigris-dim: #1f4d2c;
+  --amber: #fbbf24;
+  --red: #fb7185;
+  --blue: #7dd3fc;
+  --hs-systemic: #c4a1f0;
+  --hs-scan: #67e8f9;
+  color-scheme: dark;
+  background: var(--robo-navy);
+  border-right: 3px solid var(--robo-ink);
+  box-shadow: 4px 0 0 rgba(13, 47, 63, 0.06);
+  color: #f4f8f9;
+}
+:root[data-theme="robotic"] .nav-brand { border-bottom: 2px solid rgba(255, 255, 255, 0.10); }
+:root[data-theme="robotic"] .nav-brand-name { font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase; }
+:root[data-theme="robotic"] .nav-brand-sub { color: var(--robo-green); letter-spacing: 0.04em; text-transform: uppercase; font-size: 9px; }
+/* Uppercase mono is wide; the spacing stays modest so the longest label
+   ("Servicenow Automations") still fits the column. */
+:root[data-theme="robotic"] .nav-section-label {
+  color: var(--robo-green); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; font-size: 9.5px;
+}
+:root[data-theme="robotic"] .nav-item {
+  border: 2px solid transparent; font-weight: 700; color: #c7d9de;
+  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s, background 0.15s, color 0.15s;
+}
+:root[data-theme="robotic"] .nav-item:hover { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.2); color: #fff; }
+:root[data-theme="robotic"] .nav-item.active {
+  background: var(--robo-green); border-color: var(--robo-green); color: var(--robo-ink);
+  box-shadow: 2px 2px 0 #061a23; font-weight: 900;
+}
+:root[data-theme="robotic"] .nav-item.active .nav-ic,
+:root[data-theme="robotic"] .nav-item.active > [data-ic] { color: var(--robo-ink); }
+:root[data-theme="robotic"] .nav-flyout { box-shadow: 4px 4px 0 var(--robo-ink); border: 2px solid rgba(255, 255, 255, 0.18); }
+:root[data-theme="robotic"] .sidebar.is-mobile { box-shadow: 6px 0 0 rgba(13, 47, 63, 0.35); }
+
+/* ── Page title: the display face, heavy and tight ───────────────────────── */
+:root[data-theme="robotic"] .page-title {
+  font-weight: 900; font-size: 24px; letter-spacing: -0.04em;
+  padding-bottom: 10px; border-bottom: 3px solid var(--robo-ink);
+}
+
+/* ── Surfaces: white, 2px ink, a hard shadow, square ─────────────────────── */
+:root[data-theme="robotic"] .card,
+:root[data-theme="robotic"] .tool-card,
+:root[data-theme="robotic"] .dialog,
+:root[data-theme="robotic"] .toast,
+:root[data-theme="robotic"] .act-drawer-inner {
+  background: #fff;
+  border: 2px solid var(--robo-ink);
+  box-shadow: 3px 3px 0 var(--robo-ink);
+}
+:root[data-theme="robotic"] .dt {
+  background: #fff;
+  border: 2px solid var(--robo-ink);
+  box-shadow: 3px 3px 0 var(--robo-ink);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+:root[data-theme="robotic"] .act-drawer-inner { -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-theme="robotic"] .dt-top { background: #eef7fa; border-bottom: 2px solid var(--robo-ink); }
+:root[data-theme="robotic"] .dt-filter { background: var(--robo-ground); border: 2px solid var(--robo-ink); box-shadow: inset 1px 1px 0 var(--robo-ink); }
+:root[data-theme="robotic"] .dt-table thead th { background: #e9f1f3; border-bottom: 2px solid var(--robo-ink); }
+:root[data-theme="robotic"] .dt-th-btn { font-weight: 800; }
+:root[data-theme="robotic"] .dt-table tbody tr.is-selected td { background: #e5f9e4; }
+
+:root[data-theme="robotic"] .card-title,
+:root[data-theme="robotic"] .dt-title,
+:root[data-theme="robotic"] .act-drawer-title {
+  font-family: var(--font-mono); font-weight: 800; text-transform: uppercase;
+  letter-spacing: 0.16em; color: var(--robo-ink-soft);
+}
+:root[data-theme="robotic"] .stat b { font-weight: 900; letter-spacing: -0.04em; }
+:root[data-theme="robotic"] .note { background: #eef7fa; border-left-width: 4px; border-left-color: var(--robo-ink); color: var(--robo-ink-soft); }
+:root[data-theme="robotic"] .note.warn { border-left-color: var(--robo-yellow); background: #fffbf0; }
+:root[data-theme="robotic"] .ref-menu { border: 2px solid var(--robo-ink); box-shadow: 3px 3px 0 var(--robo-ink); background: #fff; }
+:root[data-theme="robotic"] .ref-opt:hover { background: #e5f9e4; }
+:root[data-theme="robotic"] .ref-chip { background: #fff; border: 2px solid var(--robo-ink); }
+:root[data-theme="robotic"] .dialog-scrim,
+:root[data-theme="robotic"] .nav-backdrop { background: rgba(13, 47, 63, 0.45); }
+
+/* ── Buttons: the brutal press ───────────────────────────────────────────── */
+:root[data-theme="robotic"] .btn {
+  background: #fff; color: var(--robo-ink);
+  border: 2px solid var(--robo-ink);
+  box-shadow: 2px 2px 0 var(--robo-ink);
+  font-weight: 800;
+  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.15s;
+}
+:root[data-theme="robotic"] .btn:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--robo-ink); border-color: var(--robo-ink); }
+:root[data-theme="robotic"] .btn:active:not(:disabled) { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--robo-ink); }
+:root[data-theme="robotic"] .btn.primary { background: var(--robo-green); border-color: var(--robo-ink); color: var(--robo-ink); }
+:root[data-theme="robotic"] .btn.primary:hover:not(:disabled) { background: var(--robo-green-press); }
+:root[data-theme="robotic"] .btn.danger { background: #fff; color: #be123c; border-color: #be123c; box-shadow: 2px 2px 0 #e11d48; }
+:root[data-theme="robotic"] .btn.danger:hover:not(:disabled) { box-shadow: 3px 3px 0 #e11d48; border-color: #be123c; }
+:root[data-theme="robotic"] .btn.amber { background: var(--robo-yellow); border-color: var(--robo-ink); color: var(--robo-ink); }
+:root[data-theme="robotic"] .btn.ghost { background: transparent; box-shadow: none; }
+:root[data-theme="robotic"] .btn.ghost:hover:not(:disabled) { background: #e9f1f3; box-shadow: 2px 2px 0 var(--robo-ink); }
+/* Inside the navy column the ink shadow would vanish; it uses the deep navy. */
+:root[data-theme="robotic"] .sidebar .btn { background: var(--robo-navy-deep); color: #f4f8f9; border-color: rgba(255, 255, 255, 0.25); box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.35); }
+:root[data-theme="robotic"] .sidebar .btn.primary { background: var(--robo-green); color: var(--robo-ink); border-color: var(--robo-green); box-shadow: 2px 2px 0 #061a23; }
+
+/* ── Fields ──────────────────────────────────────────────────────────────── */
+:root[data-theme="robotic"] .input,
+:root[data-theme="robotic"] .select,
+:root[data-theme="robotic"] .textarea {
+  background: #fff; color: var(--robo-ink);
+  border: 2px solid var(--robo-ink);
+  box-shadow: inset 1px 1px 0 var(--robo-ink);
+  font-weight: 600;
+}
+:root[data-theme="robotic"] .input::placeholder,
+:root[data-theme="robotic"] .textarea::placeholder { color: var(--robo-ink-soft); }
+:root[data-theme="robotic"] .input:focus,
+:root[data-theme="robotic"] .select:focus,
+:root[data-theme="robotic"] .textarea:focus { border-color: var(--robo-ink); box-shadow: 0 0 0 2px var(--robo-green); }
+:root[data-theme="robotic"] .sidebar .input,
+:root[data-theme="robotic"] .sidebar .select,
+:root[data-theme="robotic"] .sidebar .textarea { background: var(--robo-navy-deep); color: #f4f8f9; border-color: rgba(255, 255, 255, 0.25); box-shadow: none; }
+:root[data-theme="robotic"] .label { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; font-size: 10.5px; }
+:root[data-theme="robotic"] input[type="checkbox"],
+:root[data-theme="robotic"] input[type="radio"] { accent-color: var(--robo-green); }
+
+/* ── Tables, tabs, badges, chips ─────────────────────────────────────────── */
+:root[data-theme="robotic"] .table th { font-family: var(--font-mono); font-weight: 800; letter-spacing: 0.12em; border-bottom: 2px solid var(--robo-ink); color: var(--robo-ink-soft); }
+:root[data-theme="robotic"] .table tr.click:hover td,
+:root[data-theme="robotic"] .table tr.selected td { background: #e5f9e4; }
+:root[data-theme="robotic"] .table tr.selected td { box-shadow: inset 3px 0 0 var(--robo-green); }
+:root[data-theme="robotic"] .tabs { border-bottom: 3px solid var(--robo-ink); gap: 6px; }
+:root[data-theme="robotic"] .tab { font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px; color: var(--robo-ink-soft); }
+:root[data-theme="robotic"] .tab.active { color: var(--robo-ink); background: var(--robo-green); border-bottom-color: var(--robo-ink); }
+:root[data-theme="robotic"] .badge {
+  border-radius: 0; border: 1px solid var(--robo-ink); background: #fff; color: var(--robo-ink);
+  font-family: var(--font-mono); font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
+  box-shadow: 1px 1px 0 var(--robo-ink);
+}
+:root[data-theme="robotic"] .badge.green { background: #e5f9e4; color: #065f46; border-color: #065f46; }
+:root[data-theme="robotic"] .badge.amber { background: #fef3c7; color: #92400e; border-color: #92400e; }
+:root[data-theme="robotic"] .badge.red { background: #fee2e2; color: #991b1b; border-color: #991b1b; }
+:root[data-theme="robotic"] .badge.blue { background: #e0f2fe; color: #0369a1; border-color: #0369a1; }
+:root[data-theme="robotic"] .chip { border: 2px solid var(--robo-ink); background: #fff; color: var(--robo-ink); box-shadow: 1px 1px 0 var(--robo-ink); font-weight: 700; }
+:root[data-theme="robotic"] .chip:hover { background: var(--robo-green); color: var(--robo-ink); border-color: var(--robo-ink); }
+:root[data-theme="robotic"] .step-num { border: 2px solid var(--robo-ink); background: var(--robo-green); color: var(--robo-ink); font-weight: 800; }
+:root[data-theme="robotic"] .dot.on { background: var(--robo-green); box-shadow: 0 0 8px var(--robo-green); }
+
+/* ── Agent workspace ─────────────────────────────────────────────────────── */
+:root[data-theme="robotic"] .bubble {
+  background: #fff; color: var(--robo-ink);
+  border: 2px solid var(--robo-ink); border-radius: 0 10px 10px 0;
+  box-shadow: 3px 3px 0 var(--robo-ink);
+}
+:root[data-theme="robotic"] .msg.user .bubble {
+  background: var(--robo-ink); color: #f4f8f9;
+  border: 2px solid var(--robo-ink); border-radius: 10px 0 0 10px;
+}
+:root[data-theme="robotic"] .msg.user .bubble a { color: var(--robo-green); }
+:root[data-theme="robotic"] .approval-card {
+  background: #fffbf0; border: 2px solid var(--robo-ink);
+  box-shadow: 4px 4px 0 var(--robo-yellow);
+}
+:root[data-theme="robotic"] .approval-card .title { color: #92400e; font-weight: 900; text-transform: uppercase; letter-spacing: 0.06em; }
+:root[data-theme="robotic"] .composer {
+  background: #fff;
+  border: 2px solid var(--robo-ink); border-radius: 0;
+  box-shadow: 3px 3px 0 var(--robo-ink);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+:root[data-theme="robotic"] .composer:focus-within { border-color: var(--robo-ink); box-shadow: 3px 3px 0 var(--robo-green); }
+:root[data-theme="robotic"] .composer-glow .composer { background: #fff; }
+:root[data-theme="robotic"] .composer-send {
+  background: var(--robo-green); color: var(--robo-ink);
+  border: 2px solid var(--robo-ink); border-radius: 0;
+  box-shadow: 2px 2px 0 var(--robo-ink);
+}
+:root[data-theme="robotic"] .composer-send:hover:not(:disabled) { background: var(--robo-green-press); }
+/* The floating pills (meeting capture, activity) — square, inked, pressed. */
+:root[data-theme="robotic"] .dock-pill,
+:root[data-theme="robotic"] .act-dot {
+  background: #fff; color: var(--robo-ink);
+  border: 2px solid var(--robo-ink); border-radius: 0;
+  box-shadow: 2px 2px 0 var(--robo-ink);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  font-weight: 700;
+}
+:root[data-theme="robotic"] .dock-pill.tone-rec { border-color: #be123c; color: #be123c; box-shadow: 2px 2px 0 #e11d48; }
+/* The welcome headline is an SVG; its fill was the Black theme's light text. */
+:root[data-theme="robotic"] .welcome-headline .stroke-text__fill { fill: var(--robo-ink); }
+:root[data-theme="robotic"] .welcome-headline .stroke-text__stroke { stroke: var(--robo-green-press); }
+
+/* ── Motion: the press and lift respect reduced motion, like the rest ────── */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="robotic"] .btn,
+  :root[data-theme="robotic"] .nav-item { transition: none; }
+  :root[data-theme="robotic"] .btn:hover:not(:disabled),
+  :root[data-theme="robotic"] .btn:active:not(:disabled) { transform: none; }
+}
+
+/* ── Attachments ─────────────────────────────────────────────────────────── */
+:root[data-theme="robotic"] .composer-file { background: #fff; border: 2px solid var(--robo-ink); box-shadow: 2px 2px 0 var(--robo-ink); }
+:root[data-theme="robotic"] .composer-file.is-ready { background: #e5f9e4; }
+:root[data-theme="robotic"] .composer-file.is-error { border-color: #be123c; box-shadow: 2px 2px 0 #e11d48; }
+:root[data-theme="robotic"] .composer-file-name { font-weight: 800; }
+:root[data-theme="robotic"] .composer.is-dragging { box-shadow: 3px 3px 0 var(--robo-green); background: #f3fdf2; }
+:root[data-theme="robotic"] .msg-file { border: 1px solid rgba(244, 248, 249, 0.35); background: rgba(244, 248, 249, 0.08); border-radius: 0; }

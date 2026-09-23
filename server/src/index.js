@@ -19,6 +19,7 @@ import { logsRouter } from './routes/logs.js';
 import { knowledgeRouter } from './routes/knowledge.js';
 import { skillsRouter } from './routes/skills.js';
 import { healthRouter } from './routes/health.js';
+import { attachmentsRouter } from './routes/attachments.js';
 import { log, requestLogger, banner } from './logging.js';
 import { SnowError } from './servicenow/client.js';
 import { getDb } from './memory/db.js';
@@ -44,6 +45,8 @@ app.use('/api/incidents', incidentsRouter);
 app.use('/api/catalog', catalogRouter);
 app.use('/api/flows', flowsRouter);
 app.use('/api/agent', agentRouter);
+// Files attached to a chat: extracted (text, tables, OCR) and filed per chat.
+app.use('/api/attachments', attachmentsRouter);
 // Phase 4: plan -> review -> approve -> execute -> verify. ADDITIVE — the
 // chat route above is untouched and still runs the ordinary turn loop.
 // Mounted UNDER /api/agent so a plan's approval card resolves through the
@@ -77,7 +80,13 @@ app.use((err, req, res, _next) => {
   const status = err instanceof SnowError ? err.status : (err.status || 500);
   // The terminal gets the stack; the browser gets the message. Before this,
   // a 500 was a red box in the UI and nothing anywhere else.
-  log.error('http', `${req.method} ${req.originalUrl.split('?')[0]} — ${err.message}`, err.detail ? { detail: err.detail, stack: err.stack } : err);
+  //
+  // A 4xx is the server answering correctly ("no such session", "invalid
+  // input"), not failing, so it is one warning line without a stack. A stack
+  // on every expected refusal buried the real failures it exists to surface.
+  const where = `${req.method} ${req.originalUrl.split('?')[0]} — ${err.message}`;
+  if (status >= 400 && status < 500) log.warn('http', where);
+  else log.error('http', where, err.detail ? { detail: err.detail, stack: err.stack } : err);
   res.status(status >= 400 && status < 600 ? status : 500).json({
     message: err.message || 'Internal error',
     detail: err.detail || null,

@@ -37,6 +37,7 @@ export default function Dashboard() {
   const [sdk, setSdk] = useState(null);
   const [sdkBusy, setSdkBusy] = useState(false);
   const [sdkEvents, setSdkEvents] = useState([]);
+  const [showPassword, setShowPassword] = useState(false);
 
   const loadStats = () => api.get('/incidents/stats').then(setStats).catch(() => setStats(null));
 
@@ -177,8 +178,8 @@ export default function Dashboard() {
               <option value="basic">Basic (username + password)</option>
               <option value="oauth">OAuth 2.0 (password grant)</option>
             </select>
-          </div>
-          <div className="grid2">
+          {/* </div>
+            <div className="grid2">
             <div className="field">
               <label className="label">Username</label>
               <input className="input" value={conn.username} onChange={(e) => setConn({ ...conn, username: e.target.value })} />
@@ -187,8 +188,50 @@ export default function Dashboard() {
               <label className="label">Password {saved?.connection.hasPassword ? '· saved' : ''}</label>
               <input className="input" type="password" placeholder={saved?.connection.hasPassword ? '••••••••' : ''} value={conn.password}
                 onChange={(e) => setConn({ ...conn, password: e.target.value })} />
-            </div>
+            </div> */}
+
+            <div className="grid2">
+  <div className="field">
+    <label className="label">Username</label>
+    <input
+      className="input"
+      value={conn.username}
+      onChange={(e) =>
+        setConn({ ...conn, username: e.target.value })
+      }
+    />
+  </div>
+
+  <div className="field">
+    <label className="label">
+      Password {saved?.connection.hasPassword ? '· saved' : ''}
+    </label>
+
+    <div className="password-wrapper">
+      <input
+        className="input"
+        type={showPassword ? 'text' : 'password'}
+        placeholder={saved?.connection.hasPassword ? '••••••••' : ''}
+        value={conn.password}
+        onChange={(e) =>
+          setConn({ ...conn, password: e.target.value })
+        }
+      />
+
+      <button
+        type="button"
+        className="password-toggle"
+        onClick={() => setShowPassword(!showPassword)}
+        aria-label={showPassword ? 'Hide password' : 'Show password'}
+      >
+        {showPassword ? '🙈' : '👁️'}
+      </button>
+    </div>
+  </div>
+</div>
           </div>
+
+
           {conn.authType === 'oauth' && (
             <div className="grid2">
               <div className="field">

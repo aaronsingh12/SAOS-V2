@@ -1,0 +1,194 @@
+@import "tailwindcss";
+
+:root { --background: #f4f8f9; --foreground: #0d2f3f; }
+
+@theme inline {
+  --color-background: #f4f8f9;
+  --color-foreground: #0d2f3f;
+  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --font-display: "Arial Black", "Arial", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--background); }
+body { background: var(--background); color: var(--foreground); font-family: Arial, Helvetica, sans-serif; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+.saos-scroll { scrollbar-width: thin; scrollbar-color: #8e8981 #f4f8f9; }
+
+@keyframes saosFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes saosSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-saos-fade {
+  animation: saosFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-saos-slide {
+  animation: saosSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.saos-interactive {
+  transition: transform 0.1s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+.saos-interactive:active {
+  transform: scale(0.98);
+}
+
+.saos-interactive-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.saos-interactive-card:hover {
+  transform: translateY(-1px);
+}
+
+@keyframes saosPulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(94, 220, 86, 0.4), inset 0 0 15px rgba(94, 220, 86, 0.05);
+    border-color: #5edc56;
+  }
+  50% {
+    box-shadow: 0 0 20px 4px rgba(94, 220, 86, 0.6), inset 0 0 25px rgba(94, 220, 86, 0.15);
+    border-color: #4ecd46;
+  }
+}
+
+@keyframes saosExit {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+    max-height: 200px;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.94) translateY(-8px);
+    max-height: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+}
+
+@keyframes saosShimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes saosSuccessPop {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.03); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.animate-saos-pulse-glow {
+  animation: saosPulseGlow 2s ease-in-out infinite;
+}
+
+.animate-saos-exit {
+  animation: saosExit 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.animate-saos-shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 50%, rgba(255,255,255,0) 100%);
+  background-size: 200% 100%;
+  animation: saosShimmer 1.8s infinite;
+}
+
+.animate-saos-success {
+  animation: saosSuccessPop 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes saosPageEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes saosScanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(1000%); }
+}
+
+@keyframes saosGlowStream {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-saos-page-enter {
+  animation: saosPageEnter 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-saos-scanline {
+  animation: saosScanline 4s linear infinite;
+}
+
+.animate-saos-glow-stream {
+  background: linear-gradient(90deg, rgba(94, 220, 86, 0.05) 0%, rgba(94, 220, 86, 0.35) 50%, rgba(94, 220, 86, 0.05) 100%);
+  background-size: 200% 100%;
+  animation: saosGlowStream 2.5s infinite;
+}
+
+@keyframes saosElectronBeam {
+  0% { transform: translateX(-100%); opacity: 0; }
+  25% { opacity: 1; }
+  75% { opacity: 1; }
+  100% { transform: translateX(250%); opacity: 0; }
+}
+
+.animate-saos-electron {
+  animation: saosElectronBeam 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.brutal-btn {
+  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.15s ease;
+}
+.brutal-btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 #0d2f3f;
+}
+.brutal-btn:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 #0d2f3f;
+}
+
+.brutal-card {
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.brutal-card:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 #0d2f3f;
+}
+.brutal-card:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 #0d2f3f;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}

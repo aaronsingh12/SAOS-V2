@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import BorderGlow from './BorderGlow.jsx';
 import { toast } from './toast.js';
+import { ACCEPT, describeAttachment, formatBytes } from './attachments.js';
 
 /*
  * The agent composer.
@@ -25,6 +26,13 @@ const Icon = {
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
       strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  ),
+  file: (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <path d="M14 3v5h5M9 13h6M9 17h4" />
     </svg>
   ),
   /* A waveform, not a microphone. Five bars read as speech rather than as
@@ -91,6 +99,10 @@ export default function Composer({
   onOpenEvidence = null,
   hasEvidence = false,
   sourcesOpen = false,
+  /* Files for the next message: [{ key, name, size, status: uploading|ready|error, meta?, error? }] */
+  attachments = [],
+  onAttachFiles = null,
+  onRemoveAttachment = null,
 }) {
   const taRef = useRef(null);
   const menuRef = useRef(null);
@@ -99,7 +111,13 @@ export default function Composer({
   const [cmdOpen, setCmdOpen] = useState(false);
   const [listening, setListening] = useState(false);
 
+  const [dragging, setDragging] = useState(false);
+
   const hasText = Boolean(value.trim());
+  const uploading = attachments.some((a) => a.status === 'uploading');
+  const hasReadyFile = attachments.some((a) => a.status === 'ready');
+  // A message can be files alone; it cannot leave while a file is still being read.
+  const canSend = (hasText || hasReadyFile) && !uploading;
 
   /*
    * Auto-grow. Height is reset to `auto` before scrollHeight is read, because
@@ -180,8 +198,37 @@ export default function Composer({
 
   const focusInput = () => requestAnimationFrame(() => taRef.current?.focus());
 
+  /*
+   * ATTACH — the picker is created on click and never rendered, so there is no
+   * "Choose Files / No file chosen" control anywhere on the page. Paste (e.g. a
+   * screenshot) and drag-and-drop feed the same handler.
+   */
+  const pickFiles = () => {
+    if (!onAttachFiles) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = ACCEPT;
+    input.onchange = () => { if (input.files?.length) onAttachFiles([...input.files]); };
+    input.click();
+  };
+  const onPaste = (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length && onAttachFiles) { e.preventDefault(); onAttachFiles(files); }
+  };
+  const onDragOver = (e) => {
+    if (!onAttachFiles || ![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    setDragging(true);
+  };
+  const onDrop = (e) => {
+    setDragging(false);
+    const files = [...(e.dataTransfer?.files || [])];
+    if (files.length && onAttachFiles) { e.preventDefault(); onAttachFiles(files); }
+  };
+
   const submit = () => {
-    if (!hasText || running) return;
+    if (!canSend || running) return;
     // No arguments, deliberately: AgentChat's send() reads the live input when
     // it is called bare. Handing it the submit event would make `text` an
     // object and blow up on .trim().
@@ -341,9 +388,33 @@ export default function Composer({
         fillOpacity={0}
       >
       <form
-        className={`composer${listening ? ' is-listening' : ''}`}
+        className={`composer${listening ? ' is-listening' : ''}${dragging ? ' is-dragging' : ''}`}
         onSubmit={(e) => { e.preventDefault(); submit(); }}
+        onDragOver={onDragOver}
+        onDragLeave={() => setDragging(false)}
+        onDrop={onDrop}
       >
+        {attachments.length > 0 && (
+          <ul className="composer-files" aria-label="Attached files">
+            {attachments.map((a) => (
+              <li key={a.key} className={`composer-file is-${a.status}`}
+                title={a.status === 'error' ? a.error : (a.meta?.warnings || []).join(' ') || a.name}>
+                <span className="composer-file-icon" aria-hidden="true">{Icon.file}</span>
+                <span className="composer-file-text">
+                  <span className="composer-file-name">{a.name}</span>
+                  <span className="composer-file-meta">
+                    {a.status === 'uploading' && `Reading… ${formatBytes(a.size)}`}
+                    {a.status === 'ready' && describeAttachment(a.meta)}
+                    {a.status === 'error' && a.error}
+                  </span>
+                </span>
+                {a.status === 'uploading' && <span className="composer-file-spin" aria-label="Reading the file" />}
+                <button type="button" className="composer-file-x" onClick={() => onRemoveAttachment?.(a.key)}
+                  aria-label={`Remove ${a.name}`} title="Remove">×</button>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="composer-row">
         {/*
           * ATTACHMENTS — the entry point only.
@@ -358,9 +429,10 @@ export default function Composer({
           type="button"
           ref={plusRef}
           className="composer-btn"
-          onClick={() => toast.info('Attachments are not wired up yet.')}
-          aria-label="Attach"
-          title="Attach (coming soon)"
+          onClick={pickFiles}
+          disabled={!onAttachFiles}
+          aria-label="Attach files"
+          title="Attach files — PDF, Word, Excel, CSV, PowerPoint, images (OCR), text. You can also paste or drop them here."
         >
           {Icon.plus}
         </button>
@@ -373,6 +445,7 @@ export default function Composer({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
         />
 
         <button
@@ -412,8 +485,8 @@ export default function Composer({
           <button
             type="submit"
             className="composer-send"
-            disabled={!hasText}
-            title={hasText ? 'Send' : 'Type a message first'}
+            disabled={!canSend}
+            title={uploading ? 'Still reading an attached file…' : (canSend ? 'Send' : 'Type a message first')}
             aria-label="Send"
           >
             {Icon.send}

@@ -197,6 +197,8 @@ export const TOOL_CAPABILITIES = Object.freeze({
   list_agent_capabilities: ['core'],
 
   recall_memory: ['core', 'memory'],
+  // Always present: a turn with a file attached can be about anything.
+  read_attachment: ['core'],
   list_instance_facts: ['core', 'memory'],
   remember_fact: ['core', 'memory'],
   search_servicenow_docs: ['core', 'knowledge'],

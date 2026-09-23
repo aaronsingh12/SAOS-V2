@@ -2595,3 +2595,25 @@ button.hd-important-row.is-active { background: color-mix(in srgb, var(--hs-tone
 @media (max-width: 560px) {
   .bf-note, .bf-body { margin-left: 0; }
 }
+
+
+.password-wrapper {
+  position: relative;
+}
+
+.password-wrapper .input {
+  padding-right: 42px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px;
+  font-size: 16px;
+  line-height: 1;
+}
