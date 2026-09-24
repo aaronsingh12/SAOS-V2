@@ -70,6 +70,8 @@ function uc1Parts() {
 
 function uc2Parts() {
   return {
+    // Measured on dev366630: a subflow call points at the published SNAPSHOT; parent_flow is the subflow.
+    sys_hub_flow_snapshot: [{ sys_id: SNAP_UC2, parent_flow: UC2 }],
     sys_hub_flow_input: [
       { model: UC2, sys_id: id(50), element: 'incident', label: 'Incident', internal_type: 'reference', reference: 'incident', mandatory: 'true', order: '1' },
     ],
@@ -108,6 +110,7 @@ function fakeClient(extra = {}, { forbidden = [] } = {}) {
   const match = (r, clause) => {
     let m;
     if ((m = /^([\w.]+)LIKE(.*)$/.exec(clause))) return String(cell(r, m[1]) ?? '').toLowerCase().includes(m[2].toLowerCase());
+    if ((m = /^([\w.]+)IN(.*)$/.exec(clause))) return m[2].split(',').includes(String(cell(r, m[1]) ?? ''));
     if ((m = /^([\w.]+)=(.*)$/.exec(clause))) return String(cell(r, m[1]) ?? '') === m[2];
     throw new Error(`fake cannot evaluate ${clause}`);
   };
@@ -209,9 +212,13 @@ test('list output is compact enough to survive the 8,000-character result cap', 
   const many = Array.from({ length: 60 }, (_, i) => ({ ...headers()[0], sys_id: id(1000 + i), name: `Flow number ${i} with a fairly long descriptive name` }));
   const c = fakeClient();
   const client = { ...c, query: async (t, o) => (t === 'sys_hub_flow' ? many.slice(o.offset, o.offset + o.limit) : c.query(t, o)) };
-  const r = await listFlows(client, {});
-  assert.equal(r.items.length, 20);
-  assert.ok(JSON.stringify(r, null, 1).length < 8000, `list page is ${JSON.stringify(r, null, 1).length} chars`);
+  // Live on dev366630, 50 rows came to 17,999 characters. The page is trimmed to fit.
+  const r = await listFlows(client, { limit: 50 });
+  assert.ok(JSON.stringify(r, null, 1).length <= RESULT_BUDGET, `list page is ${JSON.stringify(r, null, 1).length} chars`);
+  assert.ok(r.items.length > 5 && r.items.length < 50);
+  assert.equal(r.next_offset, r.items.length);
+  const next = await listFlows(client, { limit: 50, offset: r.next_offset });
+  assert.equal(next.items[0].sys_id, many[r.items.length].sys_id);
 });
 
 /* ---------------- flows.detail (T3, T4, T5, T6) ---------------- */
@@ -238,6 +245,8 @@ test('T4 (offline) UC2 shows inputs/outputs; UC1 shows the call to UC2', async (
   const call = flattenSteps(uc1.steps).find((s) => s.kind === 'subflow');
   assert.equal(call.name, 'UC2 Notify Duty Manager');
   assert.equal(call.wait_for_completion, true);
+  assert.equal(call.subflow_sys_id, UC2);
+  assert.equal(call.subflow_snapshot, SNAP_UC2);
   assert.equal(call.inputs.incident, 'Trigger ➛ Incident Record');
 });
 
@@ -320,4 +329,78 @@ test('list_flows and get_flow are registered, read-only, with the new schemas', 
   assert.deepEqual(Object.keys(list.inputSchema.properties).sort(), ['active', 'limit', 'name_contains', 'offset', 'scope', 'type']);
   assert.deepEqual(Object.keys(get.inputSchema.properties).sort(), ['name', 'steps_from', 'sys_id']);
   assert.deepEqual(get.inputSchema.required, []);
+});
+
+/* ---------------- shapes measured live on dev366630 ---------------- */
+
+test('data pills name steps and the trigger in words', () => {
+  const lookUi = '802cfab8-0081-4e70-89b2-dac52ddc2f75';
+  const tree = buildStepTree({ actions: [
+    { sys_id: 'a', order: '1', action_type: 'Look Up Record', ui_id: lookUi },
+    { sys_id: 'b', order: '2', action_type: 'Log', ui_id: 'b-ui',
+      values: gz({ inputs: [{ name: 'log_message', value: 'n={{Created_1.current.number}} g={{802cfab8-0081-4e70-89b2-dac52ddc2f75.Record}} v={{subflow.x}}' }] }) },
+  ] });
+  assert.equal(tree[1].inputs.log_message, 'n={{Trigger.current.number}} g={{step 1 (Look Up Record).Record}} v={{subflow.x}}');
+});
+
+test('scripted parameters show their script; __snc plumbing is hidden', () => {
+  const d = decodeValues(gz({ inputs: [
+    { name: 'scratchpad', value: '', scriptActive: true, script: { scratchpad: { scriptActive: true, script: 'var x = 1;' } } },
+    { name: '__snc_dont_fail_on_error', value: 'false' },
+  ] }));
+  assert.deepEqual(d.inputs, { scratchpad: '[script] var x = 1;' });
+});
+
+test('bare reference sys_ids are resolved to labels, and a dangling one is called out', async () => {
+  const good = id(900);
+  const gone = id(901);
+  const extra = {
+    sys_hub_action_instance_v2: [{
+      flow: UC2, sys_id: id(902), order: '2', action_type: ref(id(53), 'Send Notification'), ui_id: 'n2', parent_ui_id: '',
+      values: gz({ inputs: [
+        { name: 'notification', value: good, displayValue: '', parameter: { reference: 'sysevent_email_action' } },
+        { name: 'template', value: gone, displayValue: '', parameter: { reference: 'sysevent_email_action' } },
+      ] }),
+    }],
+    sysevent_email_action: [{ sys_id: good, name: 'Incident closed' }],
+  };
+  const r = await describeFlow(fakeClient(extra), { sys_id: UC2 });
+  const step = flattenSteps(r.steps).find((s) => s.sys_id === id(902));
+  assert.equal(step.inputs.notification, `Incident closed [${good}]`);
+  assert.equal(step.inputs.template, `${gone} [NOT FOUND in sysevent_email_action]`);
+  assert.ok(r.notes.some((n) => /Broken reference/.test(n) && /template/.test(n)));
+  assert.equal(step._refs, undefined);
+});
+
+test('a record-triggered FLOW reports its trigger record as trigger_data, not as inputs', async () => {
+  const extra = { sys_hub_flow_input: [
+    { model: UC1, sys_id: id(70), element: 'current', label: 'Record', internal_type: 'document_id', reference: '', mandatory: 'true', order: '1' },
+  ] };
+  const r = await describeFlow(fakeClient(extra), { sys_id: UC1 });
+  assert.deepEqual(r.inputs, []);
+  assert.deepEqual(r.trigger_data.map((x) => x.name), ['current']);
+  assert.doesNotMatch(r.summary, /Inputs:/);
+});
+
+test('steps_from continues with FULL steps (inputs kept), never a stripped copy', async () => {
+  const BIG = id(8);
+  const extra = {
+    sys_hub_flow: [{ ...headers()[0], sys_id: BIG, name: 'Huge Flow' }],
+    sys_hub_action_instance_v2: Array.from({ length: 80 }, (_, i) => ({
+      flow: BIG, sys_id: id(20000 + i), order: String(i + 1), action_type: ref(id(9), `Action ${i + 1}`), ui_id: `h${i}`, parent_ui_id: '',
+      values: gz({ inputs: [{ name: 'a', value: 'y'.repeat(120) }] }),
+    })),
+  };
+  let from = 1;
+  const seen = [];
+  while (from) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await describeFlow(fakeClient(extra), { name: 'Huge Flow' }, { stepsFrom: from });
+    assert.ok(JSON.stringify(r, null, 1).length <= RESULT_BUDGET);
+    for (const s of flattenSteps(r.steps).filter((x) => !x.omitted)) { assert.ok(s.inputs?.a, `step ${s.step} lost its inputs`); seen.push(s.step); }
+    assert.ok(!r.next_steps_from || r.next_steps_from > from);
+    from = r.next_steps_from;
+  }
+  assert.equal(seen.length, 80);
+  assert.equal(new Set(seen).size, 80);
 });

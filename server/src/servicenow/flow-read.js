@@ -79,14 +79,28 @@ export function parseBlob(encoded) {
   return null;
 }
 
-/** Name → readable value. The label is preferred; references are otherwise sys_ids. */
-function readablePairs(list) {
+/**
+ * Name → readable value. The label is preferred. MEASURED on dev366630:
+ *   - a scripted parameter has `scriptActive: true`, an empty value, and its
+ *     code under `script.<name>.script`
+ *   - a reference is often stored as a bare sys_id with no displayValue, but
+ *     `parameter.reference` names its table — collected in `refs` so the
+ *     caller can look the label up
+ *   - `__snc_*` parameters are platform plumbing, not configuration
+ */
+function readablePairs(list, section, refs) {
   const out = {};
   for (const p of Array.isArray(list) ? list : []) {
-    if (!p?.name) continue;
+    if (!p?.name || p.name.startsWith('__')) continue;
+    const code = p.scriptActive ? p.script?.[p.name]?.script ?? (typeof p.script === 'string' ? p.script : null) : null;
+    if (code) { out[p.name] = `[script] ${String(code).trim()}`; continue; }
     const value = p.displayValue || p.value;
     if (value === '' || value == null) continue;
     out[p.name] = typeof value === 'string' ? value : JSON.stringify(value);
+    const table = p.parameter?.reference;
+    if (refs && table && SYS_ID_RE.test(String(p.value)) && (!p.displayValue || p.displayValue === p.value)) {
+      refs.push({ section, key: p.name, table, sys_id: String(p.value) });
+    }
   }
   return out;
 }
@@ -99,13 +113,29 @@ function readablePairs(list) {
 export function decodeValues(encoded) {
   const parsed = parseBlob(encoded);
   if (parsed == null) return { inputs: {}, undecodable: Boolean(encoded) };
-  if (Array.isArray(parsed)) return { inputs: readablePairs(parsed) };
-  const out = { inputs: readablePairs(parsed.inputs) };
-  const assigns = readablePairs(parsed.outputsToAssign);
-  const variables = readablePairs(parsed.variables);
+  const refs = [];
+  const done = (out) => (refs.length ? { ...out, _refs: refs } : out);
+  if (Array.isArray(parsed)) return done({ inputs: readablePairs(parsed, 'inputs', refs) });
+  const out = { inputs: readablePairs(parsed.inputs, 'inputs', refs) };
+  const assigns = readablePairs(parsed.outputsToAssign, 'assigns', refs);
+  const variables = readablePairs(parsed.variables, 'sets_variables', refs);
   if (Object.keys(assigns).length) out.assigns = assigns;
   if (Object.keys(variables).length) out.sets_variables = variables;
-  return out;
+  return done(out);
+}
+
+/**
+ * Data pills name their source by the producing step's `ui_id` (a hyphenated
+ * sys_id) and the trigger as `<Trigger name>_1` — measured on dev366630, e.g.
+ * `{{802cfab8-0081-4e70-89b2-dac52ddc2f75.Record}}`, `{{Created_1.current}}`.
+ * Rewritten to the step number the reader sees.
+ */
+const UUID_PILL = /\{\{([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\./gi;
+const TRIGGER_PILL = /\{\{[A-Z][A-Za-z ]*_\d+\./g;
+export function humanizePills(text, stepByUi) {
+  return String(text)
+    .replace(UUID_PILL, (m, ui) => (stepByUi.has(ui) ? `{{step ${stepByUi.get(ui)}.` : m))
+    .replace(TRIGGER_PILL, '{{Trigger.');
 }
 
 /**
@@ -177,15 +207,24 @@ export function buildStepTree({ actions = [], logic = [], subflowCalls = [] }) {
     (parent ? parent.children : roots).push(n);
   }
 
+  const stepByUi = new Map();
   const finish = (list, prefix, depth) => list.sort(byOrder).map((n, i) => {
     const step = prefix ? `${prefix}.${i + 1}` : String(i + 1);
     const { _o, _ui, _parent, children, ...rest } = n;
+    if (_ui) stepByUi.set(_ui, `${step} (${n.name})`);
     const out = { step, depth, ...rest };
     if (!Object.keys(out.inputs ?? {}).length) delete out.inputs;
     if (children.length) out.children = finish(children, step, depth + 1);
     return out;
   });
-  return finish(roots, '', 0);
+  const tree = finish(roots, '', 0);
+  for (const s of flattenSteps(tree)) {
+    for (const key of ['inputs', 'assigns', 'sets_variables']) {
+      if (!s[key]) continue;
+      for (const [k, v] of Object.entries(s[key])) s[key][k] = humanizePills(v, stepByUi);
+    }
+  }
+  return tree;
 }
 
 /** Depth-first, in run order. */
@@ -251,7 +290,7 @@ function friendlyFailure(err, what) {
  * x_2196302_nwforge, 'global', or a sys_scope sys_id), active (true/false),
  * name_contains.
  */
-export async function listFlows(client, { type = 'all', scope = null, active = null, name_contains = null, limit = LIST_DEFAULT_LIMIT, offset = 0 } = {}) {
+export async function listFlows(client, { type = 'all', scope = null, active = null, name_contains = null, limit = LIST_DEFAULT_LIMIT, offset = 0 } = {}, { budget = RESULT_BUDGET } = {}) {
   const pageSize = Math.min(Math.max(Number(limit) || LIST_DEFAULT_LIMIT, 1), LIST_MAX_LIMIT);
   const start = Math.max(Number(offset) || 0, 0);
 
@@ -271,18 +310,26 @@ export async function listFlows(client, { type = 'all', scope = null, active = n
   } catch (err) { return friendlyFailure(err, 'flows (sys_hub_flow)'); }
 
   const total = client.count ? await client.count('sys_hub_flow', query).catch(() => null) : null;
-  const hasMore = rows.length > pageSize;
-  const items = rows.slice(0, pageSize).map(compactHeader);
-  return {
-    ok: true,
-    filters: { type, scope: sc || null, active: active ?? null, name_contains: nc || null },
-    total,
-    offset: start,
-    count: items.length,
-    has_more: hasMore,
-    next_offset: hasMore ? start + pageSize : null,
-    items,
+  const all = rows.map(compactHeader);
+  /* MEASURED on dev366630: ~350 characters per row, so 50 rows came to
+   * 17,999 — past the 8,000-character result cap. Trim the page to what fits
+   * and move next_offset back, rather than let the orchestrator cut it. */
+  const page = (n) => {
+    const hasMore = all.length > n;
+    return {
+      ok: true,
+      filters: { type, scope: sc || null, active: active ?? null, name_contains: nc || null },
+      total,
+      offset: start,
+      count: Math.min(n, all.length),
+      has_more: hasMore,
+      next_offset: hasMore ? start + n : null,
+      items: all.slice(0, n),
+    };
   };
+  let n = Math.min(pageSize, all.length);
+  while (n > 1 && size(page(n)) > budget) n -= 1;
+  return page(n);
 }
 
 /**
@@ -337,6 +384,72 @@ function readableTrigger(r) {
   return t;
 }
 
+const LABEL_FIELDS = ['name', 'number', 'title', 'label', 'user_name', 'short_description'];
+
+/**
+ * Bare sys_ids in step values → "<label> [<sys_id>]", one query per referenced
+ * table. Best effort: a table that cannot be read leaves the sys_id as it is.
+ */
+async function resolveReferences(client, steps) {
+  const wanted = new Map();
+  for (const s of steps) for (const r of s._refs ?? []) {
+    if (!wanted.has(r.table)) wanted.set(r.table, new Set());
+    wanted.get(r.table).add(r.sys_id);
+  }
+  const labels = new Map();
+  const readTables = new Set();
+  await Promise.all([...wanted].slice(0, 15).map(async ([t, ids]) => {
+    try {
+      const rows = await client.query(t, { query: `sys_idIN${[...ids].slice(0, 100).join(',')}`, fields: `sys_id,${LABEL_FIELDS.join(',')}`, limit: 100, display: 'false' });
+      if (ids.size <= 100) readTables.add(t);
+      for (const row of rows) {
+        const label = LABEL_FIELDS.map((f) => row[f]).find((v) => v && String(v).trim());
+        labels.set(`${t}:${row.sys_id}`, label ? String(label) : null);
+      }
+    } catch { /* unreadable table: keep the sys_id */ }
+  }));
+  /* MEASURED on dev366630: "Incident Closed Notification" points at a
+   * notification that does not exist. A dangling reference is worth saying. */
+  const dangling = [];
+  for (const s of steps) {
+    for (const r of s._refs ?? []) {
+      if (s[r.section]?.[r.key] !== r.sys_id) continue;
+      const k = `${r.table}:${r.sys_id}`;
+      if (labels.get(k)) s[r.section][r.key] = `${labels.get(k)} [${r.sys_id}]`;
+      else if (!labels.has(k) && readTables.has(r.table)) {
+        s[r.section][r.key] = `${r.sys_id} [NOT FOUND in ${r.table}]`;
+        dangling.push(`step ${s.step} ${r.key}`);
+      }
+    }
+    delete s._refs;
+  }
+  return dangling;
+}
+
+/**
+ * A subflow call's `subflow` column points at a published SNAPSHOT, not at the
+ * subflow (measured on dev366630: sys_class_name = sys_hub_flow_snapshot).
+ * `parent_flow` on the snapshot is the subflow the user knows. Quoting the
+ * snapshot's id as "the subflow's sys_id" sent the agent to the wrong record.
+ */
+async function resolveSubflowTargets(client, steps) {
+  const calls = steps.filter((s) => s.kind === 'subflow' && s.subflow_ref);
+  if (!calls.length) return;
+  let parents = new Map();
+  try {
+    const rows = await client.query('sys_hub_flow_snapshot', {
+      query: `sys_idIN${[...new Set(calls.map((s) => s.subflow_ref))].join(',')}`, fields: 'sys_id,parent_flow', limit: 100, display: 'false',
+    });
+    parents = new Map(rows.map((r) => [val(r, 'sys_id'), val(r, 'parent_flow')]));
+  } catch { /* unreadable: fall back to the stored id */ }
+  for (const s of calls) {
+    const parent = parents.get(s.subflow_ref);
+    s.subflow_sys_id = parent || s.subflow_ref;
+    if (parent) s.subflow_snapshot = s.subflow_ref;
+    delete s.subflow_ref;
+  }
+}
+
 const contractRow = (r) => ({
   name: val(r, 'element'),
   label: val(r, 'label') || null,
@@ -383,17 +496,25 @@ export async function describeFlow(client, ref = {}, { budget = RESULT_BUDGET, s
 
   const tree = buildStepTree({ actions: actions.rows, logic: logic.rows, subflowCalls: subflowCalls.rows });
   const flat = flattenSteps(tree);
+  const dangling = await resolveReferences(client, flat);
+  await resolveSubflowTargets(client, flat);
   const trigger = triggers.rows.map(readableTrigger);
   if (flow.type === 'subflow' && !trigger.length) notes.push('Subflows have no trigger; other flows call them.');
   if (flow.type !== 'subflow' && triggers.status === 'ok' && !trigger.length) notes.push('This flow has no trigger.');
   if (flat.some((s) => s.undecodable)) notes.push('Some step configuration could not be decoded; those steps show no inputs.');
+  if (dangling.length) notes.push(`Broken reference(s) — the record no longer exists: ${dangling.join(', ')}.`);
 
+  /* MEASURED on dev366630: a record-triggered FLOW has sys_hub_flow_input rows
+   * too (current, table_name, changed_fields). They are the record the trigger
+   * hands the flow, not inputs anyone declared — only subflows declare inputs. */
+  const isSubflow = flow.type === 'subflow';
   const result = {
     ok: true,
     summary: '',
     flow,
     trigger: trigger.length === 1 ? trigger[0] : trigger,
-    inputs: inputs.rows.map(contractRow),
+    ...(isSubflow ? {} : { trigger_data: inputs.rows.map(contractRow) }),
+    inputs: isSubflow ? inputs.rows.map(contractRow) : [],
     outputs: outputs.rows.map(contractRow),
     variables: variables.rows.map(contractRow),
     step_count: flat.length,
@@ -418,7 +539,7 @@ export function summarize(r, { maxStepLines = 60 } = {}) {
   for (const t of trig.filter(Boolean)) {
     lines.push(`Trigger: ${t.definition ?? t.type ?? 'unknown'}${t.table ? ` on ${t.table}` : ''}${t.condition ? ` when ${clip(t.condition, 160)}` : ''}.`);
   }
-  const io = (label, list) => list.length && lines.push(`${label}: ${list.map((x) => `${x.name} (${x.type}${x.mandatory ? ', mandatory' : ''})`).join(', ')}.`);
+  const io = (label, list = []) => list.length && lines.push(`${label}: ${list.map((x) => (typeof x === 'string' ? x : `${x.name} (${x.type}${x.mandatory ? ', mandatory' : ''})`)).join(', ')}.`);
   io('Inputs', r.inputs);
   io('Outputs', r.outputs);
   io('Variables', r.variables);
@@ -465,53 +586,50 @@ function sliceSteps(tree, from, to) {
   return walk(tree);
 }
 
+const compactContract = (list) => list.map((x) => `${x.name}: ${x.type}${x.reference ? `→${x.reference}` : ''}${x.mandatory ? ' (mandatory)' : ''}`);
+
 /**
  * The orchestrator truncates tool output at 8,000 characters — mid-JSON.
- * Shrink deliberately instead: shorten values, then drop step inputs, then
- * page the steps, always saying what was left out.
+ * One rule instead: if the whole flow fits, return it. Otherwise `summary`
+ * carries the whole outline, and `steps` carries as many COMPLETE steps
+ * (inputs included) as fit, starting at `stepsFrom`; `next_steps_from` says
+ * where the next call continues.
  */
 export function fitToBudget(result, { budget = RESULT_BUDGET, stepsFrom = 1 } = {}) {
-  const full = result.steps;
-  const out = { ...result };
-  out.summary = summarize({ ...out, _fullSteps: full });
-  const from = Math.max(Number(stepsFrom) || 1, 1);
-  if (from > 1) {
-    out.steps = sliceSteps(full, from, Infinity);
-    out.notes = [...out.notes, `Showing steps from #${from} (run order).`];
-  }
-  if (size(out) <= budget) return out;
-
-  for (const n of [200, 80]) {
-    out.steps = mapSteps(out.steps, clipValues(n));
-    if (size(out) <= budget) {
-      out.notes = [...out.notes, `Long input values were shortened to ${n} characters.`];
-      return out;
-    }
-  }
-
-  out.steps = mapSteps(out.steps, (s) => {
-    const { inputs, assigns, sets_variables: sv, ...rest } = s;
-    const count = Object.keys(inputs ?? {}).length;
-    return count ? { ...rest, input_count: count } : rest;
-  });
-  const dropped = `This flow is large: step inputs were left out. Call get_flow again with steps_from to see inputs for a range of steps.`;
-  if (size(out) <= budget) {
-    out.notes = [...out.notes, dropped];
-    return out;
-  }
-
-  /* Still too big: page the steps themselves. */
+  const full = mapSteps(result.steps, clipValues(300));
   const total = result.step_count;
-  let to = total;
-  const base = { ...out, notes: [...out.notes] };
-  let paged;
-  do {
-    to = Math.max(from, Math.floor(from + (to - from) * 0.7));
-    paged = { ...base, steps: sliceSteps(full, from, to) };
-    paged.steps = mapSteps(paged.steps, clipValues(80));
-  } while (size(paged) > budget && to > from);
-  paged.summary = summarize({ ...paged, _fullSteps: full }, { maxStepLines: 25 });
-  paged.notes.push(`Steps ${from}–${to} of ${total} shown. Call get_flow again with steps_from=${to + 1} for the rest.`);
-  paged.next_steps_from = to < total ? to + 1 : null;
-  return paged;
+  const from = Math.min(Math.max(Number(stepsFrom) || 1, 1), Math.max(total, 1));
+
+  const whole = { ...result, steps: full, summary: summarize({ ...result, _fullSteps: full }) };
+  if (from === 1 && size(whole) <= budget) return whole;
+
+  /* Paged. The contract lists shrink to one line each; the outline shrinks
+   * until it leaves room for at least one complete step. */
+  const base = { ...result };
+  for (const k of ['trigger_data', 'inputs', 'outputs', 'variables']) if (base[k]) base[k] = compactContract(base[k]);
+  const short = mapSteps(result.steps, clipValues(150));
+  const page = (to, lines) => {
+    const p = { ...base, steps: sliceSteps(short, from, to), notes: [...result.notes] };
+    p.summary = summarize({ ...p, _fullSteps: full }, { maxStepLines: lines });
+    p.notes.push(`Steps ${from}–${to} of ${total} have full detail here (long values shortened); the summary outlines all of them.`
+      + (to < total ? ` Call get_flow again with steps_from=${to + 1} for the next steps.` : ''));
+    p.next_steps_from = to < total ? to + 1 : null;
+    return p;
+  };
+
+  for (const lines of [60, 30, 15, 5]) {
+    if (size(page(from, lines)) > budget) continue;
+    /* Largest `to` that fits: sizes grow with `to`, so binary search. */
+    let lo = from;
+    let hi = total;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (size(page(mid, lines)) <= budget) lo = mid; else hi = mid - 1;
+    }
+    return page(lo, lines);
+  }
+  /* One step is bigger than the budget on its own: show it with short values. */
+  const one = page(from, 5);
+  one.steps = mapSteps(one.steps, clipValues(80));
+  return one;
 }

@@ -8,7 +8,7 @@ import {
 import { catalog, variablePayload } from '../servicenow/catalog.js';
 import { EXTENDED_TOOLS } from './tools-extended.js';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
-import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify, activateManagedFlow } from '../servicenow/fluent.js';
+import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify, activateManagedFlow, readAppIdentity } from '../servicenow/fluent.js';
 import { recordIntendedState } from '../servicenow/post-install-state.js';
 import { listSlas, getSla, slaMeta, createSla, verifySla } from '../servicenow/sla.js';
 import { listPoliciesForItem, itemVariables, createPolicy, CONDITION_OPERATORS } from '../servicenow/catalogPolicy.js';
@@ -998,16 +998,18 @@ export const TOOLS = [
   {
     name: 'list_flows',
     description:
-      'List Flow Designer flows AND subflows on the instance. Read-only. Each row: sys_id, name, internal_name, type (flow/subflow), '
+      'THE tool for "show me my flows" / "what flows are on the instance": lists every Flow Designer flow AND subflow as the INSTANCE '
+      + 'holds it — including ones built by hand in Flow Designer and out-of-box ones, which list_live_flows does not see. Read-only. '
+      + 'For "my flows", pass scope="app" (this application\'s own scope). Each row: sys_id, name, internal_name, type (flow/subflow), '
       + 'scope, active, status (published/draft), last updated + by. Filter by type, scope (the app scope namespace such as x_<vendor>_<app>, or "global"), '
-      + 'active, or name_contains. Paged: default 20 rows; if has_more is true, call again with offset=next_offset. '
-      + 'Use this for "show me my flows"; use get_flow to explain one.',
+      + 'active, or name_contains. Paged: up to 20 rows by default (a page may be shorter so it fits); if has_more is true, call again with offset=next_offset. '
+      + 'Use get_flow to explain one.',
     mutating: false,
     inputSchema: {
       type: 'object',
       properties: {
         type: { type: 'string', enum: ['all', 'flow', 'subflow'], description: 'Only flows, only subflows, or both (default).' },
-        scope: { type: 'string', description: 'Application scope namespace (x_<vendor>_<app>), "global", or a sys_scope sys_id.' },
+        scope: { type: 'string', description: 'Use "app" when the user says "my flows" / "our flows" — it means this application\'s own scope. "global" means ServiceNow\'s out-of-box platform flows, NOT the user\'s. Also accepts a scope namespace (x_<vendor>_<app>) or a sys_scope sys_id. Omit for all scopes.' },
         active: { type: 'boolean', description: 'true = only active, false = only inactive; omit for both.' },
         name_contains: { type: 'string', description: 'Case-insensitive part of the flow name.' },
         limit: { type: 'integer', description: 'Rows per page, 1-50 (default 20).' },
@@ -1015,7 +1017,10 @@ export const TOOLS = [
       },
       required: [],
     },
-    execute: (input = {}) => flows.search(input),
+    execute: async (input = {}) => {
+      const scope = String(input.scope ?? '').trim().toLowerCase() === 'app' ? (await readAppIdentity()).scope : input.scope;
+      return flows.search({ ...input, scope });
+    },
   },
   {
     name: 'get_flow',
@@ -1269,7 +1274,8 @@ ${description}` : description);
   {
     name: 'list_live_flows',
     description:
-      'List the flows and subflows NowHelpAssist manages as Fluent source, with their current state on the instance. ' +
+      'List the flows and subflows NowHelpAssist manages as Fluent SOURCE files, with their current state on the instance. ' +
+      'It does NOT list flows built directly in Flow Designer or out-of-box flows — to show the user their flows, use list_flows. ' +
       'Each subflow carries its I/O CONTRACT (input and output names, types and reference tables) and each artifact carries ' +
       'its dependency edges: `calls` and `calledBy`. Read this BEFORE building a flow — if a subflow already does part of ' +
       'the work, the new flow should call it rather than re-implement it — and before deleting anything, because a subflow ' +
