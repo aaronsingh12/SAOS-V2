@@ -1,6 +1,7 @@
 import zlib from 'node:zlib';
 import { table, instanceRequest, SnowError } from './client.js';
 import { chatOnce } from '../agent/providers/index.js';
+import { listFlows, describeFlow } from './flow-read.js';
 
 /**
  * Flow Designer module.
@@ -260,6 +261,19 @@ export const flows = {
       limit: 100,
     });
   },
+
+  /**
+   * JOB 1.1 — the agent's view: paged, filtered, compact rows. `list` above
+   * stays as it is for the HTTP route and the lint resolver.
+   */
+  search: (opts) => listFlows(table, opts),
+
+  /**
+   * JOB 1.1 — the agent's view of one flow: by sys_id or name, steps nested
+   * and in run order, sized to fit a tool result. `detail` below stays the
+   * raw read the verifiers compare against.
+   */
+  describe: (ref, opts) => describeFlow(table, ref, opts),
 
   /** Exact-name lookup — used to read back what an install actually shipped. */
   findByName: (name, type) => {

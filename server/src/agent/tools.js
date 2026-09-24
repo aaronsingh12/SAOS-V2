@@ -997,25 +997,45 @@ export const TOOLS = [
   },
   {
     name: 'list_flows',
-    description: 'List Flow Designer flows on the instance (name, active, status, scope).',
+    description:
+      'List Flow Designer flows AND subflows on the instance. Read-only. Each row: sys_id, name, internal_name, type (flow/subflow), '
+      + 'scope, active, status (published/draft), last updated + by. Filter by type, scope (the app scope namespace such as x_<vendor>_<app>, or "global"), '
+      + 'active, or name_contains. Paged: default 20 rows; if has_more is true, call again with offset=next_offset. '
+      + 'Use this for "show me my flows"; use get_flow to explain one.',
     mutating: false,
     inputSchema: {
       type: 'object',
-      properties: { search: { type: 'string' }, active_only: { type: 'boolean' } },
+      properties: {
+        type: { type: 'string', enum: ['all', 'flow', 'subflow'], description: 'Only flows, only subflows, or both (default).' },
+        scope: { type: 'string', description: 'Application scope namespace (x_<vendor>_<app>), "global", or a sys_scope sys_id.' },
+        active: { type: 'boolean', description: 'true = only active, false = only inactive; omit for both.' },
+        name_contains: { type: 'string', description: 'Case-insensitive part of the flow name.' },
+        limit: { type: 'integer', description: 'Rows per page, 1-50 (default 20).' },
+        offset: { type: 'integer', description: 'Row to start from, for the next page (use next_offset).' },
+      },
       required: [],
     },
-    execute: ({ search, active_only }) => flows.list({ search, activeOnly: active_only }),
+    execute: (input = {}) => flows.search(input),
   },
   {
     name: 'get_flow',
-    description: 'Read one flow top-to-bottom: header, trigger instances, ordered action instances, and flow logic blocks.',
+    description:
+      'Explain one flow or subflow, read-only. Give sys_id OR name (exact, internal name, or part of the name). Returns a plain-English '
+      + '`summary` plus structured JSON: basic info, trigger (type, table, condition, schedule), inputs/outputs (for subflows), '
+      + 'flow variables, and `steps` IN RUN ORDER, nested under If/Else/For Each blocks via `children`, each with kind '
+      + '(action / flow_logic / subflow), name and its configured input values. If the name matches several flows it returns '
+      + '`choices` — ask the user which one. Large flows are paged: when next_steps_from is set, call again with steps_from.',
     mutating: false,
     inputSchema: {
       type: 'object',
-      properties: { sys_id: { type: 'string' } },
-      required: ['sys_id'],
+      properties: {
+        sys_id: { type: 'string', description: 'sys_id of the flow or subflow (sys_hub_flow).' },
+        name: { type: 'string', description: 'Flow name, internal name, or part of the name.' },
+        steps_from: { type: 'integer', description: 'For large flows: first step (1-based, run order) to show inputs for.' },
+      },
+      required: [],
     },
-    execute: ({ sys_id }) => flows.detail(sys_id),
+    execute: ({ sys_id, name, steps_from } = {}) => flows.describe({ sys_id, name }, { stepsFrom: steps_from }),
   },
   {
     name: 'design_flow_blueprint',
