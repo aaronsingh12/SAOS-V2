@@ -1577,16 +1577,6 @@ export default function AgentChat() {
           ))}
         </div>
 
-        {/* One quiet banner, with the exact command. Never a silent downgrade. */}
-        {memory?.degraded && (
-          <div className="rail-foot">
-            <div className="label">Recall: keyword only</div>
-            <div className="rail-foot-body">
-              The embedding model isn’t pulled, so search matches words rather than meaning.
-              <pre className="mono">{memory.command}</pre>
-            </div>
-          </div>
-        )}
         </div>,
         slots.chats,
       )}

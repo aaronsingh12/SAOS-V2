@@ -32,6 +32,10 @@ import {
   parseSnowUtc,
   assertTaskSla,
   validateSlaInput,
+  snowScheduleDateTime,
+  normalizeScheduleSpanInput,
+  verifyScheduleSpanReadback,
+  _slaInternals,
 } from '../src/servicenow/sla.js';
 import {
   aclReport,
@@ -229,11 +233,163 @@ test('durations are accepted in the forms a person types', () => {
   assert.equal(parseDurationInput('90m'), 5400);
   assert.equal(parseDurationInput('2d 4h'), 187200);
   assert.equal(parseDurationInput('4:00:00'), 14400);
+  assert.equal(parseDurationInput('1970-01-01 08:00:00'), 28800);
   assert.equal(parseDurationInput('14400'), 14400);
   assert.equal(parseDurationInput(14400), 14400);
   assert.equal(parseDurationInput('sometime next week'), null);
   assert.equal(parseDurationInput(''), null);
   assert.equal(formatDuration(189000), '2d 4h 30m');
+});
+
+test('SLA 8h duration readback is 28800 seconds, not zero', () => {
+  assert.equal(parseDurationInput('8h'), 28800);
+  assert.equal(secondsToDuration(28800), '1970-01-01 08:00:00');
+  assert.equal(durationToSeconds('1970-01-01 08:00:00'), 28800);
+});
+
+test('fixed SLA payload sets duration and retroactive start field explicitly', () => {
+  const payload = _slaInternals.toRecord({
+    name: 'Incident Resolution SLA - Moderate',
+    collection: 'incident',
+    duration: '8h',
+    schedule: 's'.repeat(32),
+    start_condition: 'active=true^priority=3',
+    stop_condition: 'state=6^ORstate=7',
+    pause_condition: 'state=3',
+    retroactive: true,
+    retroactive_pause: true,
+    set_start_to: 'opened_at',
+    type: 'SLA',
+  }, { seconds: 28800, scheduleSource: 'sla_definition' });
+  assert.equal(payload.duration, '1970-01-01 08:00:00');
+  assert.equal(payload.duration_type, '');
+  assert.equal(payload.set_start_to, 'opened_at');
+  assert.equal(payload.retroactive, 'true');
+  assert.equal(payload.retroactive_pause, 'true');
+});
+
+test('schedule span input normalizes to real cmn_schedule_span fields only', () => {
+  const payload = normalizeScheduleSpanInput({
+    schedule: 's'.repeat(32),
+    name: 'V3 Mon-Fri 9-6',
+    start: '2026-09-21 09:00:00',
+    end: '2026-09-21 18:00:00',
+    repeat_type: 'weekdays',
+    days_of_week: '12345',
+    all_day: false,
+  });
+  assert.deepEqual(payload, {
+    schedule: 's'.repeat(32),
+    name: 'V3 Mon-Fri 9-6',
+    start_date_time: '20260921T090000',
+    end_date_time: '20260921T180000',
+    repeat_type: 'weekdays',
+    repeat_count: '1',
+    days_of_week: '1',
+    all_day: 'false',
+    show_as: 'busy',
+    monthly_type: 'dom',
+    yearly_type: 'doy',
+    override_start_date: '00000000',
+    repeat_until: '00000000',
+  });
+  assert.ok(!('spans' in payload), 'spans must never be sent as a cmn_schedule field');
+  assert.equal(snowScheduleDateTime('20260921T090000'), '20260921T090000');
+});
+
+test('schedule span input accepts ServiceNow field-name aliases from tool calls', () => {
+  const payload = normalizeScheduleSpanInput({
+    schedule: 's'.repeat(32),
+    start_date_time: '20280907T090000',
+    end_date_time: '20280907T180000',
+    repeat_type: 'weekdays',
+  });
+  assert.equal(payload.start_date_time, '20280907T090000');
+  assert.equal(payload.end_date_time, '20280907T180000');
+});
+
+test('schedule span input accepts the old calendar alias and human weekday list', () => {
+  const payload = normalizeScheduleSpanInput({
+    all_day: false,
+    days_of_week: 'Monday,Tuesday,Wednesday,Thursday,Friday',
+    end: '20240101T180000',
+    name: 'Weekday Business Hours',
+    repeat_count: '1',
+    repeat_type: 'weekly',
+    calendar: '7076774d83a3c79037f1fcb6feaad314',
+    show_as: 'busy',
+    start: '20240101T090000',
+  });
+  assert.equal(payload.schedule, '7076774d83a3c79037f1fcb6feaad314');
+  assert.equal(payload.repeat_type, 'weekdays');
+  assert.equal(payload.days_of_week, '1');
+  assert.equal(payload.start_date_time, '20240101T090000');
+  assert.equal(payload.end_date_time, '20240101T180000');
+});
+
+test('create schedule lifts top-level span fields instead of sending spans to cmn_schedule', () => {
+  const spans = _slaInternals.scheduleSpansFromInput({
+    name: 'Weekday Business Hours',
+    calendar: '7076774d83a3c79037f1fcb6feaad314',
+    start: '20080707T090000',
+    end: '20080707T180000',
+    repeat_type: 'weekdays',
+  });
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].calendar, '7076774d83a3c79037f1fcb6feaad314');
+  assert.equal(spans[0].start, '20080707T090000');
+  assert.ok(!('spans' in spans[0]));
+});
+
+test('persisted span readback must have a real sys_id and matching fields', () => {
+  const payload = normalizeScheduleSpanInput({
+    schedule: 's'.repeat(32), start: '2026-09-21 09:00:00', end: '2026-09-21 18:00:00',
+  });
+  const ok = verifyScheduleSpanReadback(payload, {
+    sys_id: cell('p'.repeat(32)),
+    schedule: cell(payload.schedule),
+    start_date_time: cell(payload.start_date_time),
+    end_date_time: cell(payload.end_date_time),
+    repeat_type: cell(payload.repeat_type),
+    repeat_count: cell(payload.repeat_count),
+    days_of_week: cell(payload.days_of_week),
+    all_day: cell(payload.all_day),
+    show_as: cell(payload.show_as),
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.span.sys_id, 'p'.repeat(32));
+
+  const bad = verifyScheduleSpanReadback(payload, {
+    sys_id: cell('p'.repeat(32)),
+    schedule: cell(payload.schedule),
+    start_date_time: cell(payload.start_date_time),
+    end_date_time: cell('2026-09-21 17:00:00'),
+    repeat_type: cell(payload.repeat_type),
+    repeat_count: cell(payload.repeat_count),
+    days_of_week: cell(payload.days_of_week),
+    all_day: cell(payload.all_day),
+    show_as: cell(payload.show_as),
+  });
+  assert.equal(bad.ok, false);
+  assert.deepEqual(bad.mismatches.map((m) => m.field), ['end_date_time']);
+});
+
+test('a synthetic span object with no sys_id is rejected by readback verification', () => {
+  const payload = normalizeScheduleSpanInput({
+    schedule: 's'.repeat(32), start: '2026-09-21 09:00:00', end: '2026-09-21 18:00:00',
+  });
+  const out = verifyScheduleSpanReadback(payload, {
+    schedule: cell(payload.schedule),
+    start_date_time: cell(payload.start_date_time),
+    end_date_time: cell(payload.end_date_time),
+    repeat_type: cell(payload.repeat_type),
+    repeat_count: cell(payload.repeat_count),
+    days_of_week: cell(payload.days_of_week),
+    all_day: cell(payload.all_day),
+    show_as: cell(payload.show_as),
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.mismatches[0].note, /could not be read back/);
 });
 
 /* ------------------------------------------------------------------ *

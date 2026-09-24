@@ -1,6 +1,7 @@
 import { table } from './client.js';
 import { getSchema, referenceLookup } from './schema.js';
 import { validateEncodedQuery, unknownFieldMessage, derivePayloadFor, stripEndMarker, sameQuery } from './conditions.js';
+import { jsLiteral, runServerScript } from './execution-harness.js';
 
 /**
  * SLA definitions (B-1) and SLA-aware verification (B-2).
@@ -42,6 +43,15 @@ import { validateEncodedQuery, unknownFieldMessage, derivePayloadFor, stripEndMa
 
 const SLA_TABLE = 'contract_sla';
 const TASK_SLA_TABLE = 'task_sla';
+const SCHEDULE_TABLE = 'cmn_schedule';
+const SCHEDULE_SPAN_TABLE = 'cmn_schedule_span';
+const HOLIDAY_TABLE = 'cmn_schedule_blackout';
+const SPAN_FIELDS = 'sys_id,schedule,name,type,start_date_time,end_date_time,repeat_type,repeat_count,repeat_until,days_of_week,all_day,show_as,monthly_type,yearly_type,override_start_date';
+const TIMING_TASK_SLA_FIELDS = [
+  'sys_id', 'task', 'sla', 'stage', 'start_time', 'original_breach_time', 'planned_end_time',
+  'business_duration', 'business_elapsed_time', 'business_time_left', 'business_percentage',
+  'percentage', 'pause_duration', 'schedule', 'timezone',
+].join(',');
 
 /* ------------------------------------------------------------------ *
  * Duration codec — behaviour 1 above
@@ -80,6 +90,8 @@ export function parseDurationInput(input) {
   if (input === null || input === undefined || input === '') return null;
   if (typeof input === 'number') return Math.max(0, Math.floor(input));
   const text = String(input).trim();
+  const stored = durationToSeconds(text);
+  if (stored !== null) return stored;
   if (/^\d+$/.test(text)) return Number(text);
   const clock = text.match(/^(\d+):(\d{1,2}):(\d{1,2})$/);
   if (clock) return Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3]);
@@ -107,6 +119,21 @@ export function formatDuration(seconds) {
   if (m) parts.push(`${m}m`);
   if (s) parts.push(`${s}s`);
   return parts.join(' ');
+}
+
+export function snowCompactDateTime(input) {
+  const text = String(input ?? '').trim();
+  if (!text) return '';
+  const m = text.match(/^(\d{4})-?(\d{2})-?(\d{2})(?:[ T]?(\d{2}):?(\d{2}):?(\d{2}))?Z?$/);
+  if (!m) return text;
+  const [, y, mo, d, h = '00', mi = '00', s = '00'] = m;
+  return `${y}${mo}${d}T${h}${mi}${s}`;
+}
+
+export function snowScheduleDateTime(input) {
+  const text = String(input ?? '').trim();
+  if (!text) return '';
+  return snowCompactDateTime(text);
 }
 
 /* ------------------------------------------------------------------ *
@@ -143,7 +170,7 @@ const DEF_FIELDS = [
   'sys_id', 'name', 'collection', 'type', 'target', 'active', 'duration', 'duration_type',
   'schedule', 'schedule_source', 'timezone', 'timezone_source', 'retroactive', 'retroactive_pause',
   'start_condition', 'stop_condition', 'pause_condition', 'reset_condition', 'cancel_condition',
-  'when_to_cancel', 'when_to_resume', 'flow', 'sys_updated_on', 'sys_updated_by',
+  'set_start_to', 'when_to_cancel', 'when_to_resume', 'flow', 'sys_updated_on', 'sys_updated_by',
   // Which application owns the definition — shown as a badge, and it decides
   // which update set a change to it could ever travel in (§33).
   'sys_scope',
@@ -181,6 +208,7 @@ function shapeDefinition(r) {
     },
     when_to_cancel: raw(r.when_to_cancel) || null,
     when_to_resume: raw(r.when_to_resume) || null,
+    set_start_to: raw(r.set_start_to) || null,
     flow: raw(r.flow) ? { sys_id: raw(r.flow), name: shown(r.flow) } : null,
     updated: { on: raw(r.sys_updated_on), by: raw(r.sys_updated_by) },
     // The owning application, for the scope badge. display='all' gives the
@@ -333,7 +361,6 @@ function toRecord(input, { seconds, scheduleSource }) {
     name: String(input.name).trim(),
     collection: String(input.collection).trim(),
     type: input.type || 'SLA',
-    target: input.target || 'response',
     active: input.active === false ? 'false' : 'true',
     retroactive: input.retroactive ? 'true' : 'false',
     retroactive_pause: input.retroactive_pause ? 'true' : 'false',
@@ -342,13 +369,18 @@ function toRecord(input, { seconds, scheduleSource }) {
     pause_condition: input.pause_condition || '',
     schedule_source: scheduleSource,
     schedule: input.schedule || '',
-    timezone_source: input.timezone_source || 'sla.timezone',
-    timezone: input.timezone || '',
-    when_to_cancel: input.when_to_cancel || 'no_match',
-    when_to_resume: input.when_to_resume || 'no_match',
   };
+  if (input.target) rec.target = input.target;
+  if (input.timezone_source) rec.timezone_source = input.timezone_source;
+  if (input.timezone) rec.timezone = input.timezone;
+  if (input.when_to_cancel) rec.when_to_cancel = input.when_to_cancel;
+  if (input.when_to_resume) rec.when_to_resume = input.when_to_resume;
+  if (input.set_start_to) rec.set_start_to = input.set_start_to;
   if (input.duration_type) rec.duration_type = input.duration_type;
-  else rec.duration = secondsToDuration(seconds);
+  else {
+    rec.duration_type = '';
+    rec.duration = secondsToDuration(seconds);
+  }
   if (input.reset_condition) rec.reset_condition = input.reset_condition;
   if (input.cancel_condition) rec.cancel_condition = input.cancel_condition;
   return rec;
@@ -375,6 +407,22 @@ function diffAgainstStored(sent, stored) {
   return mismatches;
 }
 
+function verifyFixedDuration(input, definition, mismatches) {
+  if (input.duration_type) return;
+  const wanted = parseDurationInput(input.duration);
+  const stored = definition.duration?.seconds;
+  if (wanted !== null && stored !== wanted) {
+    mismatches.push({
+      field: 'duration',
+      sent: secondsToDuration(wanted),
+      stored: definition.duration?.raw ?? null,
+      note:
+        `fixed duration read back as ${stored === null ? 'unreadable' : formatDuration(stored)} instead of ${formatDuration(wanted)}; ` +
+        'this SLA clock is not safe to verify until the duration stores correctly',
+    });
+  }
+}
+
 export async function createSla(input) {
   const check = await validateSlaInput(input);
   if (!check.ok) {
@@ -387,10 +435,13 @@ export async function createSla(input) {
   const sysId = raw(created.sys_id);
   const stored = await table.get(SLA_TABLE, sysId);
   const mismatches = diffAgainstStored(payload, stored);
+  const definition = shapeDefinition(stored);
+  verifyFixedDuration(input, definition, mismatches);
   return {
     ok: mismatches.length === 0,
+    status: mismatches.length === 0 ? 'VERIFIED' : 'PARTIAL',
     sys_id: sysId,
-    definition: shapeDefinition(stored),
+    definition,
     warnings: check.warnings,
     mismatches,
     link: await recordLink(SLA_TABLE, sysId),
@@ -419,6 +470,7 @@ export async function updateSla(sysId, patch) {
     start_condition: patch.start_condition ?? current.conditions.start,
     stop_condition: patch.stop_condition ?? current.conditions.stop,
     pause_condition: patch.pause_condition ?? current.conditions.pause,
+    set_start_to: patch.set_start_to ?? current.set_start_to ?? '',
     when_to_cancel: patch.when_to_cancel ?? current.when_to_cancel,
     when_to_resume: patch.when_to_resume ?? current.when_to_resume,
   };
@@ -429,18 +481,460 @@ export async function updateSla(sysId, patch) {
     });
   }
   const payload = toRecord(merged, check);
-  await table.update(SLA_TABLE, sysId, payload);
+  await table.update(SLA_TABLE, sysId, payload); 
   const stored = await table.get(SLA_TABLE, sysId);
   const mismatches = diffAgainstStored(payload, stored);
+  const definition = shapeDefinition(stored);
+  verifyFixedDuration(merged, definition, mismatches);
   return {
     ok: mismatches.length === 0,
+    status: mismatches.length === 0 ? 'VERIFIED' : 'PARTIAL',
     sys_id: sysId,
-    definition: shapeDefinition(stored),
+    definition,
     warnings: check.warnings,
     mismatches,
     message: mismatches.length ? `Updated, but ${mismatches.length} field(s) did not store what was sent.` : 'Updated; every field read back as sent.',
   };
 }
+
+function scheduleRaw(r) {
+  return {
+    sys_id: raw(r.sys_id),
+    name: shown(r.name),
+    time_zone: raw(r.time_zone) || raw(r.timezone) || null,
+    type: raw(r.type) || null,
+  };
+}
+
+function spanRaw(r) {
+  return {
+    sys_id: raw(r.sys_id),
+    schedule: raw(r.schedule),
+    name: shown(r.name),
+    type: raw(r.type) || null,
+    start_date_time: raw(r.start_date_time) || null,
+    end_date_time: raw(r.end_date_time) || null,
+    repeat_type: raw(r.repeat_type) || '',
+    repeat_count: raw(r.repeat_count) || '',
+    repeat_until: raw(r.repeat_until) || '',
+    days_of_week: raw(r.days_of_week) || '',
+    all_day: raw(r.all_day) === 'true',
+    show_as: raw(r.show_as) || '',
+    monthly_type: raw(r.monthly_type) || '',
+    yearly_type: raw(r.yearly_type) || '',
+    override_start_date: raw(r.override_start_date) || '',
+  };
+}
+
+function normalizedBool(v) {
+  return v === true || String(v).toLowerCase() === 'true' || String(v) === '1' ? 'true' : 'false';
+}
+
+function normalizeDaysOfWeek(v, repeatType) {
+  const text = String(v ?? '').trim();
+  if (String(repeatType || '').toLowerCase() === 'weekdays') return '1';
+  if (!text) return '';
+  if (/^\d+$/.test(text)) return text;
+  const words = text.split(/[,\s]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const weekdayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+  if (String(repeatType || '').toLowerCase() === 'weekdays' && weekdayNames.every((d) => words.includes(d))) return '1';
+  const map = { monday: '1', tuesday: '2', wednesday: '3', thursday: '4', friday: '5', saturday: '6', sunday: '7' };
+  return words.map((w) => map[w]).filter(Boolean).join('');
+}
+
+function normalizeRepeatType(repeatType, daysOfWeek) {
+  const text = String(repeatType || '').toLowerCase();
+  const days = String(daysOfWeek || '').toLowerCase();
+  if (text === 'weekly' && ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'].every((d) => days.includes(d))) return 'weekdays';
+  return repeatType || '';
+}
+
+export function normalizeScheduleSpanInput({
+  schedule, calendar, name = '', start, end, start_date_time, end_date_time, repeat_type = 'weekdays', days_of_week = '1',
+  repeat_count = '1', repeat_until = '00000000', all_day = false, show_as = 'busy',
+  monthly_type = 'dom', yearly_type = 'doy', override_start_date = '00000000',
+} = {}) {
+  const scheduleId = schedule ?? calendar;
+  const from = start ?? start_date_time;
+  const to = end ?? end_date_time;
+  const normalizedRepeatType = normalizeRepeatType(repeat_type, days_of_week);
+  if (!scheduleId) throw Object.assign(new Error('schedule sys_id is required.'), { status: 400 });
+  if (!from || !to) throw Object.assign(new Error('start/end or start_date_time/end_date_time are required for a schedule span.'), { status: 400 });
+  const payload = {
+    schedule: scheduleId,
+    name: name || 'NowHelpAssist schedule span',
+    start_date_time: snowScheduleDateTime(from),
+    end_date_time: snowScheduleDateTime(to),
+    repeat_type: normalizedRepeatType,
+    repeat_count: String(repeat_count || '1'),
+    days_of_week: normalizeDaysOfWeek(days_of_week, normalizedRepeatType),
+    all_day: normalizedBool(all_day),
+    show_as: show_as || 'busy',
+    monthly_type,
+    yearly_type,
+    override_start_date,
+    repeat_until: repeat_until || '00000000',
+  };
+  return payload;
+}
+
+const SPAN_VERIFY_FIELDS = ['schedule', 'start_date_time', 'end_date_time', 'repeat_type', 'days_of_week', 'repeat_count', 'all_day', 'show_as'];
+
+export function verifyScheduleSpanReadback(payload, stored) {
+  const span = spanRaw(stored || {});
+  const mismatches = [];
+  if (!span.sys_id) mismatches.push({ field: 'sys_id', sent: '(created record sys_id)', stored: null, note: 'the created span could not be read back by sys_id' });
+  for (const field of SPAN_VERIFY_FIELDS) {
+    if (payload[field] === undefined || payload[field] === '') continue;
+    const got = field === 'all_day' ? normalizedBool(span[field]) : String(span[field] ?? '');
+    const want = field === 'all_day' ? normalizedBool(payload[field]) : String(payload[field]);
+    if (got !== want) mismatches.push({ field, sent: want, stored: got });
+  }
+  return { ok: mismatches.length === 0, span, mismatches };
+}
+
+export async function readSchedule(sysId) {
+  const schedule = scheduleRaw(await table.get(SCHEDULE_TABLE, sysId));
+  const spans = await table.query(SCHEDULE_SPAN_TABLE, {
+    query: `schedule=${sysId}^ORDERBYstart_date_time`,
+    fields: SPAN_FIELDS,
+    limit: 100,
+  });
+  const holidays = await table.query(HOLIDAY_TABLE, {
+    query: `parent=${sysId}^ORDERBYname`,
+    fields: 'sys_id,parent,name,time_zone,type',
+    limit: 100,
+  }).catch(() => []);
+  return { ...schedule, spans: spans.map(spanRaw), holidays: holidays.map(scheduleRaw) };
+}
+
+const TOP_LEVEL_SPAN_KEYS = new Set([
+  'start', 'end', 'start_date_time', 'end_date_time', 'repeat_type', 'days_of_week',
+  'repeat_count', 'repeat_until', 'all_day', 'show_as', 'monthly_type', 'yearly_type', 'override_start_date',
+]);
+
+function scheduleSpansFromInput(input) {
+  if (Array.isArray(input.spans) && input.spans.length) return input.spans;
+  if ([...TOP_LEVEL_SPAN_KEYS].some((k) => input[k] !== undefined)) {
+    return [Object.fromEntries([...TOP_LEVEL_SPAN_KEYS, 'name', 'schedule', 'calendar'].filter((k) => input[k] !== undefined).map((k) => [k, input[k]]))];
+  }
+  return [];
+}
+
+export async function createSchedule(input = {}) {
+  const { name, time_zone, holidays = [], sys_id: existingSysId, schedule, calendar } = input;
+  const spans = scheduleSpansFromInput(input);
+  const supplied = existingSysId || schedule || calendar;
+  if (!supplied && !String(name || '').trim()) throw Object.assign(new Error('schedule name is required.'), { status: 400 });
+  let created = null;
+  let sysId = supplied || null;
+  if (!sysId) {
+    try {
+      created = await table.create(SCHEDULE_TABLE, { name: String(name).trim() });
+      sysId = raw(created?.sys_id);
+    } catch (err) {
+      return { ok: false, status: 'FAILED', message: err.message, error: err.message };
+    }
+  }
+  const parent = sysId ? scheduleRaw(await table.get(SCHEDULE_TABLE, sysId)) : null;
+  if (!parent?.sys_id) {
+    return { ok: false, status: 'FAILED', sys_id: sysId || null, message: 'Schedule parent could not be read back.' };
+  }
+  const timezonePersisted = !time_zone || parent.time_zone === time_zone;
+  const timezoneWarning = timezonePersisted ? null : {
+    field: 'time_zone',
+    sent: time_zone,
+    stored: parent.time_zone,
+    note: 'The instance did not persist cmn_schedule.time_zone for this schedule; no calendar fallback records were created.',
+  };
+  const spanResults = [];
+  const holidayResults = [];
+  for (const sp of spans || []) spanResults.push(await createScheduleSpan({ ...sp, schedule: sysId }).catch((err) => ({ ok: false, status: 'FAILED', error: err.message, attempted: { ...sp, schedule: sysId } })));
+  for (const h of holidays || []) holidayResults.push(await createHolidaySchedule({ ...h, parent: sysId, time_zone: h.time_zone || time_zone }).catch((err) => ({ ok: false, status: 'FAILED', error: err.message, attempted: { ...h, parent: sysId } })));
+  const readback = await readSchedule(sysId);
+  const persistedSpans = spanResults.filter((r) => r.ok && r.span?.sys_id);
+  const failedSpans = spanResults.filter((r) => !r.ok);
+  const failedHolidays = holidayResults.filter((r) => !r.ok);
+  const requestedSpans = (spans || []).length;
+  const status = failedSpans.length || failedHolidays.length || persistedSpans.length !== requestedSpans || timezoneWarning ? 'PARTIAL' : 'VERIFIED';
+  return {
+    ok: status === 'VERIFIED',
+    status,
+    sys_id: sysId,
+    created_parent: Boolean(created),
+    schedule: readback,
+    parent,
+    warnings: [timezoneWarning].filter(Boolean),
+    spans_created: persistedSpans,
+    span_failures: failedSpans,
+    holidays_created: holidayResults,
+    holiday_failures: failedHolidays,
+    orphan_schedule: requestedSpans > 0 && persistedSpans.length === 0,
+    cleanup_candidates: [
+      '07967f4d83a3c79037f1fcb6feaad32e',
+      '7bc6b38d83a3c79037f1fcb6feaad304',
+      '3ef67b8d83a3c79037f1fcb6feaad39e',
+    ],
+    message: status === 'VERIFIED'
+      ? `Created schedule "${readback.name}" and read back ${persistedSpans.length} persisted span(s).`
+      : `Created schedule "${readback.name}", but only ${persistedSpans.length}/${requestedSpans} requested span(s) persisted.`,
+  };
+}
+
+export async function createScheduleSpan(input = {}) {
+  const payload = normalizeScheduleSpanInput(input);
+  let created;
+  try {
+    created = await table.create(SCHEDULE_SPAN_TABLE, payload);
+  } catch (err) {
+    return { ok: false, status: 'FAILED', attempted: payload, error: err.message, serviceNowError: err.detail ?? null };
+  }
+  const sysId = raw(created?.sys_id);
+  const stored = sysId ? await table.get(SCHEDULE_SPAN_TABLE, sysId) : null;
+  const verification = verifyScheduleSpanReadback(payload, stored);
+  return {
+    ok: verification.ok,
+    status: verification.ok ? 'VERIFIED' : 'PARTIAL',
+    sys_id: verification.span.sys_id || sysId || null,
+    span: verification.span,
+    attempted: payload,
+    mismatches: verification.mismatches,
+  };
+}
+
+export async function validateScheduleRuntime({ schedule, sys_id: sysId } = {}) {
+  const scheduleId = schedule || sysId;
+  if (!scheduleId) throw Object.assign(new Error('schedule sys_id is required.'), { status: 400 });
+  const script = `
+var report = { ok: false, status: 'FAILED', schedule: ${jsLiteral(scheduleId)} };
+try {
+  function gdt(s) { var x = new GlideDateTime(); x.setValue(s); return x; }
+  var sched = new GlideSchedule(${jsLiteral(scheduleId)});
+  var checks = [
+    ['monday_0900', '2008-07-07 09:00:00', true],
+    ['monday_1200', '2008-07-07 12:00:00', true],
+    ['monday_1759', '2008-07-07 17:59:00', true],
+    ['monday_1800', '2008-07-07 18:00:00', false],
+    ['saturday_1200', '2008-07-12 12:00:00', false]
+  ];
+  report.contains = [];
+  for (var i = 0; i < checks.length; i++) {
+    var actual = sched.isInSchedule(gdt(checks[i][1]));
+    report.contains.push({ name: checks[i][0], at: checks[i][1], expected: checks[i][2], actual: actual, ok: actual === checks[i][2] });
+  }
+  function add8(start) {
+    var end = sched.add(gdt(start), new GlideDuration(8 * 60 * 60 * 1000));
+    return String(end.getValue());
+  }
+  report.add = [
+    { start: '2008-07-07 09:00:00', expected: '2008-07-07 17:00:00', actual: add8('2008-07-07 09:00:00') },
+    { start: '2008-07-07 14:00:00', expected: '2008-07-08 13:00:00', actual: add8('2008-07-07 14:00:00') },
+    { start: '2008-07-07 18:30:00', expected: '2008-07-08 17:00:00', actual: add8('2008-07-07 18:30:00') }
+  ];
+  for (var j = 0; j < report.add.length; j++) report.add[j].ok = report.add[j].actual === report.add[j].expected;
+  report.ok = report.contains.every(function(c) { return c.ok; }) && report.add.every(function(c) { return c.ok; });
+  report.status = report.ok ? 'VERIFIED' : 'PARTIAL';
+} catch (e) {
+  report.ok = false;
+  report.status = 'FAILED';
+  report.error = String(e && e.message || e);
+}
+`;
+  const r = await runServerScript({ body: script, label: 'sla schedule runtime validation', timeoutMs: 120_000 });
+  if (r.status === 'EXECUTION_PATH_BLOCKED') {
+    return { ok: false, status: 'PARTIAL', reason: 'EXECUTION_PATH_BLOCKED', message: r.message, harness: { status: r.status, started: r.started, cleanup: r.cleanup } };
+  }
+  return { ok: r.report?.status === 'VERIFIED', status: r.report?.status || 'FAILED', report: r.report, harness: { status: r.status, started: r.started, cleanup: r.cleanup } };
+}
+
+export async function createHolidaySchedule({ parent, name, start, end, time_zone = 'UTC' } = {}) {
+  if (!parent) throw Object.assign(new Error('parent schedule sys_id is required.'), { status: 400 });
+  if (!String(name || '').trim()) throw Object.assign(new Error('holiday name is required.'), { status: 400 });
+  if (!start || !end) throw Object.assign(new Error('start and end are required for a holiday.'), { status: 400 });
+  const holiday = await table.create(HOLIDAY_TABLE, { name: String(name).trim(), parent, time_zone, type: 'blackout' });
+  const holidayId = raw(holiday.sys_id);
+  const span = await createScheduleSpan({
+    schedule: holidayId,
+    name,
+    start,
+    end,
+    repeat_type: '',
+    repeat_count: '1',
+    days_of_week: '',
+    all_day: true,
+    show_as: 'busy',
+  });
+  const readback = await table.get(HOLIDAY_TABLE, holidayId);
+  const child = scheduleRaw(readback);
+  const childParent = raw(readback.parent);
+  const childType = raw(readback.type) || child.type;
+  const holidaySpans = await table.query(SCHEDULE_SPAN_TABLE, {
+    query: `schedule=${holidayId}`,
+    fields: SPAN_FIELDS,
+    limit: 20,
+  });
+  const verifiedSpan = holidaySpans.map(spanRaw).find((s) => s.sys_id === span.sys_id) || null;
+  const ok = childParent === parent && childType === 'blackout' && Boolean(verifiedSpan?.sys_id) && span.ok;
+  return {
+    ok,
+    status: ok ? 'VERIFIED' : 'PARTIAL',
+    sys_id: holidayId,
+    holiday: child,
+    parent_verified: childParent === parent,
+    type_verified: childType === 'blackout',
+    spans: holidaySpans.map(spanRaw),
+    span,
+    message: ok
+      ? `Created holiday/blackout schedule "${shown(readback.name)}" under parent ${parent} and read back its persisted span.`
+      : `Holiday/blackout schedule "${shown(readback.name)}" did not fully verify; see parent/type/span evidence.`,
+  };
+}
+
+export async function repairSla({ task_sys_id: taskSysId = '', sla_sys_id: slaSysId = '', dry_run: dryRun = false } = {}) {
+  if (!taskSysId && !slaSysId) return { ok: false, status: 'FAILED', reason: 'task_sys_id or sla_sys_id is required.' };
+  const script = `
+var report = {};
+try {
+  var taskId = ${jsLiteral(taskSysId)};
+  var slaId = ${jsLiteral(slaSysId)};
+  var dryRun = ${dryRun ? 'true' : 'false'};
+  function rows() {
+    var out = [];
+    var gr = new GlideRecord('task_sla');
+    if (taskId) gr.addQuery('task', taskId);
+    if (slaId) gr.addQuery('sla', slaId);
+    gr.query();
+    while (gr.next()) {
+      out.push({
+        sys_id: String(gr.getUniqueValue()),
+        task: String(gr.getValue('task') || ''),
+        sla: String(gr.getValue('sla') || ''),
+        stage: String(gr.getValue('stage') || ''),
+        start_time: String(gr.getValue('start_time') || ''),
+        planned_end_time: String(gr.getValue('planned_end_time') || ''),
+        business_time_left: String(gr.getValue('business_time_left') || ''),
+        percentage: String(gr.getValue('percentage') || '')
+      });
+    }
+    return out;
+  }
+  report.before = rows();
+  report.before_count = report.before.length;
+  if (typeof SLARepair === 'undefined') {
+    report.ok = false;
+    report.status = 'NATIVE_API_UNAVAILABLE';
+    report.reason = 'Documented native SLARepair API is not visible to this user on this instance.';
+  } else {
+    var repair = new SLARepair();
+    if (typeof repair.setValidateOnly === 'function') repair.setValidateOnly(dryRun);
+    if (taskId) repair.repairBySysId(taskId, 'task');
+    else repair.repairBySysId(slaId, 'task_sla');
+    report.native_api = 'SLARepair.repairBySysId';
+    report.ran = true;
+    report.dry_run = dryRun;
+    report.after = rows();
+    report.after_count = report.after.length;
+    report.recreated = [];
+    for (var i = 0; i < report.after.length; i++) {
+      var seen = false;
+      for (var j = 0; j < report.before.length; j++) if (report.before[j].sys_id === report.after[i].sys_id) seen = true;
+      if (!seen) report.recreated.push(report.after[i].sys_id);
+    }
+    report.ok = true;
+    report.status = 'SUCCESS';
+  }
+} catch (e) {
+  report.ok = false;
+  report.status = 'FAILED';
+  report.error = String(e && e.message || e);
+}
+`;
+  const r = await runServerScript({ body: script, label: 'sla repair verification', timeoutMs: 120_000 });
+  if (r.status === 'EXECUTION_PATH_BLOCKED') {
+    return {
+      ok: false,
+      status: 'FAILED',
+      reason: 'EXECUTION_PATH_BLOCKED',
+      message: r.message,
+      harness: { ok: r.ok, status: r.status, timedOut: r.timedOut, started: r.started, cleanup: r.cleanup },
+    };
+  }
+  const status = r.report?.status || (r.report?.ok ? 'SUCCESS' : 'FAILED');
+  return {
+    ok: status === 'SUCCESS',
+    status,
+    report: r.report,
+    harness: { ok: r.ok, status: r.status, timedOut: r.timedOut, started: r.started, cleanup: r.cleanup },
+  };
+}
+
+function timingCell(row, field) {
+  return { raw: raw(row?.[field]) ?? null, display: shown(row?.[field]) || null };
+}
+
+function secondsBetween(start, end) {
+  const a = parseSnowUtc(start);
+  const b = parseSnowUtc(end);
+  return a === null || b === null ? null : Math.round((b - a) / 1000);
+}
+
+export async function slaTimingDiagnostics({ task_sys_id: taskSysId, sla_sys_id: slaSysId } = {}) {
+  if (!taskSysId || !slaSysId) throw Object.assign(new Error('task_sys_id and sla_sys_id are required.'), { status: 400 });
+  const [definition, rows] = await Promise.all([
+    getSla(slaSysId),
+    table.query(TASK_SLA_TABLE, { query: `task=${taskSysId}^sla=${slaSysId}`, fields: TIMING_TASK_SLA_FIELDS, limit: 5 }),
+  ]);
+  const taskSla = rows[0] || null;
+  const schedule = definition.schedule?.sys_id ? await readSchedule(definition.schedule.sys_id).catch((err) => ({ error: err.message })) : null;
+  const stored = taskSla ? {
+    task_sla: raw(taskSla.sys_id),
+    stage: timingCell(taskSla, 'stage'),
+    timezone: timingCell(taskSla, 'timezone'),
+    start_time: timingCell(taskSla, 'start_time'),
+    original_breach_time: timingCell(taskSla, 'original_breach_time'),
+    planned_end_time: timingCell(taskSla, 'planned_end_time'),
+    business_duration: timingCell(taskSla, 'business_duration'),
+    business_elapsed_time: timingCell(taskSla, 'business_elapsed_time'),
+    business_time_left: timingCell(taskSla, 'business_time_left'),
+    business_percentage: timingCell(taskSla, 'business_percentage'),
+    percentage: timingCell(taskSla, 'percentage'),
+    pause_duration: timingCell(taskSla, 'pause_duration'),
+    schedule: timingCell(taskSla, 'schedule'),
+  } : null;
+  const expected24x7 = taskSla && definition.duration?.seconds != null
+    ? {
+      basis: 'calculated_24x7_only',
+      expected_elapsed_seconds: definition.duration.seconds,
+      observed_elapsed_seconds: secondsBetween(raw(taskSla.start_time), raw(taskSla.planned_end_time)),
+      note: 'This is only the unscheduled baseline. It is not used to declare schedule discrepancies normal.',
+    }
+    : null;
+  return {
+    ok: Boolean(taskSla),
+    definition: {
+      sys_id: definition.sys_id,
+      name: definition.name,
+      duration: definition.duration,
+      schedule: definition.schedule,
+      schedule_source: definition.schedule_source,
+      timezone_source: definition.timezone_source,
+      timezone: definition.timezone,
+    },
+    schedule,
+    stored,
+    calculated: { expected24x7 },
+    assumptions: [
+      'Schedule arithmetic is owned by ServiceNow; this diagnostic does not reimplement recurring schedule calculation.',
+      'A discrepancy is reported as unexplained unless proven by readback or an official/native calculation.',
+    ],
+    confirmed_behavior: [
+      rows.length === 1 ? 'Exactly one task_sla row matches this task and SLA definition.' : `${rows.length} task_sla rows match this task and SLA definition.`,
+      definition.schedule_effective ? 'The SLA definition has an effective schedule reference.' : 'The SLA definition is not schedule-bound.',
+    ],
+  };
+}
+
+export const _slaInternals = { scheduleSpansFromInput, toRecord };
 
 /** Delete, then read back to confirm absence. A delete that reports success without that is a claim. */
 export async function deleteSla(sysId) {

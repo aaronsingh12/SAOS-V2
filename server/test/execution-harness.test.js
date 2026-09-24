@@ -7,6 +7,7 @@ import {
   buildSubflowScript,
   wrapScript,
   parseRuntimeOutputs,
+  statusForHarnessTimeoutCause,
 } from '../src/servicenow/execution-harness.js';
 
 /**
@@ -96,6 +97,12 @@ test('parseRuntimeOutputs reports unreadable storage instead of returning empty 
 
   const notObject = parseRuntimeOutputs('42', ['notified']);
   assert.match(notObject.error, /was not an object/);
+});
+
+test('a scheduled script timeout before start is classified as execution-path blocked', () => {
+  assert.equal(statusForHarnessTimeoutCause('not-started'), 'EXECUTION_PATH_BLOCKED');
+  assert.equal(statusForHarnessTimeoutCause('return-channel-blocked'), 'TIMEOUT');
+  assert.equal(statusForHarnessTimeoutCause('no-report'), 'TIMEOUT');
 });
 
 test('with no declared contract every key is reported rather than dropped', () => {
