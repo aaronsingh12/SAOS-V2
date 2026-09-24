@@ -1074,6 +1074,8 @@ export default function AgentChat() {
               // WI-IMP-2 — whose authority this card hands over, resolved before
               // the card was shown rather than discovered after it was approved.
               impersonationApproval: evt.impersonationApproval || null,
+              // JOB 1.2 — what the change will do, worked out before approval.
+              preview: evt.preview || null,
               decided: null, warning: evt.warning || null,
               // B6 — whose authority this card carries. Null unless impersonation
               // mode is active.
@@ -1984,6 +1986,20 @@ export default function AgentChat() {
                   {m.warning && (
                     <div style={{ color: 'var(--amber)', fontSize: 12, marginTop: 6 }}>
                       Heads up — {m.warning}
+                    </div>
+                  )}
+                  {/* JOB 1.2 — the before/after, above the raw payload: it is what is being approved. */}
+                  {m.preview && (
+                    <div style={{ marginTop: 8, fontSize: 13 }}>
+                      <div style={{ fontWeight: 600 }}>{m.preview.title}</div>
+                      <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                        {(m.preview.changes || []).map((c, i) => <li key={i}>{c}</li>)}
+                      </ul>
+                      {(m.preview.safety || []).length > 0 && (
+                        <ul style={{ margin: '6px 0 0 18px', padding: 0, color: 'var(--muted)', fontSize: 12 }}>
+                          {m.preview.safety.map((c, i) => <li key={i}>{c}</li>)}
+                        </ul>
+                      )}
                     </div>
                   )}
                   {/* WI-IMP-2 — this card hands authority to a PERSON. The chip

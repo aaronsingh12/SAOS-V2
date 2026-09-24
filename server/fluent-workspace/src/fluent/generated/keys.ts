@@ -1794,6 +1794,48 @@ declare global {
                         id: 'dc037ba8259848108c0714f0e509cecb'
                         deleted: true
                     }
+                    nfe_flow: {
+                        table: 'sys_hub_flow'
+                        id: 'f2827cd62e344c0dbc64656e20f76597'
+                    }
+                    nfe_if: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: '2b1f15b73aff4952826072aa8311bf56'
+                        deleted: true
+                    }
+                    nfe_log: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '1204a54cb5dd4dfd9eff60f5d57f24c7'
+                    }
+                    nfe_log_2: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'f3df18eb7a324df3b88039aac7813097'
+                        deleted: true
+                    }
+                    nfe_log_3: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '7a6a1a1d23fb4df1be3d24af12af772c'
+                        deleted: true
+                    }
+                    nfe_trigger: {
+                        table: 'sys_hub_trigger_instance_v2'
+                        id: 'ca2d981732c64c618ce3c4591892adf4'
+                    }
+                    nfe_update_record: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'ca5867f3426f4e8db861dd712baf3fb7'
+                        deleted: true
+                    }
+                    nfe_update_record_2: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '7158435971584c9f8e003c91d1de9e66'
+                        deleted: true
+                    }
+                    nfe_update_record_3: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '5af0959835d04ff3958872b9109badf9'
+                        deleted: true
+                    }
                     nht_assign_outputs: {
                         table: 'sys_hub_flow_logic_instance_v2'
                         id: '2bc0d938115b4f27bbe25cdf59b6db78'

@@ -43,6 +43,12 @@ const SIGNALS = Object.freeze([
   // Flow Designer. `subflow` and `flow designer` are unambiguous; bare "flow"
   // is common enough in ServiceNow prose to be worth taking.
   { capability: 'flow_authoring', re: /\b(flows?|subflows?|flow designer|flow_designer|trigger(?:ed|s)?|sys_hub_flow)\b/i },
+  // JOB 1.2 — editing a flow's STEPS, named by the flow's own name. MEASURED:
+  // "add a step to NowForge Edit Test that sets the incident state to In
+  // Progress" never says "flow", matched only `incident`, and the turn was
+  // narrowed to incident tools — so the agent answered that it could not edit
+  // flows at all. Verb-led like schema_authoring: the signal is changing a step.
+  { capability: 'flow_authoring', re: /\b(?:add|insert|remove|delete|move|reorder|change|update|edit)\s+(?:an?\s+|the\s+|this\s+|that\s+|another\s+|new\s+)?(?:\w+\s+){0,2}steps?\b|\b(?:action|logic)\s+steps?\b/i },
 
   // SLA. Never "service level" alone — "service level agreement" is the phrase;
   // "service" on its own appears in "service catalog" and "ServiceNow".

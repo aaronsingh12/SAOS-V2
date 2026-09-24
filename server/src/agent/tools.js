@@ -10,6 +10,7 @@ import { EXTENDED_TOOLS } from './tools-extended.js';
 import { flows, designFlowBlueprint } from '../servicenow/flows.js';
 import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verify, activateManagedFlow, readAppIdentity } from '../servicenow/fluent.js';
 import { recordIntendedState } from '../servicenow/post-install-state.js';
+import { previewEdit, executeEdit, previewRestore, executeRestore } from '../servicenow/flow-edit.js';
 import { listSlas, getSla, slaMeta, createSla, verifySla } from '../servicenow/sla.js';
 import { listPoliciesForItem, itemVariables, createPolicy, CONDITION_OPERATORS } from '../servicenow/catalogPolicy.js';
 import { aclReport, aclDiff, explainAclReport } from '../servicenow/acl.js';
@@ -1041,6 +1042,84 @@ export const TOOLS = [
       required: [],
     },
     execute: ({ sys_id, name, steps_from } = {}) => flows.describe({ sys_id, name }, { stepsFrom: steps_from }),
+  },
+  {
+    name: 'edit_flow',
+    description:
+      'Change an EXISTING flow in this app\'s scope, through its Fluent source (never a direct write to Flow Designer tables). Requires user approval; '
+      + 'a before/after preview is shown on the approval card. Call get_flow first and use ITS step numbers ("2", "3.1") to name steps. '
+      + 'Operations (applied in order, step numbers always refer to get_flow BEFORE this edit): '
+      + 'add_step {step, position}; update_step {step, inputs}; remove_step {step}; move_step {step, position}; update_trigger {table?, condition?, schedule?}. '
+      + 'A new step is {type:"action", action:"Update Record", inputs:{...}} or {type:"subflow", subflow:"<name>", inputs} or '
+      + '{type:"if"|"else_if", condition, steps:[...]} / {type:"else", steps} / {type:"for_each", items:"{{step 2.Records}}", steps}. '
+      + 'position is {after:"2"} | {before:"2"} | {inside:"3", at:"start"|"end"} | {at:"start"|"end"} (top level). '
+      + 'Values: plain text/numbers, data pills {{trigger.current}}, {{trigger.current.number}}, {{step 1.Record}}; Update/Create Record `values` is an '
+      + 'object of field: value (e.g. {"state": 2}). Built-in action names: Log, Update Record, Create Record, Look Up Record, Send Notification, ... '
+      + 'Example operations: [{"op":"add_step","step":{"type":"action","action":"Update Record","inputs":{"table_name":"incident",'
+      + '"record":"{{trigger.current}}","values":{"state":2}}},"position":{"after":"1"}}]. '
+      + 'Takes a backup, builds (a failed build installs nothing), installs, re-publishes only what was published before, reads the flow back and '
+      + 'reports PASS or FAIL per check, plus any change to other flows. Refuses global / out-of-box flows and flows built only in Flow Designer.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sys_id: { type: 'string', description: 'sys_id of the flow (or give name).' },
+        name: { type: 'string', description: 'Exact flow name.' },
+        operations: {
+          type: 'array',
+          description: 'One or more edit operations.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['add_step', 'update_step', 'remove_step', 'move_step', 'update_trigger'] },
+              step: { description: 'For add_step: the new step object. For the others: the step number from get_flow (e.g. "2") or its sys_id.' },
+              position: { type: 'object', description: '{after|before: "<step>"} or {inside: "<block step>", at: "start"|"end"} or {at: "start"|"end"}.' },
+              inputs: { type: 'object', description: 'update_step: input name → new value (null removes it).' },
+              table: { type: 'string' },
+              condition: { type: 'string', description: 'update_trigger: encoded query, e.g. "priority=1".' },
+              schedule: { type: 'object', description: 'update_trigger: schedule fields for a scheduled trigger.' },
+            },
+            required: ['op'],
+          },
+        },
+      },
+      required: ['operations'],
+    },
+    previewWrite: (input) => previewEdit(input),
+    execute: (input) => executeEdit(input),
+    describeWrite: (input, result) => ({
+      /* `flow_edit`, not `update`: an update on a known sys_id reads as IDEMPOTENT to the recovery engine,
+       * and repeating an add_step would add the step twice. An unestablished operation stays UNKNOWN. */
+      table: 'sys_hub_flow', mechanism: 'sdk', operation: 'flow_edit',
+      ...(result?.flow?.sys_id ? { sys_id: result.flow.sys_id } : {}),
+      requested: { verdict: 'PASS' },
+      ...(result ? { record: { verdict: result.verdict ?? 'FAIL' } } : {}),
+    }),
+  },
+  {
+    name: 'restore_flow',
+    description:
+      'Put a flow in this app\'s scope back to a backup that edit_flow took before a change (the latest one unless backup_id is given). '
+      + 'Requires user approval, with a preview of what will be put back. Builds, installs, re-publishes only what was published before, and reads '
+      + 'the flow back: PASS only if it matches the backup exactly. The current state is itself backed up first.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sys_id: { type: 'string' },
+        name: { type: 'string', description: 'Exact flow name.' },
+        backup_id: { type: 'string', description: 'A backup id from a previous edit_flow result; omit for the latest.' },
+      },
+      required: [],
+    },
+    previewWrite: (input) => previewRestore(input),
+    execute: (input) => executeRestore(input),
+    describeWrite: (input, result) => ({
+      table: 'sys_hub_flow', mechanism: 'sdk', operation: 'flow_restore',
+      ...(result?.flow?.sys_id ? { sys_id: result.flow.sys_id } : {}),
+      requested: { verdict: 'PASS' },
+      ...(result ? { record: { verdict: result.verdict ?? 'FAIL' } } : {}),
+    }),
   },
   {
     name: 'design_flow_blueprint',

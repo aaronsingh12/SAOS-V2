@@ -126,6 +126,15 @@ const unclaimedMutating = () => {
  * run_server_script in particular must never be plannable or retryable: it
  * declares no describeWrite on purpose — a script has no single record to diff.
  */
+
+/*
+ * THE THIRD ADJUDICATION (2026-09-24, Job 1.2) — edit_flow and restore_flow stay unclaimed.
+ * Like delete_live_flow they are a multi-step SDK build (source edit, build, whole-app install,
+ * scoped re-publish) that verify through their own read-back, and the descriptor they declare
+ * carries that verdict rather than a diffable record. Its operation is `flow_edit` / `flow_restore`,
+ * not `update`, so recovery classifies them UNKNOWN and never repeats one: a repeated add_step
+ * would add the step twice. A person asks for them in chat, behind the approval card and its preview.
+ */
 test('E1 — exactly these mutating tools are unclaimed', () => {
   assert.deepEqual(unclaimedMutating(), [
     'add_variable_set_variable',
@@ -148,6 +157,8 @@ test('E1 — exactly these mutating tools are unclaimed', () => {
     'delete_live_flow',
     'delete_ui_policy',
     'detach_variable_set',
+    'edit_flow',
+    'restore_flow',
     'run_server_script',
     'update_business_rule',
     'update_catalog_variable',
@@ -196,7 +207,7 @@ test('E4 — the reason each is unclaimed is a property of the TOOL, not its nam
     'add_variable_set_variable', 'attach_variable_set', 'create_business_rule', 'create_catalog',
     'create_catalog_category', 'create_custom_application', 'create_incident', 'create_notification',
     'create_record_producer', 'create_variable_set', 'delete_ui_policy', 'detach_variable_set',
-    'update_business_rule', 'update_ui_policy',
+    'edit_flow', 'restore_flow', 'update_business_rule', 'update_ui_policy',
   ]);
 });
 

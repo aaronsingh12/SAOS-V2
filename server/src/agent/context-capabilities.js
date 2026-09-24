@@ -246,6 +246,8 @@ export const TOOL_CAPABILITIES = Object.freeze({
   // that must always be requested together.
   list_flows: ['flow_authoring', 'flow_read'],
   get_flow: ['flow_authoring', 'flow_read'],
+  edit_flow: ['flow_authoring'],
+  restore_flow: ['flow_authoring'],
   design_flow_blueprint: ['flow_authoring'],
   flow_authoring_capability: ['flow_authoring'],
   create_flow_live: ['flow_authoring'],

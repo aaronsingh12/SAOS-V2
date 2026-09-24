@@ -2839,8 +2839,33 @@ export async function createLiveFlow(spec, emit = () => {}, { updates = null, ar
     verification = { available: false, reason: `Trigger kind "${gen.intent?.trigger_kind}" is not verified by firing; use schedule-metadata verification.` };
   }
 
-  const dep = await deploy(gen.name, emit);
+  /*
+   * JOB 1.2 — SCOPED ACTIVATION. The SDK's own activation publishes every flow
+   * in the app, drafts included; installing with it skipped reverts published
+   * flows to draft. So: note what is published, install with activation
+   * skipped, then publish exactly that set plus the artifact just built.
+   */
+  const publishedBefore = await publishedInScope().catch(() => []);
+  const dep = await deploy(gen.name, emit, { skipFlowActivation: true });
   if (!dep.ok) return { ok: false, stage: 'deploy', ...dep, source: gen.source, verification };
+  const republished = await republish([...new Set([...publishedBefore, gen.name])], emit);
+  dep.republished = republished;
+  if (dep.verified?.sys_id) {
+    /* The read-back inside deploy() ran before publishing; read the proof again. */
+    const proof = await flows.publishedProof(dep.verified.sys_id).catch((err) => ({ published: false, mismatch: 'unreadable', note: err.message, header: null }));
+    const cell = (v) => (v && typeof v === 'object' && 'value' in v ? v.value : v);
+    dep.verified.published = proof.published === true;
+    dep.verified.proof = { published: proof.published === true, mismatch: proof.mismatch ?? null, snapshot: proof.snapshot ?? null, note: proof.note ?? null };
+    if (proof.header) {
+      dep.verified.header = {
+        ...dep.verified.header,
+        active: String(cell(proof.header.active) ?? ''),
+        status: cell(proof.header.status) ?? null,
+        latest_snapshot: cell(proof.header.latest_snapshot) ?? '',
+      };
+      dep.verified.active = dep.verified.header.active === 'true';
+    }
+  }
 
   // No terminal 'done' here — the caller (route) emits it with the full result,
   // and emitting a bare one first would give consumers two terminal events.
@@ -2963,6 +2988,87 @@ export async function resolveManagedArtifact(name, emit = () => {}) {
     };
   }
   return { ok: true, name: wanted, scope, scopeId, row: rows[0], sysId: rows[0].sys_id };
+}
+
+/* ------------------------------------------------------------------ *
+ * JOB 1.2 — SCOPED ACTIVATION
+ *
+ * A plain install publishes EVERY flow in the app (measured on dev366630: on
+ * 09-20 all eight were published at once, drafts included), and an install
+ * with --skip-flow-activation reverts published flows to draft (trap #129).
+ * So an install that must not change other flows skips activation, then
+ * re-publishes exactly what was published before.
+ * ------------------------------------------------------------------ */
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Names of this app's source-managed flows that are live now (proof published, or unknown with a live header). */
+export async function publishedInScope() {
+  const { scope } = await readAppIdentity();
+  /* Only artifacts declared in this app's source: the install touches nothing else. */
+  const managed = new Set();
+  for (const file of await listSourceFiles()) {
+    const src = await fsp.readFile(path.join(FLOWS_DIR, file), 'utf8').catch(() => '');
+    for (const art of parseArtifacts(src)) managed.add(art.name);
+  }
+  const names = [];
+  for (let offset = 0; offset < 500;) {
+    // eslint-disable-next-line no-await-in-loop
+    const page = await flows.search({ scope, limit: 50, offset });
+    if (!page.ok) throw new SnowError(page.message, 502);
+    for (const f of page.items) {
+      if (!managed.has(f.name)) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const proof = await flows.publishedProof(f.sys_id).catch(() => ({ published: null }));
+      /* Trap #131: after an execution the proof can be UNKNOWN while the header says live. */
+      if (proof.published === true || (proof.published === null && f.active === true && f.status === 'published')) names.push(f.name);
+    }
+    if (!page.has_more) break;
+    offset = page.next_offset;
+  }
+  return names;
+}
+
+/**
+ * Re-publish flows until they STAY published. An install reverts published
+ * flows to draft, sometimes minutes after it returns (trap #129), so one
+ * activation is not enough: poll, re-activate what dropped, and require the
+ * whole set to read published on several consecutive polls.
+ */
+export async function republish(names, emit = () => {}, { maxMs = 8 * 60_000, pollMs = 20_000, stablePolls = 3 } = {}) {
+  const attempts = {};
+  const state = {};
+  let stable = 0;
+  const t0 = Date.now();
+  const ids = {};
+  for (const n of names) {
+    // eslint-disable-next-line no-await-in-loop
+    const found = await resolveManagedArtifact(n).catch(() => ({ ok: false }));
+    ids[n] = found.ok ? found.sysId : null;
+  }
+  while (Date.now() - t0 < maxMs) {
+    for (const n of names) {
+      // eslint-disable-next-line no-await-in-loop
+      state[n] = ids[n] ? (await flows.publishedProof(ids[n]).catch(() => ({ published: null }))).published : null;
+    }
+    const pending = names.filter((n) => state[n] !== true);
+    if (!pending.length) {
+      stable += 1;
+      if (stable >= stablePolls) return { ok: true, published: names, attempts, waitedMs: Date.now() - t0 };
+    } else {
+      stable = 0;
+      for (const n of pending) {
+        if ((attempts[n] ?? 0) >= 3) continue;
+        attempts[n] = (attempts[n] ?? 0) + 1;
+        emit({ type: 'republishing', name: n, attempt: attempts[n] });
+        // eslint-disable-next-line no-await-in-loop
+        await activateManagedFlow(n).catch((err) => ({ ok: false, message: err.message }));
+      }
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sleepMs(pollMs);
+  }
+  return { ok: false, notPublished: names.filter((n) => state[n] !== true), attempts, waitedMs: Date.now() - t0 };
 }
 
 export async function activateManagedFlow(name, emit = () => {}) {

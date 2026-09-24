@@ -1,0 +1,39 @@
+{
+  "setup": {
+    "table": "incident",
+    "payload": {
+      "short_description": "NowForge Edit Test trigger"
+    }
+  },
+  "wait": {
+    "flowName": "NowForge Edit Test",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "syslog",
+      "locate": {
+        "byQuery": "messageLIKENowForge Edit Test ran for ^level=info"
+      },
+      "field": "level",
+      "expect": {
+        "value": "info"
+      },
+      "note": "verifies the flow logged an info message containing the incident number"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      }
+    },
+    {
+      "table": "syslog",
+      "locate": {
+        "byQuery": "messageLIKENowForge Edit Test ran for ^level=info"
+      }
+    }
+  ]
+}

@@ -2619,6 +2619,35 @@ ${skillNote}` : text);
           impersonationApproval = pre.preview;
         }
 
+        /*
+         * JOB 1.2 — a tool may work out what it WOULD do before the card is
+         * shown (edit_flow: the before/after of each step). A refusal here
+         * means there is nothing to approve, so no card; a preview rides on
+         * the card. `execute` re-plans and stays authoritative.
+         */
+        let writePreview = null;
+        if (tool.mutating && typeof tool.previewWrite === 'function') {
+          let pv;
+          try {
+            pv = await tool.previewWrite(call.input ?? {}, { sessionId });
+          } catch (err) {
+            pv = { ok: false, reason: 'preview_error', message: `Could not work out what this change would do (${err.message}), so nothing was started.` };
+          }
+          if (!pv?.ok) {
+            const msg = `Refused before approval: ${pv?.message ?? 'the preview failed'}`;
+            log.warn('gate', `${call.name} refused before approval — ${pv?.reason ?? 'preview'}`);
+            results.push({ id: call.id, name: call.name, output: msg, isError: true });
+            recordToolEvent(sessionId, {
+              taskId,
+              kind: 'tool_call', name: call.name, payload: call.input, result: msg,
+              resultStatus: `preview_refused:${pv?.reason ?? 'error'}`, mutating: true, approval: null,
+            });
+            emit({ type: 'tool_blocked', id: call.id, name: call.name, input: call.input, reason: `preview_${pv?.reason ?? 'error'}`, message: msg });
+            continue;   // no card, nothing started
+          }
+          writePreview = pv.preview ?? null;
+        }
+
         // Permission gate — the heart of the platform's safety model.
         let approval = null;
         // WI-4 — the two facts the audit trail could not previously state.
@@ -2662,6 +2691,8 @@ ${skillNote}` : text);
              * approve inattentively, which is the whole point of the flag.
              */
             impersonationApproval,
+            /* JOB 1.2 — what this change will do, in words, before it is approved. */
+            preview: writePreview,
           });
           log.warn('gate', `approval required: ${call.name}${impersonationApproval?.elevated ? ' — ELEVATED (admin target)' : ''} — waiting for the user`);
           const decision = await decisionPending;

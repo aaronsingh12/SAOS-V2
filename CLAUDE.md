@@ -32,10 +32,37 @@ Verified 2026-09-24 (Job 1.1) unless marked UNVERIFIED.
 - Tool results are cut at 8,000 chars by the orchestrator (`RESULT_CHAR_LIMIT`) — size tool output to fit.
 - `gs.dateGenerate` in encoded queries did not match UTC values over REST; use
   `RELATIVEGE@minute@ago@N` for "changed recently" checks.
-- `now-sdk build` runs offline, so it is free validation (UNVERIFIED this session)
-- `now-sdk install` deploys the WHOLE workspace app, not just the files you changed (UNVERIFIED this session)
-- now-sdk CLI flags are camelCase (UNVERIFIED this session)
+- `now-sdk build` runs offline and type-checks (TS6133 unused locals/params, TS2769 wrong input types)
+  — but it does NOT check table names or data-pill output names: both compile and install (Job 1.2).
+- `now-sdk install` deploys the WHOLE workspace app (8 flow sources + DBA tables + catalog policies here).
+  With default activation it publishes EVERY flow in the app, drafts included (seen 2026-09-20);
+  with `--skip-flow-activation` published flows revert to draft (trap #129). Scoped activation
+  (skip, then re-publish exactly what was published) is what create_flow_live / edit_flow now do.
+  A whole-app install + scoped re-publish takes ~20 min on dev366630.
+- now-sdk CLI flag casing is MIXED — `--skip-flow-activation` is kebab-case, `--demoData` camelCase.
+  Check `--help`; do not assume camelCase.
+- `now-sdk transform --table sys_hub_flow --id <sys_id>` pulls a UI-built flow into Fluent, but also
+  emits raw Record() files tied to its published snapshot; not used automatically.
+- ts-morph (TS 5.6.2) ships inside `server/fluent-workspace/node_modules` via the SDK.
 - `now-sdk explain` is more reliable than the docs (UNVERIFIED this session)
+- keys.ts ids == the live sys_ids of installed steps (verified on 5/5 steps), so step ↔ source is exact.
+- The dev server runs `node --watch src/index.js`: saving ANY server/src file restarts it and kills an
+  in-flight edit/install. Never change server code while a live install is running.
+  The server also restarted once mid-edit for an unexplained reason (Job 1.2) — edit_flow keeps a
+  journal (`server/data/flow-edit-journal.json`); if one is left behind, edits are refused until
+  `restore_flow` on that flow has finished the recovery.
+- Flow edit backups live in `server/data/flow-backups/<host>/<flow sys_id>/<timestamp>/` (gitignored).
+- Trap #131 (seen live): after a flow EXECUTES, its header's `latest_snapshot` can point at an unreadable
+  record, so `publishedProof` says UNKNOWN (null) while the header says active+published. Treat
+  "unknown + live header" as live, or an install will leave the flow a draft.
+- Only flows declared in the workspace's Fluent source are touched by an install; only those may be
+  re-published. "DEMO Flow" (built in Flow Designer, no source) must never be activated by our tools.
+- The chat model (gpt-oss) tends to send tool calls in the OUTPUT shape of the matching read tool
+  (e.g. get_flow's {kind, name}); edit_flow normalises the unambiguous forms before validating.
+- Tool selection is keyword-based (`server/src/agent/context-selection.js`): a request that never names
+  the domain ("add a step to <flow name>") only gets that domain's tools if a signal matches it.
+- Live tests are driven through the chat API with approvals sent to `/api/agent/approve` (see Job 1.2
+  report); a whole-app install + re-publish takes ~20–25 min, so plan tests accordingly.
 - Agent flow read tools are `list_flows` and `get_flow` (fixed in Job 1.1). `list_live_flows` lists
   only Fluent-source flows, not everything on the instance.
 
