@@ -181,6 +181,31 @@ test('the three record tools refuse a table the live schema does not have', asyn
   assert.equal(fetches, 0);
 });
 
+test('create_record converts a Table API invalid table response into a refused write', async () => {
+  _setTableExistsForTests(async () => true);
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return new Response(JSON.stringify({ error: { message: 'Invalid table contract_sla_milestone', detail: null }, status: 'failure' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const r = await toolMap.get('create_record').execute({
+      table: 'contract_sla_milestone',
+      data: { name: 'x' },
+    }, {});
+    assert.equal(r?.ok, false);
+    assert.equal(r.refused, true);
+    assert.equal(r.reason, 'unknown_table');
+    assert.equal(r.table, 'contract_sla_milestone');
+    assert.match(r.message, /Nothing was written/);
+    assert.equal(fetches, 1);
+  } finally {
+    globalThis.fetch = async (...a) => { fetches += 1; return realFetch(...a); };
+  }
+});
+
 /* ------------------------------------------------------------------ *
  * Replay: the chat-loop attempt from 2026-09-08
  * ------------------------------------------------------------------ */

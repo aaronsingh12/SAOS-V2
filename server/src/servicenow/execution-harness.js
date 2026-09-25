@@ -264,6 +264,10 @@ export function readLogChannel(rows, token) {
   return out;
 }
 
+export function statusForHarnessTimeoutCause(cause) {
+  return cause === 'not-started' ? 'EXECUTION_PATH_BLOCKED' : 'TIMEOUT';
+}
+
 const TABLE_RE = /^[a-z0-9_]+$/i;
 
 /**
@@ -520,6 +524,7 @@ export async function runServerScript({
     return {
       ok: false,
       timedOut: true,
+      status: statusForHarnessTimeoutCause(cause),
       cause,
       started: observed.started,
       scope: observed.scope,
@@ -532,6 +537,7 @@ export async function runServerScript({
   return {
     ok: report.ok === true,
     timedOut: false,
+    status: report.ok === true ? 'SUCCESS' : 'FAILED',
     cause: null,
     started: true,
     scope: report.scope ?? observed.scope ?? null,

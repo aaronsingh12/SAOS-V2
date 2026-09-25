@@ -12,6 +12,10 @@ import { capability, createLiveFlow, listManaged, removeManaged, smokeRun, verif
 import { recordIntendedState } from '../servicenow/post-install-state.js';
 import { previewEdit, executeEdit, previewRestore, executeRestore } from '../servicenow/flow-edit.js';
 import { listSlas, getSla, slaMeta, createSla, verifySla } from '../servicenow/sla.js';
+import {
+  listSlas, getSla, slaMeta, createSla, verifySla, createSchedule, createScheduleSpan,
+  createHolidaySchedule, readSchedule, repairSla, slaTimingDiagnostics, validateScheduleRuntime,
+} from '../servicenow/sla.js';
 import { listPoliciesForItem, itemVariables, createPolicy, CONDITION_OPERATORS } from '../servicenow/catalogPolicy.js';
 import { aclReport, aclDiff, explainAclReport } from '../servicenow/acl.js';
 import { search } from '../memory/recall.js';
@@ -74,6 +78,40 @@ import {
 import { contractFromRequest } from './appbuild/architecture.js';
 
 const cellValue = (c) => (c && typeof c === 'object' && 'value' in c ? c.value : c);
+
+function unavailableTableRows(tableName, reason) {
+  const rows = [];
+  Object.defineProperty(rows, '_meta', {
+    enumerable: false,
+    value: {
+      status: 'TABLE_UNAVAILABLE',
+      table: tableName,
+      reason,
+    },
+  });
+  return rows;
+}
+
+function isInvalidTableError(err, tableName) {
+  const text = `${err?.message || ''} ${err?.detail || ''}`;
+  return /Invalid table/i.test(text) && (!tableName || text.includes(tableName));
+}
+
+function invalidTableRefusal(tool, tableName, source = 'schema') {
+  const t = String(tableName ?? '');
+  const sourceText = source === 'table_api'
+    ? 'the ServiceNow Table API rejected that name as invalid'
+    : 'no sys_db_object row carries that name';
+  return {
+    ok: false,
+    refused: true,
+    reason: 'unknown_table',
+    table: t,
+    tool,
+    message: `"${t}" is not a writable table on the bound instance (${sourceText}). Nothing was written. `
+      + 'Find the real table with lookup_table or get_table_schema before writing; do not guess a name.',
+  };
+}
 
 const slugOf = (value) => String(value ?? '')
   .toLowerCase()
@@ -169,13 +207,20 @@ async function refuseRecordWrite(tool, t) {
     return { ok: false, refused: true, reason: policy.reason, table: String(t ?? ''), tool, message: policy.message };
   }
   if (!(await tableExists(t))) {
-    return {
-      ok: false, refused: true, reason: 'unknown_table', table: String(t ?? ''), tool,
-      message: `"${t}" is not a table on the bound instance (no sys_db_object row carries that name). Nothing was written. `
-        + 'Find the real table with lookup_table or get_table_schema before writing; do not guess a name.',
-    };
+    return invalidTableRefusal(tool, t);
   }
   return null;
+}
+
+async function verifiedRecordWrite(toolName, tableName, action) {
+  try {
+    return await action();
+  } catch (err) {
+    if (isInvalidTableError(err, tableName)) {
+      return invalidTableRefusal(toolName, tableName, 'table_api');
+    }
+    throw err;
+  }
 }
 
 export function assertCreatableTable(t) {
@@ -474,7 +519,7 @@ export const TOOLS = [
       assignment_group: { type: 'sys_id', from: 'assignment_group', fromFirstRow: true },
       cmdb_ci: { type: 'sys_id', from: 'cmdb_ci', fromFirstRow: true },
     },
-    execute: ({ table: t, query, fields, limit, order_by_desc }) => {
+    execute: async ({ table: t, query, fields, limit, order_by_desc }) => {
       /*
        * PHASE 15 — A TOOL MUST FETCH WHAT IT PROMISES.
        *
@@ -495,12 +540,23 @@ export const TOOLS = [
        * The caller still gets exactly what it asked for, plus the columns the
        * tool had already promised to be able to hand on.
        */
+      const tableName = String(t ?? '').trim();
+      if (!(await tableExists(tableName))) {
+        return unavailableTableRows(tableName, `Table "${tableName}" does not exist or is not available on this ServiceNow instance.`);
+      }
       const declared = ['sys_id', 'caller_id', 'assigned_to', 'assignment_group', 'cmdb_ci'];
       const asked = typeof fields === 'string' && fields.trim() ? fields.split(',').map((f) => f.trim()) : null;
       const merged = asked ? [...new Set([...asked, ...declared])].join(',') : fields;
-      return table.query(t, {
-        query, fields: merged, limit: Math.min(limit || 10, 50), orderByDesc: order_by_desc,
-      });
+      try {
+        return await table.query(tableName, {
+          query, fields: merged, limit: Math.min(limit || 10, 50), orderByDesc: order_by_desc,
+        });
+      } catch (err) {
+        if (isInvalidTableError(err, tableName)) {
+          return unavailableTableRows(tableName, `Table "${tableName}" was rejected by the ServiceNow Table API.`);
+        }
+        throw err;
+      }
     },
   },
   {
@@ -608,7 +664,7 @@ export const TOOLS = [
       if (refusal) return refusal;
       return writeAsCurrentIdentity({
         ctx, tool: 'create_record', table: t, operation: 'create', data,
-        direct: () => table.create(t, data),
+        direct: () => verifiedRecordWrite('create_record', t, () => table.create(t, data)),
       });
     },
     /*
@@ -664,7 +720,7 @@ export const TOOLS = [
       if (refusal) return refusal;
       return writeAsCurrentIdentity({
         ctx, tool: 'update_record', table: t, sysId: sys_id, operation: 'update', data,
-        direct: () => table.update(t, sys_id, data),
+        direct: () => verifiedRecordWrite('update_record', t, () => table.update(t, sys_id, data)),
       });
     },
     describeWrite: ({ table: t, sys_id, data }) => ({
@@ -887,7 +943,7 @@ export const TOOLS = [
       if (refusal) return refusal;
       return writeAsCurrentIdentity({
         ctx, tool: 'delete_record', table: t, sysId: sys_id, operation: 'delete',
-        direct: () => table.remove(t, sys_id),
+        direct: () => verifiedRecordWrite('delete_record', t, () => table.remove(t, sys_id)),
       });
     },
     describeWrite: ({ table: t, sys_id }) => ({ table: t, operation: 'delete', requested: {}, sys_id }),
@@ -1642,6 +1698,7 @@ ${description}` : description);
         duration_type: { type: 'string', description: 'sys_id of a cmn_relative_duration, INSTEAD of a fixed duration' },
         timezone_source: { type: 'string' },
         retroactive: { type: 'boolean' },
+        set_start_to: { type: 'string', description: 'Task date/time field used for retroactive start, e.g. opened_at or sys_created_on' },
         when_to_cancel: { type: 'string' },
         active: { type: 'boolean' },
       },
@@ -1663,6 +1720,149 @@ ${description}` : description);
       required: ['name'],
     },
     execute: ({ name, tolerance_sec }) => verifySla(name, () => {}, { toleranceSec: tolerance_sec || undefined }),
+  },
+  {
+    name: 'get_sla_schedule',
+    description: 'Read a cmn_schedule with its cmn_schedule_span rows and holiday/blackout child schedules. Use after creating a schedule so span evidence is read back, not inferred.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: { sys_id: { type: 'string', description: 'cmn_schedule sys_id' } },
+      required: ['sys_id'],
+    },
+    execute: ({ sys_id }) => readSchedule(sys_id),
+  },
+  {
+    name: 'create_sla_schedule',
+    description:
+      'Create a cmn_schedule and optional working spans, then read it back. Spans use start/end datetimes and repeat_type such as weekly with days_of_week. Requires user approval.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        sys_id: { type: 'string', description: 'Existing cmn_schedule sys_id to reuse; when provided no new schedule is created.' },
+        schedule: { type: 'string', description: 'Alias for sys_id/existing schedule id.' },
+        calendar: { type: 'string', description: 'Alias for sys_id/existing schedule id; accepted for older calls.' },
+        time_zone: { type: 'string', description: 'Optional IANA timezone to compare on readback only; not forced with calendar fallback records.' },
+        spans: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              start: { type: 'string', description: 'YYYY-MM-DD HH:mm:ss or YYYYMMDDTHHmmss' },
+              end: { type: 'string' },
+              start_date_time: { type: 'string', description: 'Alias for start; accepted for ServiceNow-shaped input' },
+              end_date_time: { type: 'string', description: 'Alias for end; accepted for ServiceNow-shaped input' },
+              repeat_type: { type: 'string', description: 'blank, daily, weekly, weekdays, etc.' },
+              days_of_week: { type: 'string', description: 'ServiceNow day digits, e.g. 12345 for Mon-Fri on this instance family' },
+              repeat_count: { type: 'string' },
+              repeat_until: { type: 'string' },
+              all_day: { type: 'boolean' },
+              show_as: { type: 'string', description: 'ServiceNow span display mode, e.g. busy or on_call' },
+            },
+            required: ['start', 'end'],
+          },
+        },
+      },
+      required: ['name'],
+    },
+    execute: (input) => createSchedule(input),
+    describeWrite: (input, result) => ({
+      table: 'cmn_schedule', operation: 'insert', sys_id: result?.sys_id ?? null,
+      requested: { name: input?.name, time_zone: input?.time_zone, spans: input?.spans?.length ?? 0 },
+      record: result?.schedule ?? null,
+    }),
+  },
+  {
+    name: 'create_sla_schedule_span',
+    description: 'Add a working span to an existing cmn_schedule and read the span back. Do not use this for holidays; use create_sla_holiday instead.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        schedule: { type: 'string', description: 'cmn_schedule sys_id' },
+        calendar: { type: 'string', description: 'Alias for schedule; accepted for older calls' },
+        name: { type: 'string' },
+        start: { type: 'string' },
+        end: { type: 'string' },
+        start_date_time: { type: 'string', description: 'Alias for start; accepted for ServiceNow-shaped input' },
+        end_date_time: { type: 'string', description: 'Alias for end; accepted for ServiceNow-shaped input' },
+        repeat_type: { type: 'string' },
+        days_of_week: { type: 'string' },
+        repeat_count: { type: 'string' },
+        repeat_until: { type: 'string' },
+        all_day: { type: 'boolean' },
+        show_as: { type: 'string' },
+      },
+      required: ['schedule', 'start', 'end'],
+    },
+    execute: (input) => createScheduleSpan(input),
+  },
+  {
+    name: 'create_sla_holiday',
+    description:
+      'Create a holiday/blackout child schedule under a parent cmn_schedule, then create/read back its all-day span. This avoids the Business Rule rejection caused by inserting a holiday directly as a generic cmn_schedule_span. Requires user approval.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parent: { type: 'string', description: 'parent cmn_schedule sys_id' },
+        name: { type: 'string' },
+        start: { type: 'string' },
+        end: { type: 'string' },
+        time_zone: { type: 'string' },
+      },
+      required: ['parent', 'name', 'start', 'end'],
+    },
+    execute: (input) => createHolidaySchedule(input),
+  },
+  {
+    name: 'validate_sla_schedule_runtime',
+    description:
+      'Validate an existing cmn_schedule with GlideSchedule after spans are persisted. Checks business-hours containment and 8-hour business-time additions. Does not create fallback calendar records or modify task_sla. Requires approval because it runs a native server-side validation job.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        schedule: { type: 'string', description: 'cmn_schedule sys_id' },
+        sys_id: { type: 'string', description: 'Alias for schedule' },
+      },
+      required: [],
+    },
+    execute: (input) => validateScheduleRuntime(input),
+  },
+  {
+    name: 'repair_sla_native',
+    description:
+      'Attempt native SLA repair/recalculation for a task and report the actual native API used, before/after task_sla counts, or a clear unavailable reason. Requires user approval.',
+    mutating: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_sys_id: { type: 'string', description: 'task/incident sys_id to repair' },
+        sla_sys_id: { type: 'string', description: 'optional contract_sla sys_id to count before/after' },
+        dry_run: { type: 'boolean' },
+      },
+      required: ['task_sys_id'],
+    },
+    execute: (input) => repairSla(input),
+  },
+  {
+    name: 'diagnose_sla_timing',
+    description:
+      'Read one contract_sla + exact task_sla + schedule spans together for timing diagnosis. Separates stored values, calculated 24x7 baseline, assumptions, and confirmed ServiceNow behavior; it never invents rounding explanations.',
+    mutating: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_sys_id: { type: 'string' },
+        sla_sys_id: { type: 'string', description: 'contract_sla sys_id' },
+      },
+      required: ['task_sys_id', 'sla_sys_id'],
+    },
+    execute: (input) => slaTimingDiagnostics(input),
   },
   {
     name: 'acl_report',

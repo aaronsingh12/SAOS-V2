@@ -40,6 +40,7 @@ seedLedger();
 
 const { CAPABILITIES } = await import('../src/agent/capability-discovery.js');
 const { toolMap } = await import('../src/agent/tools.js');
+const { _setTableExistsForTests } = await import('../src/servicenow/schema.js');
 const { referenceFieldOf, ARTIFACTS } = await import('../src/servicenow/semantic/artifacts.js');
 const P = await import('../src/agent/plan/index.js');
 
@@ -335,6 +336,18 @@ test('REGRESSION: query_records with "filter" instead of "query" is refused', ()
   assert.ok(p, codes(v).join(', '));
   assert.deepEqual(p.detail.undeclared, ['filter']);
   assert.match(p.message, /"query"/, 'the refusal must name what the tool does take');
+});
+
+test('REGRESSION: query_records treats absent optional tables as empty reads', async () => {
+  _setTableExistsForTests(async (table) => table !== 'contract_sla_milestone');
+  try {
+    const rows = await toolMap.get('query_records').execute({ table: 'contract_sla_milestone', limit: 1 });
+    assert.deepEqual(rows, []);
+    assert.equal(rows._meta.status, 'TABLE_UNAVAILABLE');
+    assert.equal(rows._meta.table, 'contract_sla_milestone');
+  } finally {
+    _setTableExistsForTests(null);
+  }
 });
 
 test('REGRESSION: lookup_reference with "display" instead of "search" is refused', () => {
