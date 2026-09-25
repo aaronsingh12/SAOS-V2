@@ -2279,6 +2279,38 @@ declare global {
                         id: '061486ac8eda4cc6aa85be20b0eeb565'
                         deleted: true
                     }
+                    spc_add_note1: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'd980310bdf6c421e841fa711c306fe74'
+                    }
+                    spc_add_note2: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '53d7485230134947a49f66ecbcd670cd'
+                    }
+                    spc_create_task: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: 'be1fa6a7538f4193907da5dffb696cbb'
+                    }
+                    spc_flow: {
+                        table: 'sys_hub_flow'
+                        id: '1cec6a76eb344e5591ad0d188c8409aa'
+                    }
+                    spc_if_no_task: {
+                        table: 'sys_hub_flow_logic_instance_v2'
+                        id: 'af1663bb9ccc462392f1ff65cc1c244c'
+                    }
+                    spc_task_lookup: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '10b6158d882b4d76bbeddffb42fe7ccb'
+                    }
+                    spc_trigger: {
+                        table: 'sys_hub_trigger_instance_v2'
+                        id: '2331cbaf9574450081956abd7f967570'
+                    }
+                    spc_update_state: {
+                        table: 'sys_hub_action_instance_v2'
+                        id: '286bf521945c4992b171bd1e90517955'
+                    }
                     sra_approval_else: {
                         table: 'sys_hub_flow_logic_instance_v2'
                         id: '93f16780d3de4909b0b6f48ee18a58fb'

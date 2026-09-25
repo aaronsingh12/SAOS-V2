@@ -1,0 +1,97 @@
+{
+  "setup": {
+    "table": "incident",
+    "payload": {
+      "short_description": "Flow verification test incident",
+      "impact": "1",
+      "urgency": "2",
+      "assignment_group": "8a5055c9c61122780043563ef53438e3"
+    }
+  },
+  "wait": {
+    "flowName": "Set In Progress and Create Follow‑up Task for High Priority Incidents",
+    "timeoutSec": 90
+  },
+  "assert": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "incident_state",
+      "expect": {
+        "value": "2"
+      },
+      "note": "sets Incident State to In Progress"
+    },
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "display": "State set to In Progress by automated flow."
+      },
+      "note": "adds a work note to the Incident (first note)"
+    },
+    {
+      "table": "task",
+      "locate": {
+        "byQuery": "parent={{setup.sys_id}}"
+      },
+      "field": "state",
+      "expect": {
+        "value": "1"
+      },
+      "note": "creates a follow‑up Task linked to the Incident and sets Task State to Open"
+    },
+    {
+      "table": "task",
+      "locate": {
+        "byQuery": "parent={{setup.sys_id}}"
+      },
+      "field": "short_description",
+      "expect": {
+        "value": "Follow‑up task"
+      },
+      "note": "Task short description as created by the flow"
+    },
+    {
+      "table": "task",
+      "locate": {
+        "byQuery": "parent={{setup.sys_id}}"
+      },
+      "field": "description",
+      "expect": {
+        "value": "Follow‑up task for incident."
+      },
+      "note": "Task description as created by the flow"
+    },
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      },
+      "field": "work_notes",
+      "expect": {
+        "display": "Follow‑up task created."
+      },
+      "note": "adds a second work note to the Incident"
+    }
+  ],
+  "cleanup": [
+    {
+      "table": "incident",
+      "locate": {
+        "bySetupRecord": true
+      }
+    },
+    {
+      "table": "task",
+      "locate": {
+        "byQuery": "parent={{setup.sys_id}}"
+      }
+    }
+  ]
+}
